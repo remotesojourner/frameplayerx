@@ -2,7 +2,7 @@
 //! panels, rendered on a real (software) Vulkan device.
 
 use fp_core::format::{Projection, StereoLayout, VideoFormat};
-use fp_core::view::ViewSettings;
+use fp_core::view::{Environment, ViewSettings};
 use fp_media::PixelLayout;
 use fp_render::capture::OffscreenEyes;
 use fp_render::math::{Fov, projection, view};
@@ -293,6 +293,51 @@ fn flat_screen_sits_in_front_and_background_surrounds_it() {
     // No video: background everywhere.
     let [l, _] = render(&mut r, &mut e, None, &p, &[]);
     assert_eq!(centre(&l), [0, 0, 0]);
+    e.destroy(&r);
+}
+
+#[test]
+fn a_cinema_surrounds_the_screen_in_the_picture_s_light() {
+    let Some((mut r, mut e)) = setup() else {
+        return;
+    };
+    let red = frame(160, 90, |_, _| [230, 20, 20]);
+    let blue = frame(160, 90, |_, _| [20, 20, 230]);
+    let mut p = params(
+        Projection::Flat,
+        StereoLayout::Mono,
+        ViewSettings::default(),
+    );
+    p.screen_pose = Mat4::from_translation(Vec3::new(0.0, 1.6, -4.0));
+    p.background = [0.0, 0.0, 0.0, 1.0];
+    p.house_lights = 0.0;
+    // The ceiling in front of the screen, which the picture lights.
+    let ceiling = |img: &[u8]| {
+        let mut sum = [0u32; 3];
+        for x in SIZE / 2 - 4..SIZE / 2 + 4 {
+            for (s, c) in sum.iter_mut().zip(px(img, x, 4)) {
+                *s += u32::from(c);
+            }
+        }
+        sum
+    };
+    let [dark, _] = render(&mut r, &mut e, Some(&red), &p, &[]);
+    assert_eq!(ceiling(&dark), [0, 0, 0]);
+
+    p.environment = Environment::Cinema;
+    let mut lit = |f| {
+        // The light eases in over a few frames.
+        for _ in 0..12 {
+            render(&mut r, &mut e, Some(f), &p, &[]);
+        }
+        ceiling(&render(&mut r, &mut e, Some(f), &p, &[])[0])
+    };
+    let (by_red, by_blue) = (lit(&red), lit(&blue));
+    assert!(by_red[0] > by_red[2] + 40, "red picture: {by_red:?}");
+    assert!(by_blue[2] > by_blue[0] + 40, "blue picture: {by_blue:?}");
+    // The screen itself is unchanged.
+    let [l, _] = render(&mut r, &mut e, Some(&red), &p, &[]);
+    assert!(is_red(centre(&l)), "{:?}", centre(&l));
     e.destroy(&r);
 }
 

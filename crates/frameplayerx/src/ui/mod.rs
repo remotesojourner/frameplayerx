@@ -517,6 +517,8 @@ pub struct UiState {
     pub update: UpdateStatus,
     pub adjust_open: bool,
     pub adjust_tab: usize,
+    /// Subtitles in other languages are listed in the Audio & subs tab.
+    pub foreign_subtitles_open: bool,
     pub open_error: Option<String>,
     pub opening: Option<String>,
     pub toast: Option<(String, std::time::Instant)>,
@@ -564,6 +566,7 @@ impl Default for UiState {
             update: UpdateStatus::Unknown,
             adjust_open: false,
             adjust_tab: 0,
+            foreign_subtitles_open: false,
             open_error: None,
             opening: None,
             toast: None,

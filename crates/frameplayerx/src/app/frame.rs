@@ -325,6 +325,13 @@ impl App {
         if let Some(p) = &self.playback {
             frame = p.player.current_frame();
             let mut s = p.shown_settings(&self.settings.default_view);
+            if flat_or_none && !passthrough {
+                let playing = p.player.state() == PlayerState::Playing;
+                let target = if playing { 0.0 } else { 1.0 };
+                self.house_lights += (target - self.house_lights) * (input.dt / 1.5).min(1.0);
+                video.environment = self.settings.environment;
+                video.house_lights = self.house_lights;
+            }
             video.format = p.format;
             video.screen_pose = place(anchor, 0.0, s.screen_distance, 0.0, 0.0);
             s.yaw += anchor_yaw.to_degrees();

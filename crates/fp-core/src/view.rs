@@ -179,6 +179,16 @@ impl ViewSettings {
     }
 }
 
+/// What surrounds a flat video's screen when your room doesn't show.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Environment {
+    #[default]
+    Dark,
+    /// A cinema hall, lit by the screen.
+    Cinema,
+}
+
 /// Settings that change over the video's timeline.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Keyframes {

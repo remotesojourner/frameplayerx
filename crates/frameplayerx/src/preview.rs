@@ -326,6 +326,18 @@ impl Sim {
                 self.app.repaint_all();
                 self.run_frames(3)?;
             }
+            // `environment cinema` / `environment dark`, as Settings > Playback does.
+            Some("environment") => {
+                self.app.settings.environment = match parts.get(1).copied() {
+                    Some("cinema") => fp_core::view::Environment::Cinema,
+                    _ => fp_core::view::Environment::Dark,
+                };
+                self.app.repaint_all();
+                self.run_frames(3)?;
+            }
+            // Sets the cinema's house lights (0 down, 1 up) for the next
+            // frames: short test clips end, and that brings them up.
+            Some("house-lights") => self.app.house_lights = num(1)?,
             // Lists the subtitle languages in Settings > Playback.
             Some("languages") => {
                 self.app.ui.languages_open = true;

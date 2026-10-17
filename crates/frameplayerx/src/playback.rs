@@ -544,6 +544,19 @@ impl Playback {
         }
     }
 
+    /// This video's format with its see-through mask turned on or off, when
+    /// it is a side-by-side VR video and so could carry one. There is no
+    /// screen to show the room around, so this is what the Room button does.
+    pub fn mask_toggled(&self) -> Option<VideoFormat> {
+        let f = self.format;
+        (f.projection != format::Projection::Flat && f.stereo.is_side_by_side()).then_some(
+            VideoFormat {
+                alpha_packed: !f.alpha_packed,
+                ..f
+            },
+        )
+    }
+
     pub fn save_settings(&mut self, library: &Library) {
         if let Some(id) = self.record_id {
             let r = library

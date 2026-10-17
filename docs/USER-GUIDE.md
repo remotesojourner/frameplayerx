@@ -291,6 +291,16 @@ Overrides are remembered per video. The same panel has position, zoom,
 IPD/depth, stereo alignment, picture controls, subtitle depth and
 keyframes (adjustments that change smoothly along the video).
 
+### A cinema for flat videos
+
+Flat videos play on a screen in the dark. Set **Environment** to **Cinema**
+(Settings › Playback › Flat videos, or ⚙ › Format › Screen while one plays)
+and the screen hangs in a cinema hall instead: curtains beside it, rows of
+seats stepping down towards it, and walls, seats and floor lit by the
+picture. The house lights come up while the video is paused. The hall
+grows with the screen's width and distance, and your room shows instead
+while passthrough is on.
+
 Codecs: H.264, HEVC (8/10-bit, HDR10/HLG tone-mapped), AV1, VP9, VP8,
 VC-1, MPEG-4, MPEG-2, ProRes. Audio: AAC, AC-3/E-AC-3, Opus, Vorbis, FLAC,
 MP3, DTS, TrueHD, PCM (Blu-ray and DVD LPCM too), and spatial (ambisonic)
@@ -314,8 +324,10 @@ Settings › Playback › **Subtitles** sets what a video starts with:
 - **Off**: none.
 
 **Your language** starts as the system's (English when it has none). While
-a video plays, **⚙** › **Audio & subs** lists all its subtitles by
-language and switches between them.
+a video plays, **⚙** › **Audio & subs** lists its subtitles, those in your
+language first, each with what tells it apart: forced, SDH, its title or
+file name, and its format. A video with many keeps those in other
+languages under **Other languages**.
 
 Subtitles show in any script, with the fonts on the headset: Arabic and
 Hebrew read right to left, and Chinese, Japanese or Korean need a font
@@ -380,7 +392,7 @@ picture. Play/pause and seeking are under either thumb.
 | Thumbstick up / down | Volume (or scroll a menu you point at) | Tilt the picture (or scroll a menu you point at) |
 | Thumbstick press | Mute | Reset the picture |
 | A / D-pad down | Play / pause | Play / pause |
-| B / D-pad right | Back: closes the open panel, then shows the library over the video, then returns to the video | Passthrough on / off (in the library and with flat videos) |
+| B / D-pad right | Back: closes the open panel, then shows the library over the video, then returns to the video | Your room on / off: around flat videos and the library, or through a side-by-side passthrough video's mask |
 | X / D-pad left | Previous video in the list you opened it from | Adjust panel |
 | Y / D-pad up | Next video | Show or hide the controls |
 | Menu / View | Library | Recenter |
@@ -412,8 +424,9 @@ type on your phone through the web remote.
 
 The adjust panel's **Passthrough** tab (the sliders button on the control
 bar, then the glasses tab) makes part of a video see-through so your room
-shows behind it. The glasses button on the bar itself only turns passthrough
-on and off.
+shows behind it. The **Room** button (the armchair) on the bar shows your
+room around a flat video's screen; on a side-by-side 180° or fisheye
+video it turns the video's own mask on and off.
 
 ### Videos with their own mask (`_alpha`)
 
@@ -421,9 +434,10 @@ Many passthrough videos carry a see-through mask inside the
 picture, and their names end in `_alpha` (for example
 `Scene_4096p_FISHEYE190_alpha.mp4`). FramePlayerX reads the mask by itself:
 only the people stay and the room shows around them, with nothing to set.
-**Use the video's mask** in the Passthrough tab turns it on or off for a
-file, for example one renamed without `_alpha`. Only side-by-side videos
-can carry a mask.
+For a file whose name doesn't say so (renamed, or named by a server), press
+**Room** on the control bar, or turn on **Use the video's mask** in the
+Passthrough tab; either is remembered for that file. Only side-by-side
+videos can carry a mask.
 
 ### Green and blue screens (chroma key)
 

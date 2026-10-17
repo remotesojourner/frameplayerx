@@ -4,6 +4,7 @@ use crate::settings::SubtitleMode;
 use fp_core::language::Tag;
 use fp_core::source::SubtitleFile;
 use fp_media::{MediaInfo, StreamInfo};
+use fp_sources::urlutil::last_segment;
 
 /// The subtitles a video starts with.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -141,31 +142,118 @@ pub fn stream_detail(s: &StreamInfo) -> String {
     parts.join(" · ")
 }
 
-/// A subtitle file's name (its language when known) and detail.
-pub fn file_label(f: &SubtitleFile) -> (String, String) {
+/// A subtitle file's name and detail. The name is its language, else its
+/// own name, else its place in the list (`n` counts from 1); the detail is
+/// what tells it from the others: forced, SDH, its own name and its format.
+pub fn file_label(f: &SubtitleFile, n: usize) -> (String, String) {
     let tag = Tag::parse(f.language.as_deref().unwrap_or(""));
-    let Some(name) = tag.name() else {
-        return (f.name.clone(), "File".into());
-    };
-    let mut detail = f.name.clone();
-    if tag.forced && !detail.to_ascii_lowercase().contains("forced") {
-        detail = format!("Forced · {detail}");
+    let own = f.name.trim();
+    let said = own.to_ascii_lowercase();
+    let mut parts = Vec::new();
+    if tag.forced && !said.contains("forced") {
+        parts.push("Forced".to_string());
     }
-    (name.to_string(), detail)
+    if tag.sdh && !said.contains("sdh") {
+        parts.push("SDH".to_string());
+    }
+    let title = match tag.name() {
+        Some(language) => {
+            if !own.is_empty() && !own.eq_ignore_ascii_case(language) {
+                parts.push(own.to_string());
+            }
+            language.to_string()
+        }
+        None if !own.is_empty() => own.to_string(),
+        None => format!("Subtitles {n}"),
+    };
+    // A file name says its format; a title or no name at all doesn't.
+    if !fp_core::source::is_subtitle_name(own)
+        && let Some(format) = [own.to_string(), last_segment(&f.location)]
+            .iter()
+            .find_map(|s| text_format(s.rsplit_once('.')?.1))
+    {
+        parts.push(format.to_string());
+    }
+    (title, parts.join(" · "))
+}
+
+/// The name of a text subtitle format, by codec or file extension.
+fn text_format(codec: &str) -> Option<&'static str> {
+    Some(match codec.to_ascii_lowercase().as_str() {
+        "subrip" | "srt" => "SRT",
+        "ass" | "ssa" => "ASS",
+        "webvtt" | "vtt" => "WebVTT",
+        "mov_text" => "Text",
+        _ => return None,
+    })
 }
 
 fn codec_name(codec: &str) -> String {
+    if let Some(name) = text_format(codec) {
+        return name.into();
+    }
     match codec {
-        "subrip" | "srt" => "SRT",
-        "ass" | "ssa" => "ASS",
-        "webvtt" => "WebVTT",
-        "mov_text" => "Text",
         "hdmv_pgs_subtitle" => "PGS",
         "dvd_subtitle" => "VobSub",
         "dvb_subtitle" => "DVB",
         other => return other.to_uppercase(),
     }
     .into()
+}
+
+/// A subtitle file or stream as the Audio & subs tab lists it.
+pub struct Row {
+    pub pick: Pick,
+    pub title: String,
+    pub detail: String,
+    /// In a known language other than the user's: these fold away when a
+    /// video has many subtitles.
+    pub foreign: bool,
+}
+
+/// The video's subtitle files and embedded streams, labelled: those in
+/// `language` first, then those in no known language, then the rest by
+/// language name. Files come before streams in the same language.
+pub fn rows(language: &str, info: &MediaInfo, files: &[SubtitleFile]) -> Vec<Row> {
+    let mut rows: Vec<(Option<&str>, Row)> = files
+        .iter()
+        .enumerate()
+        .map(|(i, f)| {
+            let (title, detail) = file_label(f, i + 1);
+            let code = Tag::parse(f.language.as_deref().unwrap_or("")).code;
+            let pick = Pick::File(i);
+            (
+                code,
+                Row {
+                    pick,
+                    title,
+                    detail,
+                    foreign: false,
+                },
+            )
+        })
+        .collect();
+    rows.extend(info.subtitle_streams().map(|s| {
+        let row = Row {
+            pick: Pick::Stream(s.index),
+            title: track_name(s),
+            detail: stream_detail(s),
+            foreign: false,
+        };
+        (stream_tag(s).code, row)
+    }));
+    let group = |code: Option<&str>| match code {
+        Some(c) if c == language => 0,
+        None => 1,
+        Some(_) => 2,
+    };
+    rows.sort_by_key(|(code, _)| (group(*code), code.and_then(fp_core::language::name)));
+    rows.into_iter()
+        .map(|(code, mut row)| {
+            row.foreign = group(code) == 2;
+            row
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -335,16 +423,54 @@ mod tests {
         let s = stream(5, StreamKind::Subtitle, None);
         assert_eq!(track_name(&s), "Track 5");
         assert_eq!(
-            file_label(&file("Movie.en.srt", Some("en"))),
+            file_label(&file("Movie.en.srt", Some("en")), 1),
             ("English".into(), "Movie.en.srt".into())
         );
         assert_eq!(
-            file_label(&file("Stream.subrip", Some("ger.forced"))),
-            ("German".into(), "Forced · Stream.subrip".into())
+            file_label(&file("Movie.srt", None), 1),
+            ("Movie.srt".into(), String::new())
+        );
+        // A server's files, named by its address alone or by a title.
+        let served = |name: &str, codec: &str, language: &str| SubtitleFile {
+            name: name.into(),
+            location: format!("http://jf/Videos/1/m/Subtitles/4/Stream.{codec}"),
+            language: Some(language.into()),
+        };
+        assert_eq!(
+            file_label(&served("", "subrip", "ger.forced"), 1),
+            ("German".into(), "Forced · SRT".into())
         );
         assert_eq!(
-            file_label(&file("Movie.srt", None)),
-            ("Movie.srt".into(), "File".into())
+            file_label(&served("", "subrip", ".sdh"), 3),
+            ("Subtitles 3".into(), "SDH · SRT".into())
+        );
+        assert_eq!(
+            file_label(&served("Commentary", "ass", "eng"), 1),
+            ("English".into(), "Commentary · ASS".into())
+        );
+    }
+
+    #[test]
+    fn rows_put_your_language_first() {
+        let info = video(Some("eng"), vec![sub(2, "ara"), sub(3, "eng")]);
+        let files = [
+            file("Movie.fr.srt", Some("fr")),
+            file("Movie.srt", None),
+            file("Movie.en.srt", Some("en")),
+        ];
+        let order: Vec<_> = rows("en", &info, &files)
+            .iter()
+            .map(|r| (r.pick, r.title.clone(), r.foreign))
+            .collect();
+        assert_eq!(
+            order,
+            [
+                (Pick::File(2), "English".into(), false),
+                (Pick::Stream(3), "English".into(), false),
+                (Pick::File(1), "Movie.srt".into(), false),
+                (Pick::Stream(2), "Arabic".into(), true),
+                (Pick::File(0), "French".into(), true),
+            ]
         );
     }
 }

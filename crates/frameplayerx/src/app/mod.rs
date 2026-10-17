@@ -136,6 +136,8 @@ pub struct App {
     /// are being fetched.
     feed_queue: std::collections::VecDeque<(String, String)>,
     feed_busy: usize,
+    /// The cinema's house lights: up (1) while paused, down (0) playing.
+    pub(crate) house_lights: f32,
     quit: bool,
 }
 
@@ -226,6 +228,7 @@ impl App {
             mount_tried: Vec::new(),
             feed_queue: Default::default(),
             feed_busy: 0,
+            house_lights: 1.0,
             quit: false,
         };
         app.offsets = app.settings.panel_offsets;

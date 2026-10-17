@@ -1,7 +1,8 @@
 //! Builds the projection shader's uniform block.
 
+use crate::cinema::{self, LIGHTS};
 use fp_core::format::{Projection, StereoLayout, VideoFormat};
-use fp_core::view::ViewSettings;
+use fp_core::view::{Environment, ViewSettings};
 use fp_media::PixelLayout;
 use fp_media::frame::{ColorInfo, Matrix};
 use fp_media::info::Transfer;
@@ -30,6 +31,13 @@ pub(crate) struct SceneParams {
     pub key: Vec4,
     pub key2: Vec4,
     pub viewer: Vec4,
+    pub env: Vec4,
+    pub room: Vec4,
+    pub seats: Vec4,
+    pub glow: Vec4,
+    pub light_pos: [Vec4; LIGHTS],
+    pub light_dir: [Vec4; LIGHTS],
+    pub light_rgb: [Vec4; LIGHTS],
 }
 
 /// Everything about the video that the projection pass needs, other than
@@ -47,6 +55,10 @@ pub struct VideoParams {
     /// Which way, degrees about world up, the viewer's "forward" (height and
     /// forward settings) points: the yaw the video was centred on.
     pub forward_yaw: f32,
+    /// What surrounds a flat screen; drawn only on an opaque background.
+    pub environment: Environment,
+    /// The cinema's house lights: 0 down (playing), 1 up.
+    pub house_lights: f32,
 }
 
 impl Default for VideoParams {
@@ -57,6 +69,8 @@ impl Default for VideoParams {
             screen_pose: Mat4::from_translation(glam::vec3(0.0, 0.0, -4.0)),
             background: [0.008, 0.008, 0.012, 1.0],
             forward_yaw: 0.0,
+            environment: Environment::Dark,
+            house_lights: 1.0,
         }
     }
 }
@@ -119,10 +133,12 @@ pub(crate) fn yuv_matrix(color: &ColorInfo, layout: PixelLayout) -> ([Vec4; 3], 
 /// moves off its centre (height, forward). Rays from the centre ignore it.
 const SPHERE_RADIUS: f32 = 3.0;
 
+/// `light` is the picture's light on a cinema (see [`cinema::lights`]).
 pub(crate) fn build(
     video: &VideoParams,
     frame: Option<&FrameDesc>,
     inv_view_proj: [Mat4; 2],
+    light: &[glam::Vec3; LIGHTS],
 ) -> SceneParams {
     let s = &video.settings;
     let deg = |d: f32| d.to_radians();
@@ -179,6 +195,23 @@ pub(crate) fn build(
         ),
         None => (0.0, 0.0),
     };
+    let cinema = video.environment == Environment::Cinema
+        && kind == 0
+        && frame.is_some()
+        && video.background[3] > 0.99;
+    let [env, room, seats] = if cinema {
+        cinema::hall(
+            screen_w,
+            screen_h,
+            arc,
+            s.screen_distance,
+            video.house_lights,
+        )
+    } else {
+        [Vec4::ZERO; 3]
+    };
+    let (light_pos, light_dir, light_rgb) = cinema::lights(screen_w, screen_h, arc, light);
+    let glow = light.iter().sum::<glam::Vec3>() / LIGHTS as f32;
     SceneParams {
         inv_view_proj,
         correction,
@@ -215,6 +248,13 @@ pub(crate) fn build(
         viewer: (glam::Quat::from_rotation_y(deg(video.forward_yaw))
             * glam::vec3(0.0, s.height, -s.forward))
         .extend(SPHERE_RADIUS),
+        env,
+        room,
+        seats,
+        glow: glow.extend(0.0),
+        light_pos,
+        light_dir,
+        light_rgb,
     }
 }
 
@@ -304,21 +344,25 @@ mod tests {
             &make_video(StereoLayout::SideBySide),
             Some(&frame),
             [Mat4::IDENTITY; 2],
+            &[glam::Vec3::ZERO; LIGHTS],
         );
         let sp_hsbs = build(
             &make_video(StereoLayout::HalfSideBySide),
             Some(&frame),
             [Mat4::IDENTITY; 2],
+            &[glam::Vec3::ZERO; LIGHTS],
         );
         let sp_ftb = build(
             &make_video(StereoLayout::TopBottom),
             Some(&frame),
             [Mat4::IDENTITY; 2],
+            &[glam::Vec3::ZERO; LIGHTS],
         );
         let sp_htb = build(
             &make_video(StereoLayout::HalfTopBottom),
             Some(&frame),
             [Mat4::IDENTITY; 2],
+            &[glam::Vec3::ZERO; LIGHTS],
         );
 
         // Full SBS expects 960x1080 per eye (8:9), so screen is narrow/tall:

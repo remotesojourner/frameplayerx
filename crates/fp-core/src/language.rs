@@ -129,7 +129,7 @@ impl Tag {
             let w = word.to_ascii_lowercase();
             if w == "forced" {
                 out.forced = true;
-            } else if out.code.is_some() && matches!(w.as_str(), "sdh" | "cc" | "hi") {
+            } else if matches!(w.as_str(), "sdh" | "cc") || (out.code.is_some() && w == "hi") {
                 out.sdh = true;
             } else if out.code.is_none() {
                 out.code = word_code(&w);
@@ -188,6 +188,8 @@ mod tests {
         assert_eq!((t.code, t.forced), (Some("en"), true));
         let t = Tag::parse("forced");
         assert_eq!((t.code, t.forced), (None, true));
+        let t = Tag::parse("sdh");
+        assert_eq!((t.code, t.sdh), (None, true));
     }
 
     #[test]

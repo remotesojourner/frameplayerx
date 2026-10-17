@@ -6,11 +6,13 @@
 //!   egui, and the two eye passes (projection shader, then world-space quads).
 //! - [`params`]: turns a video format, view settings and colour info into the
 //!   projection shader's uniform block.
+//! - `cinema`: the hall around flat screens, and the picture's light in it.
 //! - [`math`]: OpenXR-style projection and view matrices.
 //! - [`capture`]: offscreen eye targets with read-back, for tests and
 //!   screenshots.
 
 pub mod capture;
+mod cinema;
 pub mod gpu;
 pub mod math;
 pub mod mem;

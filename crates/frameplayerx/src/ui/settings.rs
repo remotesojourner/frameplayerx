@@ -260,6 +260,7 @@ fn playback(ui: &mut egui::Ui, v: &mut View) {
     heading(ui, "Flat videos");
     let d = &mut s.default_view;
     widgets::rows(ui, |r| {
+        super::player::environment_row(r, &mut s.environment);
         r.slider(
             "Screen distance",
             None,

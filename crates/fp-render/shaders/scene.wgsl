@@ -42,6 +42,20 @@ struct Params {
     // xyz: the viewer's offset (height, forward) in world space, metres, for
     // spherical video; w: radius of the sphere it is drawn on when offset
     viewer: vec4<f32>,
+    // Cinema around flat screens (see cinema()): x on, y house lights 0..1,
+    // z the last row ahead of the viewer's, w the last row behind (negative)
+    env: vec4<f32>,
+    // x half width, y ceiling, z back wall, w front floor
+    room: vec4<f32>,
+    // x the viewer's row's floor, y its seat backs' z, z half the width of
+    // the seats, w the screen's bottom edge
+    seats: vec4<f32>,
+    // The picture's mean light, for what the hall bounces back
+    glow: vec4<f32>,
+    // The picture as a grid of lights: centre (w: area), facing, light
+    light_pos: array<vec4<f32>, 12>,
+    light_dir: array<vec4<f32>, 12>,
+    light_rgb: array<vec4<f32>, 12>,
 };
 
 struct PushConstants {
@@ -276,6 +290,230 @@ fn srgb_to_linear(c: vec3<f32>) -> vec3<f32> {
     return pow(max(c, vec3<f32>(0.0)), vec3<f32>(2.2));
 }
 
+// Cinema: a hall around the flat screen, ray traced in the screen's space
+// (its centre at the origin facing +Z, the viewer at (0, 0, distance),
+// metres) and lit by the picture. Row k of seats counts from the viewer's
+// (0) towards the screen; rows ahead step down so none hides the screen.
+// The sizes match cinema.rs.
+const ROW_PITCH: f32 = 1.0;
+const BACK_RISE: f32 = 0.35;
+const SEAT_PITCH: f32 = 0.6;
+const SEAT_TOP: f32 = 0.95;
+// Seat backs stand apart above this.
+const NOTCH: f32 = 0.8;
+const FRONT_WALL: f32 = -0.2;
+// How much brighter than physical the picture lights the hall, and how
+// much of its light the hall bounces back.
+const SCREEN_GAIN: f32 = 7.0;
+const BOUNCE: f32 = 0.6;
+const WARM: vec3<f32> = vec3<f32>(1.0, 0.62, 0.32);
+
+struct Hit {
+    t: f32,
+    n: vec3<f32>,
+    // 0 side wall, 1 seat, 2 floor, 3 step, 4 ceiling, 5 front wall, 6 back wall
+    mat: u32,
+    // A step's top
+    top: f32,
+};
+
+fn row_z(k: i32) -> f32 {
+    return params.seats.y - f32(k) * ROW_PITCH;
+}
+
+fn row_floor(k: i32) -> f32 {
+    if (k > i32(params.env.z)) { return params.room.w; }
+    if (k <= 0) { return params.seats.x - f32(k) * BACK_RISE; }
+    // Under the line from the viewer's eyes to the bottom of the screen.
+    let d = params.seats.y - 0.35;
+    return min(params.seats.x, params.seats.w * (d - row_z(k) + 0.07) / d - SEAT_TOP - 0.1);
+}
+
+// Where a ray from outside enters a box: xyz the face's normal, w the
+// distance (negative when it misses).
+fn box_hit(o: vec3<f32>, inv: vec3<f32>, lo: vec3<f32>, hi: vec3<f32>) -> vec4<f32> {
+    let a = (lo - o) * inv;
+    let b = (hi - o) * inv;
+    let near = min(a, b);
+    let far = max(a, b);
+    let t = max(max(near.x, near.y), near.z);
+    if (t > min(min(far.x, far.y), far.z) || t <= 0.0) { return vec4<f32>(-1.0); }
+    if (t == near.x) { return vec4<f32>(-sign(inv.x), 0.0, 0.0, t); }
+    if (t == near.y) { return vec4<f32>(0.0, -sign(inv.y), 0.0, t); }
+    return vec4<f32>(0.0, 0.0, -sign(inv.z), t);
+}
+
+// The gaps between the tops of the seat backs.
+fn seat_gap(x: f32, above: f32) -> bool {
+    let edge = abs(fract(x / SEAT_PITCH + 0.5) - 0.5) * SEAT_PITCH;
+    return above > NOTCH && edge > 0.5 * SEAT_PITCH - 0.02;
+}
+
+fn seat_hit(o: vec3<f32>, d: vec3<f32>, inv: vec3<f32>, k: i32) -> vec4<f32> {
+    let z = row_z(k);
+    let y = row_floor(k);
+    let w = params.seats.z;
+    var hit = vec4<f32>(-1.0);
+    let back = box_hit(o, inv, vec3<f32>(-w, y, z - 0.07), vec3<f32>(w, y + SEAT_TOP, z + 0.07));
+    if (back.w > 0.0) {
+        let p = o + d * back.w;
+        if (!seat_gap(p.x, p.y - y)) { hit = back; }
+    }
+    let seat = box_hit(o, inv, vec3<f32>(-w, y + 0.38, z - 0.6), vec3<f32>(w, y + 0.48, z - 0.07));
+    if (seat.w > 0.0 && (hit.w < 0.0 || seat.w < hit.w)) { hit = seat; }
+    return hit;
+}
+
+// The nearest seat, floor or step closer than `far`, row by row from the
+// viewer's: each row stands on its own strip of floor ROW_PITCH deep.
+fn trace_rows(o: vec3<f32>, d: vec3<f32>, inv: vec3<f32>, far: f32) -> Hit {
+    var hit = Hit(far, vec3<f32>(0.0), 0u, 0.0);
+    let front = i32(params.env.z);
+    let back = i32(params.env.w);
+    let stage = front + 1;
+    let step = select(-1, 1, d.z < 0.0);
+    var k = clamp(i32(floor((params.seats.y + 0.07 - o.z) / ROW_PITCH)), back, stage);
+    for (var i = 0; i < 64; i++) {
+        let edge = row_z(k) + 0.07;
+        let ta = (select(edge - ROW_PITCH, -1e9, k == stage) - o.z) * inv.z;
+        let tb = (select(edge, 1e9, k == back) - o.z) * inv.z;
+        let t0 = max(min(ta, tb), 0.0);
+        let t1 = min(max(ta, tb), hit.t);
+        if (t0 >= t1) { break; }
+        let y = row_floor(k);
+        if (k < stage && min(o.y + d.y * t0, o.y + d.y * t1) < y + SEAT_TOP) {
+            let s = seat_hit(o, d, inv, k);
+            if (s.w > 0.0 && s.w < hit.t) { hit = Hit(s.w, s.xyz, 1u, 0.0); }
+        }
+        let tf = (y - o.y) * inv.y;
+        if (d.y < 0.0 && tf >= t0 && tf < hit.t) { hit = Hit(tf, vec3<f32>(0.0, 1.0, 0.0), 2u, 0.0); }
+        if (hit.t <= t1) { break; }
+        let next = k + step;
+        if (next < back || next > stage) { break; }
+        // Into a higher row: the step up.
+        let yn = row_floor(next);
+        if (o.y + d.y * t1 < yn) {
+            hit = Hit(t1, vec3<f32>(0.0, 0.0, -sign(d.z)), 3u, yn);
+            break;
+        }
+        k = next;
+    }
+    return hit;
+}
+
+// Where the ray leaves the hall through a wall or the ceiling.
+fn room_hit(o: vec3<f32>, d: vec3<f32>, inv: vec3<f32>) -> Hit {
+    let tx = (select(-params.room.x, params.room.x, d.x > 0.0) - o.x) * inv.x;
+    var hit = Hit(tx, vec3<f32>(-sign(d.x), 0.0, 0.0), 0u, 0.0);
+    let tz = (select(FRONT_WALL, params.room.z, d.z > 0.0) - o.z) * inv.z;
+    if (tz < hit.t) { hit = Hit(tz, vec3<f32>(0.0, 0.0, -sign(d.z)), select(5u, 6u, d.z > 0.0), 0.0); }
+    let ty = (params.room.y - o.y) * inv.y;
+    if (d.y > 0.0 && ty < hit.t) { hit = Hit(ty, vec3<f32>(0.0, -1.0, 0.0), 4u, 0.0); }
+    return hit;
+}
+
+// Light from the picture falling on `p` facing `n`: each region as a small
+// disc, so that it doesn't blow out what is close to it.
+fn screen_light(p: vec3<f32>, n: vec3<f32>) -> vec3<f32> {
+    var e = vec3<f32>(0.0);
+    for (var i = 0; i < 12; i++) {
+        let c = params.light_pos[i];
+        let v = c.xyz - p;
+        let r2 = dot(v, v);
+        let l = v * inverseSqrt(r2);
+        let facing = max(dot(n, l), 0.0) * max(-dot(params.light_dir[i].xyz, l), 0.0);
+        e += params.light_rgb[i].rgb * (c.w * facing / (r2 + c.w / PI));
+    }
+    return e * SCREEN_GAIN;
+}
+
+// Seams `width` wide every `period`, darker than between them; they fade
+// out where a pixel covers more than a seam, rather than shimmer.
+fn seams(x: f32, period: f32, width: f32, pixel: f32) -> f32 {
+    let dist = abs(fract(x / period + 0.5) - 0.5) * period;
+    let line = 1.0 - smoothstep(0.0, width, dist);
+    return 1.0 - 0.5 * line * (1.0 - smoothstep(width, 4.0 * width, pixel));
+}
+
+fn cinema(origin: vec3<f32>, world_dir: vec3<f32>, frag: vec2<f32>) -> vec4<f32> {
+    let o = (params.screen_inv * vec4<f32>(origin, 1.0)).xyz;
+    let d0 = normalize((params.screen_inv * vec4<f32>(world_dir, 0.0)).xyz);
+    let d = select(d0, vec3<f32>(1e-6), abs(d0) < vec3<f32>(1e-6));
+    let inv = 1.0 / d;
+    var hit = room_hit(o, d, inv);
+    let rows = trace_rows(o, d, inv, hit.t);
+    if (rows.t < hit.t) { hit = rows; }
+    let p = o + d * hit.t;
+    var n = hit.n;
+    // Roughly what one pixel covers there.
+    let pixel = hit.t * 0.0015 / max(abs(dot(n, d)), 0.2);
+    let house = params.env.y;
+    let floor_y = params.seats.x;
+    var albedo = vec3<f32>(0.03);
+    var glow = vec3<f32>(0.0);
+    switch hit.mat {
+        case 1u: {
+            // Red seats, darker towards the gaps between them.
+            let edge = abs(fract(p.x / SEAT_PITCH + 0.5) - 0.5) * 2.0;
+            albedo = vec3<f32>(0.16, 0.022, 0.03) * (1.0 - 0.45 * smoothstep(0.7, 1.0, edge));
+        }
+        case 2u: {
+            // Carpet, in shadow under the seats.
+            albedo = vec3<f32>(0.035, 0.028, 0.032);
+            let k = i32(floor((params.seats.y + 0.07 - p.z) / ROW_PITCH));
+            if (k >= i32(params.env.w) && k <= i32(params.env.z) && abs(p.x) < params.seats.z) {
+                let z = row_z(k);
+                let under = max(max(z - 0.6 - p.z, p.z - z - 0.07), 0.0);
+                albedo *= 0.35 + 0.65 * smoothstep(0.0, 0.3, under);
+            }
+        }
+        case 3u: {
+            // A step, lit along the aisles.
+            albedo = vec3<f32>(0.03, 0.024, 0.028);
+            if (abs(abs(p.x) - params.seats.z - 0.35) < 0.07 && p.y > hit.top - 0.06) {
+                glow = WARM * 0.35;
+            }
+        }
+        case 4u: {
+            // Ceiling tiles and downlights, bright with the house lights up.
+            albedo = vec3<f32>(0.02) * seams(p.x, 1.2, 0.01, pixel) * seams(p.z, 1.2, 0.01, pixel);
+            let cell = (fract(p.xz / 2.4) - 0.5) * 2.4;
+            if (length(cell) < 0.08) { glow = WARM * mix(0.006, 1.5, house); }
+        }
+        case 5u: {
+            // Black masking round the screen, red curtains beside it.
+            albedo = vec3<f32>(0.006);
+            if (abs(p.x) > 0.5 * params.screen.x + 0.3) {
+                let fold = sin(p.x * 2.0 * PI / 0.32) * (1.0 - smoothstep(0.02, 0.08, pixel));
+                n = normalize(vec3<f32>(0.6 * fold, 0.0, 1.0));
+                albedo = vec3<f32>(0.2, 0.02, 0.03) * (0.75 + 0.25 * fold);
+            }
+        }
+        case 6u: {
+            // The projection booth's window.
+            albedo = vec3<f32>(0.03);
+            if (abs(p.x) < 0.6 && abs(p.y - params.room.y + 0.8) < 0.22) {
+                glow = vec3<f32>(0.05, 0.05, 0.06) + params.glow.rgb * 0.15;
+            }
+        }
+        default: {
+            // Panelled walls, with sconces washing light up them.
+            albedo = vec3<f32>(0.04, 0.034, 0.034) * seams(p.z, 1.5, 0.012, pixel);
+            if (p.y < floor_y + 1.0) { albedo *= 0.7; }
+            let sz = clamp(round((p.z - 1.5) / 3.0), 0.0, floor((params.room.z - 2.5) / 3.0)) * 3.0 + 1.5;
+            let s = vec2<f32>(p.z - sz, p.y - floor_y - 2.0);
+            glow = WARM * mix(0.006, 0.05, house) * exp(-dot(s, s * vec2<f32>(4.0, 2.5)));
+            if (abs(s.x) < 0.07 && abs(s.y) < 0.14) { glow += WARM * mix(0.15, 0.6, house); }
+        }
+    }
+    let e = screen_light(p, n) + params.glow.rgb * BOUNCE + vec3<f32>(mix(0.004, 0.08, house));
+    var col = albedo / PI * e + glow;
+    // Dithered: dark gradients band in 8 bits.
+    let noise = fract(sin(dot(frag, vec2<f32>(12.9898, 78.233))) * 43758.5453) - 0.5;
+    col = pow(max(pow(col, vec3<f32>(1.0 / 2.2)) + noise / 255.0, vec3<f32>(0.0)), vec3<f32>(2.2));
+    return vec4<f32>(col, 1.0);
+}
+
 @fragment
 fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let eye = pc.eye;
@@ -311,6 +549,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         }
     }
     if (uv.x < 0.0) {
+        if (params.env.x > 0.5) { return cinema(origin, world_dir, in.pos.xy); }
         return params.bg_color;
     }
     let tuv = to_eye_rect(uv, eye);

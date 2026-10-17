@@ -6,6 +6,7 @@
 //! garbage list and are destroyed when the slot comes round again, by which
 //! time no submitted frame can still read them.
 
+use crate::cinema::{self, Cells};
 use crate::gpu::Gpu;
 use crate::mem::{self, Buffer, Image};
 use crate::params::{self, SceneParams, VideoParams};
@@ -165,6 +166,11 @@ pub struct Renderer {
     videos: [Option<VideoPlanes>; 2],
     video_cur: usize,
     video_gen: [u64; 2],
+    /// A cinema was drawn last frame: new frames are sampled for its light.
+    cinema: bool,
+    light_cells: Option<Cells>,
+    /// The picture's light in the cinema, eased from frame to frame.
+    light: [Vec3; cinema::LIGHTS],
     current: usize,
     recording: bool,
 }
@@ -346,6 +352,9 @@ impl Renderer {
                 videos: [None, None],
                 video_cur: 0,
                 video_gen: [0, 0],
+                cinema: false,
+                light_cells: None,
+                light: [Vec3::ZERO; cinema::LIGHTS],
                 current: 0,
                 recording: false,
             };
@@ -699,6 +708,9 @@ impl Renderer {
                     return Err(e);
                 }
             }
+        }
+        if self.cinema && (!resident || self.light_cells.is_none()) {
+            self.light_cells = Cells::sample(f);
         }
         let bound = (self.video_cur, self.video_gen[self.video_cur]);
         let slot = &mut self.slots[self.current];
@@ -1091,7 +1103,21 @@ impl Renderer {
         ];
         let slot_idx = self.current;
         let frame_desc = self.slot_video(slot_idx).map(|v| v.desc);
-        let p = params::build(video, frame_desc.as_ref(), inv);
+        self.cinema = video.environment == fp_core::view::Environment::Cinema;
+        if !self.cinema {
+            self.light_cells = None;
+        } else if let (Some(cells), Some(desc)) = (&self.light_cells, &frame_desc) {
+            // A few samples per region flicker from frame to frame; eased
+            // over a few frames they don't, and a cut still shows at once.
+            for (l, t) in self
+                .light
+                .iter_mut()
+                .zip(cells.regions(video.format.stereo, desc))
+            {
+                *l += (t - *l) * 0.3;
+            }
+        }
+        let p = params::build(video, frame_desc.as_ref(), inv, &self.light);
         // Quad vertices: two triangles per quad.
         let mut verts: Vec<QuadVertex> = Vec::with_capacity(quads.len() * 6);
         let mut sets = Vec::with_capacity(quads.len());

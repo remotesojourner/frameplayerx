@@ -305,20 +305,19 @@ pub(crate) fn apply_item_details(
                 "{base_url}/Videos/{item_id}/{media_source_id}/Subtitles/{index}/Stream.{codec}"
             );
             let mut file = crate::sidecar::subtitle_file(&location, "");
-            if let Some(name) = text(stream, "Path")
+            // The address names every file `Stream.<codec>`; without its own
+            // file name or title the player labels it by language and format.
+            file.name = text(stream, "Path")
                 .map(|p| crate::urlutil::last_segment(&p))
                 .or_else(|| text(stream, "Title"))
-                .filter(|n| !n.is_empty())
-            {
-                file.name = name;
-            }
-            file.language = text(stream, "Language").map(|l| {
-                if boolean(stream, "IsForced") == Some(true) {
-                    format!("{l}.forced")
-                } else {
-                    l
+                .unwrap_or_default();
+            let mut tag = text(stream, "Language").unwrap_or_default();
+            for (flag, word) in [("IsForced", ".forced"), ("IsHearingImpaired", ".sdh")] {
+                if boolean(stream, flag) == Some(true) {
+                    tag.push_str(word);
                 }
-            });
+            }
+            file.language = Some(tag).filter(|t| !t.is_empty());
             entry.subtitles.push(file);
         }
     }
@@ -1138,6 +1137,13 @@ mod tests {
                             "Language": "ger",
                             "IsForced": true,
                             "IsExternal": true
+                        },
+                        {
+                            "Type": "Subtitle",
+                            "Index": 5,
+                            "Codec": "subrip",
+                            "IsHearingImpaired": true,
+                            "IsExternal": true
                         }
                     ]
                 }
@@ -1180,8 +1186,13 @@ mod tests {
                 ),
                 (
                     "http://server:8096/Videos/item100/ms1/Subtitles/4/Stream.subrip",
-                    "Stream.subrip",
+                    "",
                     Some("ger.forced")
+                ),
+                (
+                    "http://server:8096/Videos/item100/ms1/Subtitles/5/Stream.subrip",
+                    "",
+                    Some(".sdh")
                 ),
             ]
         );

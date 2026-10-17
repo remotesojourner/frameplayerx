@@ -128,6 +128,13 @@ impl App {
             Cmd::TogglePassthrough => {
                 if !input.passthrough_available {
                     self.ui.toast("This headset can't show your room");
+                } else if let Some(f) = self.playback.as_ref().and_then(Playback::mask_toggled) {
+                    self.apply(Action::SetFormat(Some(f)));
+                    self.ui.toast(if f.alpha_packed {
+                        "Room on: through the video's mask"
+                    } else {
+                        "Room off"
+                    });
                 } else {
                     self.apply(Action::TogglePassthrough);
                     let flat_or_none = self

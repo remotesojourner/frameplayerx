@@ -64,6 +64,8 @@ pub struct Settings {
     pub default_view: ViewSettings,
     /// Show the real world around flat screens and the UI.
     pub passthrough: bool,
+    /// What surrounds flat screens when the real world doesn't show.
+    pub environment: fp_core::view::Environment,
     /// Resume videos where they were left.
     pub resume: bool,
     /// The format a video starts in when nothing identifies it (no
@@ -128,6 +130,7 @@ impl Default for Settings {
                 .to_string(),
             default_view: ViewSettings::default(),
             passthrough: false,
+            environment: Default::default(),
             resume: true,
             default_format: fp_core::format::VideoFormat::FALLBACK,
             auto_hide_secs: 4.0,
