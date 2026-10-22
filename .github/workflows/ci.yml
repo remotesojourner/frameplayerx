@@ -33,7 +33,7 @@ jobs:
       prerelease: ${{ steps.calc.outputs.prerelease }}
       is_release: ${{ steps.calc.outputs.is_release }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - name: Install git-cliff
@@ -90,13 +90,13 @@ jobs:
     needs: [version]
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Stamp version
         run: |
           sed -i 's/^version = .*/version = "${{ needs.version.outputs.version }}"/' crates/frameplayerx/Cargo.toml
       - name: Install Rust
         run: rustup toolchain install
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry/index/
@@ -122,7 +122,7 @@ jobs:
       # A new zig or meson builds it again.
       - name: Restore FFmpeg builds
         id: ffmpeg-cache
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v6
         with:
           path: third_party/ffmpeg
           key: ffmpeg-${{ hashFiles('tools/build-ffmpeg.sh', 'tools/requirements.txt') }}
@@ -132,7 +132,7 @@ jobs:
       # Saved right away, so a later failing step does not throw it away.
       - name: Save FFmpeg builds
         if: steps.ffmpeg-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v6
         with:
           path: third_party/ffmpeg
           key: ffmpeg-${{ hashFiles('tools/build-ffmpeg.sh', 'tools/requirements.txt') }}
@@ -162,14 +162,14 @@ jobs:
           LD_LIBRARY_PATH: ${{ github.workspace }}/third_party/ffmpeg/x86_64/lib
           VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.json
         run: tools/ui-preview.sh ui-preview
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: ui-preview
           path: ui-preview/
       - name: Package for the Steam Frame (aarch64, glibc 2.28)
         run: tools/package.sh
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: frameplayerx-aarch64
           path: dist/
@@ -190,10 +190,10 @@ jobs:
             exe: frameplayerx-install
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install Rust
         run: rustup toolchain install
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry/index/
@@ -209,7 +209,7 @@ jobs:
         run: |
           mkdir -p out
           cp "target/release/${{ matrix.exe }}" "out/${{ matrix.name }}${{ endsWith(matrix.exe, '.exe') && '.exe' || '' }}"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.name }}
           path: out/
@@ -228,16 +228,16 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: frameplayerx-aarch64
           path: dist
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           pattern: frameplayerx-install-*
           path: dist
           merge-multiple: true
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           path: src
           fetch-depth: 0

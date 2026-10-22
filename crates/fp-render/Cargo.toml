@@ -22,7 +22,7 @@ log.workspace = true
 thiserror.workspace = true
 
 [build-dependencies]
-naga = { version = "28", features = ["wgsl-in", "spv-out"] }
+naga = { version = "30", features = ["wgsl-in", "spv-out"] }
 
 [dev-dependencies]
 png = "0.18"

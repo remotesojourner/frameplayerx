@@ -35,13 +35,13 @@ fp-xr = { path = "crates/fp-xr" }
 fp-xr-loader = { path = "crates/fp-xr-loader" }
 
 ash = "0.38"
-base64 = "0.22"
+base64 = "0.23"
 crossbeam-channel = "0.5"
-egui = { version = "0.32.3", features = ["bytemuck"] }
-getrandom = "0.3"
-glam = "0.33"
+egui = { version = "0.37.0", features = ["bytemuck"] }
+getrandom = "0.4"
+glam = "0.34"
 libc = "0.2.190"
-libloading = "0.8"
+libloading = "0.9"
 log = "0.4"
 openxr = { version = "0.22.0", default-features = false }
 serde = { version = "1.0.229", features = ["derive"] }
@@ -53,7 +53,7 @@ tiny_http = "0.12"
 # webpki roots), so there is no OpenSSL anywhere in the tree.
 ureq = { version = "3.4", default-features = false }
 # Pure-Rust inflate (zlib-rs backend); no C zlib, bzip2, zstd or lzma.
-zip = { version = "7", default-features = false, features = ["deflate-flate2-zlib-rs"] }
+zip = { version = "9", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 
 [profile.release]
 lto = "thin"
