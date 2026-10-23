@@ -284,18 +284,44 @@ pub fn turned_with_picture(anchor: Mat4, yaw_deg: f32, pitch_deg: f32) -> Mat4 {
         )
 }
 
+/// The player the control bar is placed from: below a flat screen turned
+/// `picture` (yaw and pitch, degrees), so it goes along when the screen
+/// moves; in the room (`anchor`) during a 180°/360° video, whose yaw and
+/// pitch turn only the picture. Then turned by where the bar itself was
+/// moved, `bar`.
+pub fn player_frame(anchor: Mat4, flat: bool, picture: [f32; 2], bar: [f32; 2]) -> Mat4 {
+    let from = if flat {
+        turned_with_picture(anchor, picture[0], picture[1])
+    } else {
+        anchor
+    };
+    place_around(from, bar[0], bar[1], 0.0, 0.0)
+}
+
 /// Yaw-only anchor at the head position.
 pub fn anchor_from_head(position: Vec3, orientation: Quat) -> Mat4 {
     let (yaw, _, _) = orientation.to_euler(glam::EulerRot::YXZ);
     Mat4::from_rotation_translation(Quat::from_rotation_y(yaw), position)
 }
 
+/// Looking less than this far up or down, a recenter levels out: what
+/// you'd see as straight ahead (a seated glance a little up or down) puts
+/// a flat screen upright at eye height, not tilted and raised or lowered
+/// with the glance. Lying back looks further up than this.
+const LEVEL_WITHIN_DEG: f32 = 20.0;
+
 /// The anchor a recenter sets: at the head position, facing where it looks,
-/// up or down too, but never rolled.
+/// up or down too (level when nearly so, see [`LEVEL_WITHIN_DEG`]), but
+/// never rolled.
 pub fn anchor_facing(position: Vec3, orientation: Quat) -> Mat4 {
     let d = orientation * Vec3::NEG_Z;
     let yaw = (-d.x).atan2(-d.z);
     let pitch = d.y.clamp(-1.0, 1.0).asin();
+    let pitch = if pitch.abs() < LEVEL_WITHIN_DEG.to_radians() {
+        0.0
+    } else {
+        pitch
+    };
     Mat4::from_rotation_translation(
         Quat::from_rotation_y(yaw) * Quat::from_rotation_x(pitch),
         position,
@@ -807,6 +833,90 @@ mod tests {
         let m = place(a, 0.0, 2.0, 0.0, 0.0);
         let centre = m.transform_point3(Vec3::ZERO);
         assert!(((centre - head).normalize() - look * Vec3::NEG_Z).length() < 1e-5);
+    }
+
+    /// Where the control bar and the adjust panel beside it go, as the app
+    /// places them (`place_panels`): (bar, adjust panel).
+    fn player(anchor: Mat4, flat: bool, picture: [f32; 2], bar: [f32; 2]) -> (Mat4, Mat4) {
+        let from = player_frame(anchor, flat, picture, bar);
+        (
+            place(from, 0.0, 1.05, -0.42, 28.0),
+            place_around(from, -52.0, 0.0, 1.15, -0.08),
+        )
+    }
+
+    fn centre(m: Mat4) -> Vec3 {
+        m.transform_point3(Vec3::ZERO)
+    }
+
+    #[test]
+    fn a_vr_pictures_yaw_and_pitch_leave_the_controls_where_they_are() {
+        let anchor = anchor_from_head(Vec3::new(0.0, 1.2, 0.0), Quat::IDENTITY);
+        let still = player(anchor, false, [0.0, 0.0], [0.0, 0.0]);
+        let turned = player(anchor, false, [40.0, -25.0], [0.0, 0.0]);
+        assert!(
+            centre(still.0).distance(centre(turned.0)) < 1e-5,
+            "bar moved"
+        );
+        assert!(
+            centre(still.1).distance(centre(turned.1)) < 1e-5,
+            "adjust panel moved"
+        );
+    }
+
+    #[test]
+    fn the_controls_go_with_a_flat_screen_and_the_adjust_panel_with_the_bar() {
+        let anchor = anchor_from_head(Vec3::new(0.0, 1.2, 0.0), Quat::IDENTITY);
+        let (bar, adjust) = player(anchor, true, [0.0, 0.0], [0.0, 0.0]);
+        // The screen turned 30° left: the bar and adjust panel turn 30°
+        // about the viewer with it.
+        let (bar2, adjust2) = player(anchor, true, [30.0, 0.0], [0.0, 0.0]);
+        let turn = Quat::from_rotation_y(30f32.to_radians());
+        let eye = anchor.w_axis.truncate();
+        let about_eye = |p: Vec3| eye + turn * (p - eye);
+        assert!(about_eye(centre(bar)).distance(centre(bar2)) < 1e-4);
+        assert!(about_eye(centre(adjust)).distance(centre(adjust2)) < 1e-4);
+        // The bar moved on its own: the adjust panel goes along, the screen
+        // (placed from the picture, not the bar) doesn't.
+        let (bar3, adjust3) = player(anchor, true, [0.0, 0.0], [-20.0, 0.0]);
+        let moved = Quat::from_rotation_y(-20f32.to_radians());
+        assert!((eye + moved * (centre(bar) - eye)).distance(centre(bar3)) < 1e-4);
+        assert!((eye + moved * (centre(adjust) - eye)).distance(centre(adjust3)) < 1e-4);
+    }
+
+    #[test]
+    fn a_flat_screen_and_the_adjust_panel_start_upright_at_eye_height() {
+        let eye = Vec3::new(0.0, 1.2, 0.0);
+        // Recentered with a glance a little down.
+        let glance = Quat::from_rotation_x(-8f32.to_radians());
+        let anchor = anchor_facing(eye, glance);
+        let screen = place(turned_with_picture(anchor, 0.0, 0.0), 0.0, 3.0, 0.0, 0.0);
+        assert!(
+            (centre(screen).y - eye.y).abs() < 1e-4,
+            "screen not at eye height"
+        );
+        assert!(
+            screen.transform_vector3(Vec3::Y).abs_diff_eq(Vec3::Y, 1e-5),
+            "screen tilted"
+        );
+        let (_, adjust) = player(anchor, true, [0.0, 0.0], [0.0, 0.0]);
+        assert!(
+            adjust.transform_vector3(Vec3::Y).abs_diff_eq(Vec3::Y, 1e-5),
+            "adjust tilted"
+        );
+    }
+
+    #[test]
+    fn a_recenter_glancing_a_little_up_or_down_levels_out() {
+        let head = Vec3::new(0.0, 1.2, 0.0);
+        for deg in [-15.0_f32, -5.0, 10.0, 19.0] {
+            let a = anchor_facing(head, Quat::from_rotation_x(deg.to_radians()));
+            let ahead = a.transform_vector3(Vec3::NEG_Z);
+            assert!(ahead.y.abs() < 1e-5, "{deg}° not levelled: {ahead}");
+        }
+        // Lying back looks further up: that is kept.
+        let a = anchor_facing(head, Quat::from_rotation_x(60f32.to_radians()));
+        assert!(a.transform_vector3(Vec3::NEG_Z).y > 0.8);
     }
 
     #[test]

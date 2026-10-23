@@ -488,7 +488,7 @@ impl App {
                 }
                 self.playback = Some(o.playback);
                 if let Some(p) = &mut self.playback {
-                    p.place_flat(self.offsets.main);
+                    p.place_flat(self.offsets.main[0]);
                 }
                 self.ui.open_error = None;
                 self.ui.adjust_open = false;

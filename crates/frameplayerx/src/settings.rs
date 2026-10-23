@@ -103,7 +103,11 @@ pub struct Settings {
 #[serde(default)]
 pub struct PanelOffsets {
     pub main: [f32; 2],
+    /// The adjust panel, from beside the control bar.
     pub adjust: [f32; 2],
+    /// The control bar, from below a flat screen (or in front of you
+    /// during a 180°/360° video).
+    pub bar: [f32; 2],
 }
 
 impl Default for Settings {

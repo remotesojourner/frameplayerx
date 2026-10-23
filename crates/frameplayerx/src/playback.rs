@@ -609,12 +609,12 @@ impl Playback {
         }
     }
 
-    /// Puts a flat screen where the browse panel is, `at` its yaw and pitch
-    /// (degrees, left and up positive), as it opens.
-    pub fn place_flat(&mut self, at: [f32; 2]) {
+    /// Puts a flat screen the way the browse panel is turned, `yaw`
+    /// degrees (left positive), as it opens: upright, at eye height.
+    pub fn place_flat(&mut self, yaw: f32) {
         if self.format.projection == format::Projection::Flat {
             for s in [&mut self.settings, &mut self.saved_settings] {
-                [s.yaw, s.pitch] = at;
+                [s.yaw, s.pitch] = [yaw, 0.0];
             }
         }
     }
