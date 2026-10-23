@@ -110,6 +110,7 @@ mod tests {
             entry: None,
             title: None,
             start_at: None,
+            transcode: None,
         }
     }
 

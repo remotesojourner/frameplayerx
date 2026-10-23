@@ -550,7 +550,18 @@ fn seek_bar(
     actions: &mut Vec<Action>,
 ) {
     let duration = pb.player.duration().max(0.001);
-    let (rect, resp) = ui.allocate_exact_size(Vec2::new(width, 36.0), Sense::click_and_drag());
+    // A transcode the server can't start at a time plays straight through.
+    let sense = if pb.player.can_seek() {
+        Sense::click_and_drag()
+    } else {
+        Sense::hover()
+    };
+    let (rect, resp) = ui.allocate_exact_size(Vec2::new(width, 36.0), sense);
+    let resp = if pb.player.can_seek() {
+        resp
+    } else {
+        resp.on_hover_text("This transcode plays from the start, without seeking")
+    };
     let active = resp.hovered() || resp.dragged();
     let t = ui.ctx().animate_bool_with_time(resp.id, active, 0.12);
     let painter = ui.painter();
@@ -577,6 +588,7 @@ fn seek_bar(
     // Where the pointer would seek to, previewed in a lighter tone.
     if let Some(p) = resp.hover_pos()
         && !resp.dragged()
+        && pb.player.can_seek()
     {
         let hx = p.x.clamp(track.left(), track.right());
         if hx > to_x(frac) {
@@ -597,7 +609,11 @@ fn seek_bar(
     widgets::knob(painter, knob, 8.0 + t * 4.0);
 
     let to_time = |x: f32| ((x - track.left()) / track.width()).clamp(0.0, 1.0) as f64 * duration;
-    if let Some(p) = resp.hover_pos().or(resp.interact_pointer_pos()) {
+    if let Some(p) = resp
+        .hover_pos()
+        .or(resp.interact_pointer_pos())
+        .filter(|_| pb.player.can_seek())
+    {
         let tm = to_time(p.x);
         let marker = pb.markers.iter().find(|(m, _)| {
             ((m / duration) as f32 * track.width() - (p.x - track.left())).abs() < 8.0
@@ -1214,6 +1230,29 @@ fn audio_and_text(
     foreign_open: &mut bool,
     actions: &mut Vec<Action>,
 ) {
+    if !pb.transcodes.is_empty() {
+        widgets::section_label(ui, "Quality");
+        let playing = pb.transcode.as_ref().map(|t| t.id.as_str());
+        widgets::rows(ui, |r| {
+            r.row("Original", Some("The file as it is"), |ui| {
+                if radio(ui, playing.is_none()).clicked() {
+                    actions.push(Action::SelectTranscode(None));
+                }
+            });
+            for t in &pb.transcodes {
+                let detail = if t.seekable {
+                    "Transcoded by the server"
+                } else {
+                    "Transcoded by the server · plays from the start, without seeking"
+                };
+                r.row(&t.label, Some(detail), |ui| {
+                    if radio(ui, playing == Some(t.id.as_str())).clicked() {
+                        actions.push(Action::SelectTranscode(Some(t.id.clone())));
+                    }
+                });
+            }
+        });
+    }
     let info = pb.player.info();
     widgets::section_label(ui, "Audio");
     let current = pb.player.audio_stream();

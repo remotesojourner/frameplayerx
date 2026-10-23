@@ -34,6 +34,7 @@ pub mod mediabrowser;
 pub mod sidecar;
 pub mod smb;
 pub mod timeutil;
+pub mod transcode;
 pub mod urlutil;
 pub mod watch;
 pub mod webdav;
@@ -57,6 +58,7 @@ pub use mediabrowser::{
 };
 pub use sidecar::{ScriptFile, Sidecars, SubtitleFile, match_sidecars};
 pub use smb::SmbSource;
+pub use transcode::{Transcode, TranscodeCodec};
 pub use watch::{WatchEvent, WatchKind, WatchSession};
 pub use webdav::WebDavSource;
 
@@ -111,6 +113,26 @@ pub trait Source: Send + Sync {
     /// track (see [`watch`]). May ask the server, so not on the frame loop.
     fn watch_session(&self, _video: &Entry) -> Option<WatchSession> {
         None
+    }
+
+    /// The server's transcodes of `video`, the most compatible first: what
+    /// plays when the original can't. May ask the server, so not on the
+    /// frame loop.
+    fn transcodes(&self, _video: &Entry) -> Vec<Transcode> {
+        Vec::new()
+    }
+
+    /// Opens transcode `id` (from [`Source::transcodes`]) of `location`
+    /// from `start` seconds on (0 for one that isn't seekable). Jellyfin
+    /// and Emby encode the video to `codec`.
+    fn open_transcode(
+        &self,
+        location: &str,
+        id: &str,
+        _start: f64,
+        _codec: TranscodeCodec,
+    ) -> Result<Arc<dyn ByteSource>> {
+        Err(Error::NotFound(format!("transcode {id} of {location}")))
     }
 
     /// Tells the server one change in a [`Source::watch_session`].

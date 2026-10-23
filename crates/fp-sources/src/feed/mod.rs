@@ -499,6 +499,41 @@ impl Source for FeedSource {
         Ok(Arc::new(self.client.open(&url)?))
     }
 
+    fn transcodes(&self, video: &Entry) -> Vec<crate::Transcode> {
+        if is_direct_file(&video.location) {
+            return Vec::new();
+        }
+        match self.scene(&video.location, true) {
+            Ok(s) => s.transcodes(self.max_height),
+            Err(e) => {
+                log::warn!("transcodes of {}: {e}", redact(&video.location));
+                Vec::new()
+            }
+        }
+    }
+
+    /// `id` is the transcode's own address, as the scene listed it.
+    fn open_transcode(
+        &self,
+        location: &str,
+        id: &str,
+        start: f64,
+        _codec: crate::TranscodeCodec,
+    ) -> Result<Arc<dyn ByteSource>> {
+        let scene = self.scene(location, true)?;
+        let source = scene
+            .sources
+            .iter()
+            .find(|s| s.url == id && s.is_transcode())
+            .ok_or_else(|| Error::NotFound(format!("transcode of {}", redact(location))))?;
+        let url = if start > 0.0 && source.takes_start() {
+            crate::transcode::with_query(&source.url, "start", &format!("{start:.3}"))
+        } else {
+            source.url.clone()
+        };
+        Ok(crate::transcode::Streamed::wrap(self.client.open(&url)?))
+    }
+
     fn details(&self, entry: &Entry) -> Result<Entry> {
         if entry.kind != EntryKind::Video || is_direct_file(&entry.location) {
             return Ok(entry.clone());
@@ -595,6 +630,29 @@ fn find_group(groups: Vec<SceneGroup>, name: &str, location: &str) -> Result<Vec
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn transcodes_are_listed_the_one_that_fits_first() {
+        let v = json!({"title": "A", "encodings": [
+            {"name": "direct", "videoSources": [{"resolution": 2880, "url": "https://vr/f.mp4"}]},
+            {"name": "transcoding", "videoSources": [
+                {"resolution": 720, "url": "https://vr/scene/1/stream.mp4?resolution=STANDARD_HD"},
+                {"resolution": 2160, "url": "https://vr/scene/1/stream.mp4?resolution=FOUR_K"},
+                {"resolution": 1080, "url": "https://vr/other/1080"}
+            ]}
+        ]});
+        let s = deovr::parse_deovr_scene(&v, "https://vr/");
+        let t = s.transcodes(Some(1440));
+        let labels: Vec<&str> = t.iter().map(|t| t.label.as_str()).collect();
+        assert_eq!(labels, ["1080p", "720p", "2160p"]);
+        // Stash's take a start time; an address of unknown kind doesn't.
+        assert!(!t[0].seekable && t[1].seekable && t[2].seekable);
+        assert_eq!(
+            t[1].id,
+            "https://vr/scene/1/stream.mp4?resolution=STANDARD_HD"
+        );
+        assert!(s.transcodes(None)[0].label == "2160p");
+    }
 
     #[test]
     fn the_file_comes_before_the_servers_transcode() {

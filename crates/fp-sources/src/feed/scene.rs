@@ -29,6 +29,18 @@ impl MediaSource {
     pub fn is_transcode(&self) -> bool {
         self.label.to_ascii_lowercase().contains("transcod")
     }
+
+    /// A transcode the server starts at a time given as `start=<seconds>`:
+    /// Stash's (`…/stream.mp4?resolution=FULL_HD`).
+    pub fn takes_start(&self) -> bool {
+        let (path, query) = self.url.split_once('?').unwrap_or((&self.url, ""));
+        let file = path.rsplit('/').next().unwrap_or_default();
+        self.is_transcode()
+            && file.starts_with("stream")
+            && query
+                .split('&')
+                .any(|p| p.to_ascii_lowercase().starts_with("resolution="))
+    }
 }
 
 /// Everything a feed says about one scene.
@@ -90,6 +102,25 @@ impl SceneInfo {
         tallest(false)
             .or_else(|| tallest(true))
             .or_else(|| self.sources.iter().min_by_key(|s| (s.is_transcode(), h(s))))
+    }
+
+    /// The server's transcodes, the tallest not above `max_height` first,
+    /// then the rest tallest first.
+    pub fn transcodes(&self, max_height: Option<u32>) -> Vec<crate::Transcode> {
+        let mut found: Vec<&MediaSource> =
+            self.sources.iter().filter(|s| s.is_transcode()).collect();
+        let fits = |s: &MediaSource| max_height.is_none_or(|m| s.height.unwrap_or(0) <= m);
+        found.sort_by_key(|s| (!fits(s), std::cmp::Reverse(s.height.unwrap_or(0))));
+        found.dedup_by(|a, b| a.url == b.url);
+        found
+            .into_iter()
+            .map(|s| crate::Transcode {
+                id: s.url.clone(),
+                label: crate::transcode::height_label(s.height),
+                height: s.height,
+                seekable: s.takes_start(),
+            })
+            .collect()
     }
 
     /// Copies the scene's details into a listing entry (keeping its

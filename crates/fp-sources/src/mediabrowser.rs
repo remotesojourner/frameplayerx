@@ -15,6 +15,7 @@ use crate::error::{Error, Result};
 use crate::http::{HttpClient, HttpOptions, HttpReply};
 use crate::json::{array, boolean, get, num, text, uint};
 use crate::sidecar::Sidecars;
+use crate::transcode::{Streamed, Transcode, TranscodeCodec, height_label, with_query};
 use crate::urlutil::{encode_form_value, redact};
 use crate::watch::{WatchEvent, WatchKind, WatchSession};
 use fp_core::format::{Projection, StereoLayout, VideoFormat, detect_from_name};
@@ -398,6 +399,103 @@ pub(crate) fn apply_item_details(
     }
 }
 
+/// Heights offered for a transcode below the video's own.
+const TRANSCODE_HEIGHTS: [u32; 4] = [2160, 1440, 1080, 720];
+
+/// The heights a video `height` pixels tall can be transcoded to: its own,
+/// then [`TRANSCODE_HEIGHTS`] below it; the tallest not above `max_height`
+/// first, then the taller ones.
+pub(crate) fn transcode_heights(height: Option<u32>, max_height: Option<u32>) -> Vec<u32> {
+    let mut heights: Vec<u32> = match height {
+        Some(h) => std::iter::once(h)
+            .chain(TRANSCODE_HEIGHTS.into_iter().filter(|t| *t < h))
+            .collect(),
+        None => TRANSCODE_HEIGHTS.to_vec(),
+    };
+    let fits = |h: u32| max_height.is_none_or(|m| h <= m);
+    heights.sort_by_key(|h| (!fits(*h), std::cmp::Reverse(*h)));
+    heights
+}
+
+/// The bitrate asked for a transcode `height` pixels tall, bits a second.
+fn transcode_bitrate(height: u32) -> u64 {
+    match height {
+        h if h > 2880 => 120_000_000,
+        h if h > 2160 => 80_000_000,
+        h if h > 1440 => 40_000_000,
+        h if h > 1080 => 20_000_000,
+        h if h > 720 => 12_000_000,
+        _ => 6_000_000,
+    }
+}
+
+/// What the player takes, as a MediaBrowser device profile: no direct play,
+/// and a transcode to MPEG-TS over HTTP (one stream, no playlist) in
+/// `codec`, at most `height` pixels tall. A server that doesn't encode the
+/// first codec listed uses the next; video already in a codec it may keep
+/// (and within the limits) is copied.
+pub(crate) fn transcode_profile(height: u32, codec: TranscodeCodec, bitrate: u64) -> Value {
+    let condition = |property: &str, value: String| {
+        serde_json::json!({
+            "Condition": "LessThanEqual",
+            "Property": property,
+            "Value": value,
+            "IsRequired": false,
+        })
+    };
+    let codec_profiles: Vec<Value> = [("hevc", 10), ("h264", 8)]
+        .into_iter()
+        .map(|(name, depth)| {
+            serde_json::json!({
+                "Type": "Video",
+                "Codec": name,
+                "Conditions": [
+                    condition("Height", height.to_string()),
+                    condition("VideoBitDepth", depth.to_string()),
+                ],
+            })
+        })
+        .collect();
+    // Subtitles come as files beside the video, never burnt in.
+    let subtitle_profiles: Vec<Value> = ["srt", "subrip", "ass", "ssa", "vtt"]
+        .iter()
+        .map(|f| serde_json::json!({"Format": f, "Method": "External"}))
+        .collect();
+    serde_json::json!({
+        "Name": CLIENT_NAME,
+        "MaxStreamingBitrate": bitrate,
+        "MaxStaticBitrate": bitrate,
+        "DirectPlayProfiles": [],
+        "TranscodingProfiles": [{
+            "Container": "ts",
+            "Type": "Video",
+            "VideoCodec": codec.codecs(),
+            "AudioCodec": "aac,ac3,eac3,mp3",
+            "Protocol": "http",
+            "Context": "Streaming",
+            "MaxAudioChannels": "6",
+        }],
+        "CodecProfiles": codec_profiles,
+        "ContainerProfiles": [],
+        "SubtitleProfiles": subtitle_profiles,
+    })
+}
+
+/// The transcode a `PlaybackInfo` answer offers: of media source `version`
+/// when given, else the first that has one.
+pub(crate) fn transcoding_url(v: &Value, version: Option<&str>) -> Option<String> {
+    let sources = array(v, "MediaSources");
+    let url = |ms: &Value| text(ms, "TranscodingUrl");
+    version
+        .and_then(|id| {
+            sources
+                .iter()
+                .find(|ms| text(ms, "Id").as_deref() == Some(id))
+        })
+        .and_then(url)
+        .or_else(|| sources.iter().find_map(url))
+}
+
 /// A Jellyfin or Emby media server browsed via the MediaBrowser REST API.
 pub struct MediaBrowserSource {
     id: String,
@@ -631,6 +729,31 @@ impl MediaBrowserSource {
         let url = format!("{}{}", self.base_url, path_and_query);
         serde_json::from_slice(&reply.body)
             .map_err(|e| Error::invalid(&url, format!("invalid JSON: {e}")))
+    }
+
+    /// Sends an authenticated POST request with a JSON body and reads the
+    /// JSON answer.
+    fn api_post_json_reply(&self, path: &str, body: &Value) -> Result<Value> {
+        let json_bytes =
+            serde_json::to_vec(body).map_err(|e| Error::invalid(path, e.to_string()))?;
+        let reply = self.api_request("POST", path, Some(&json_bytes))?;
+        let url = format!("{}{}", self.base_url, path);
+        serde_json::from_slice(&reply.body)
+            .map_err(|e| Error::invalid(&url, format!("invalid JSON: {e}")))
+    }
+
+    /// The version of the item `id` that plays from `location`: the one it
+    /// names, the one chosen, else the tallest that fits (`media_sources`).
+    fn playing_version<'a>(
+        &self,
+        location: &str,
+        id: &str,
+        media_sources: &'a [Value],
+    ) -> Option<&'a Value> {
+        let chosen = location_version(location)
+            .map(str::to_string)
+            .or_else(|| self.chosen_version(id));
+        pick_media_source(media_sources, chosen.as_deref(), self.max_height)
     }
 
     /// Sends an authenticated POST request with a JSON body.
@@ -910,6 +1033,92 @@ impl Source for MediaBrowserSource {
 
     fn parent(&self, location: &str) -> Option<String> {
         lock(&self.parents).get(location).cloned()
+    }
+
+    /// Heights to transcode the version that plays to: its own, then the
+    /// usual ones below it, the tallest within the maximum height first.
+    /// Every one starts at a time, so seeks.
+    fn transcodes(&self, video: &Entry) -> Vec<Transcode> {
+        let Ok(id) = item_id(&video.location) else {
+            return Vec::new();
+        };
+        let height = self.client().ok().and_then(|(_, user)| {
+            let v = self
+                .api_get_json(&format!("/Users/{user}/Items/{id}?Fields=MediaSources"))
+                .ok()?;
+            self.playing_version(&video.location, &id, array(&v, "MediaSources"))
+                .and_then(media_source_height)
+        });
+        transcode_heights(height, self.max_height)
+            .into_iter()
+            .map(|h| Transcode {
+                id: h.to_string(),
+                label: height_label(Some(h)),
+                height: Some(h),
+                seekable: true,
+            })
+            .collect()
+    }
+
+    /// Asks the server how it would stream the version that plays to a
+    /// player that only takes `codec` in MPEG-TS at most `id` pixels tall
+    /// (`PlaybackInfo` with a device profile), and opens its answer from
+    /// `start` on.
+    fn open_transcode(
+        &self,
+        location: &str,
+        id: &str,
+        start: f64,
+        codec: TranscodeCodec,
+    ) -> Result<Arc<dyn ByteSource>> {
+        let item = item_id(location)?;
+        let height: u32 = id
+            .parse()
+            .map_err(|_| Error::invalid(location, format!("no transcode {id}")))?;
+        let (client, user_id) = self.client()?;
+        let version = location_version(location)
+            .map(str::to_string)
+            .or_else(|| self.chosen_version(&item));
+        let bitrate = transcode_bitrate(height);
+        let ticks = seconds_to_ticks(start.max(0.0));
+        let mut path = format!(
+            "/Items/{}/PlaybackInfo?UserId={user_id}&StartTimeTicks={ticks}\
+            &IsPlayback=true&AutoOpenLiveStream=true&MaxStreamingBitrate={bitrate}",
+            encode_form_value(&item)
+        );
+        if let Some(ms) = &version {
+            path.push_str(&format!("&MediaSourceId={}", encode_form_value(ms)));
+        }
+        let body = serde_json::json!({
+            "UserId": user_id,
+            "MaxStreamingBitrate": bitrate,
+            "StartTimeTicks": ticks,
+            "MediaSourceId": version,
+            "EnableDirectPlay": false,
+            "EnableDirectStream": false,
+            "EnableTranscoding": true,
+            "AllowVideoStreamCopy": true,
+            "AllowAudioStreamCopy": true,
+            "DeviceProfile": transcode_profile(height, codec, bitrate),
+        });
+        let v = self.api_post_json_reply(&path, &body)?;
+        let relative = transcoding_url(&v, version.as_deref()).ok_or_else(|| {
+            Error::NotFound(format!(
+                "{} offered no transcode of {}",
+                self.name,
+                redact(location)
+            ))
+        })?;
+        let mut url = with_query(
+            &format!("{}{relative}", self.base_url),
+            "StartTimeTicks",
+            &ticks.to_string(),
+        );
+        let token = self.auth_credentials().map(|(t, _)| t).unwrap_or_default();
+        if !token.is_empty() && !url.to_ascii_lowercase().contains("api_key=") {
+            url = with_query(&url, "api_key", &token);
+        }
+        Ok(Streamed::wrap(client.open(&url)?))
     }
 
     fn details(&self, entry: &Entry) -> Result<Entry> {
@@ -1448,6 +1657,39 @@ mod tests {
         let mut e = Entry::new("Other", "mb:http://s#item=m2", EntryKind::Video);
         apply_item_details(&mut e, &one, "http://s", "m2", None, None);
         assert_eq!(e.location, "mb:http://s#item=m2");
+    }
+
+    #[test]
+    fn transcodes_go_down_from_the_videos_height() {
+        assert_eq!(transcode_heights(Some(2048), None), [2048, 1440, 1080, 720]);
+        assert_eq!(
+            transcode_heights(Some(4096), Some(2160)),
+            [2160, 1440, 1080, 720, 4096]
+        );
+        assert_eq!(transcode_heights(None, Some(1080)), [1080, 720, 2160, 1440]);
+        assert_eq!(transcode_heights(Some(480), None), [480]);
+    }
+
+    #[test]
+    fn the_transcode_offered_for_the_version_asked() {
+        let v = json!({"MediaSources": [
+            {"Id": "a", "TranscodingUrl": "/videos/m/stream.ts?MediaSourceId=a"},
+            {"Id": "b", "TranscodingUrl": "/videos/m/stream.ts?MediaSourceId=b"}
+        ]});
+        assert_eq!(
+            transcoding_url(&v, Some("b")).as_deref(),
+            Some("/videos/m/stream.ts?MediaSourceId=b")
+        );
+        assert_eq!(
+            transcoding_url(&v, None).as_deref(),
+            Some("/videos/m/stream.ts?MediaSourceId=a")
+        );
+        assert_eq!(
+            transcoding_url(&json!({"MediaSources": [{"Id": "a"}]}), None),
+            None
+        );
+        let profile = transcode_profile(1080, TranscodeCodec::HevcOrH264, 12_000_000);
+        assert_eq!(profile["TranscodingProfiles"][0]["VideoCodec"], "hevc,h264");
     }
 
     #[test]

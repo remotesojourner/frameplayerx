@@ -119,6 +119,7 @@ impl App {
                 }
             }
             Action::SelectSubtitleFile(i) => self.select_subtitle_file(i),
+            Action::SelectTranscode(id) => self.select_transcode(id),
             Action::SetFavorite(id, f) => {
                 let r = self.services.library.set_favorite(id, f);
                 self.library_changed("the favorite", r);

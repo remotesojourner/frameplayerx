@@ -28,6 +28,34 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
+/// Opens a server's transcode again from a time (seconds into the video).
+pub type Restart =
+    Arc<dyn Fn(f64) -> std::result::Result<Arc<dyn ByteSource>, String> + Send + Sync>;
+
+/// A stream a server makes as it sends it (a transcode): it starts at
+/// [`Timeline::start`], doesn't know the video's length, and seeks by
+/// opening it again from the time asked ([`Timeline::restart`]).
+#[derive(Clone)]
+pub struct Timeline {
+    /// Where in the video the stream opened starts, seconds.
+    pub start: f64,
+    /// The whole video's length in seconds (0 when unknown).
+    pub duration: f64,
+    /// Opens it again from a time; `None` when the server can't, and
+    /// seeking does nothing.
+    pub restart: Option<Restart>,
+}
+
+impl std::fmt::Debug for Timeline {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Timeline")
+            .field("start", &self.start)
+            .field("duration", &self.duration)
+            .field("restart", &self.restart.is_some())
+            .finish()
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct PlayerConfig {
     pub hw_decode: HwDecode,
@@ -42,6 +70,8 @@ pub struct PlayerConfig {
     pub start_at: f64,
     pub start_paused: bool,
     pub volume: f32,
+    /// Set for a server's transcode; [`Self::start_at`] is then ignored.
+    pub timeline: Option<Timeline>,
 }
 
 impl Default for PlayerConfig {
@@ -55,6 +85,7 @@ impl Default for PlayerConfig {
             start_at: 0.0,
             start_paused: false,
             volume: 1.0,
+            timeline: None,
         }
     }
 }
@@ -179,6 +210,8 @@ struct Shared {
     has_audio: AtomicBool,
     duration: f64,
     video_fps: f64,
+    /// Seeks are carried out (not a transcode the server can't restart).
+    seekable: bool,
 }
 
 impl Shared {
@@ -216,8 +249,14 @@ impl Player {
         subtitle: impl FnOnce(&MediaInfo) -> Option<usize>,
     ) -> Result<Player> {
         let quit = Arc::new(AtomicBool::new(false));
-        let input = Input::open(src, name, quit.clone())?;
-        let info = read_info(&input);
+        let mut input = Input::open(src, name, quit.clone())?;
+        if let Some(tl) = &config.timeline {
+            input.start_at(tl.start);
+        }
+        let mut info = read_info(&input);
+        if let Some(tl) = config.timeline.as_ref().filter(|t| t.duration > 0.0) {
+            info.duration = tl.duration;
+        }
         if info.video.is_none() && info.audio.is_none() {
             return Err(Error::NoStream("video or audio"));
         }
@@ -260,6 +299,7 @@ impl Player {
                 .map(|v| v.fps)
                 .filter(|f| *f > 0.0)
                 .unwrap_or(30.0),
+            seekable: config.timeline.as_ref().is_none_or(|t| t.restart.is_some()),
         });
 
         // Decoders are opened here so errors surface from open().
@@ -290,7 +330,7 @@ impl Player {
             .collect();
 
         let mut threads = Vec::new();
-        if config.start_at > 0.0 {
+        if config.start_at > 0.0 && config.timeline.is_none() {
             shared.ctl().seek = Some(SeekRequest {
                 target: config.start_at,
                 precise: true,
@@ -404,6 +444,9 @@ impl Player {
     /// scrubbing).
     pub fn seek(&self, target: f64, precise: bool) {
         let s = &self.shared;
+        if !s.seekable {
+            return;
+        }
         let target = if s.duration > 0.0 {
             target.clamp(0.0, (s.duration - 0.05).max(0.0))
         } else {
@@ -415,6 +458,12 @@ impl Player {
         s.ended.store(false, Ordering::Release);
         s.ctl_cv.notify_all();
         s.frames_cv.notify_all();
+    }
+
+    /// Whether [`Self::seek`] does anything: not in a server's transcode
+    /// that can't be opened from another time.
+    pub fn can_seek(&self) -> bool {
+        self.shared.seekable
     }
 
     pub fn seek_relative(&self, delta: f64) {
@@ -664,12 +713,21 @@ fn demux_thread(
 ) {
     let mut subs = DemuxPtrs(subtitle_decoders);
     let mut pkt = Packet::new();
-    let time_bases: Vec<f64> = input
-        .streams()
-        .iter()
-        // SAFETY: stream pointers are valid while input lives.
-        .map(|&st| unsafe { crate::q2d((*st).time_base) })
-        .collect();
+    let time_bases = |input: &Input| -> Vec<f64> {
+        input
+            .streams()
+            .iter()
+            // SAFETY: stream pointers are valid while input lives.
+            .map(|&st| unsafe { crate::q2d((*st).time_base) })
+            .collect()
+    };
+    let mut time_base = time_bases(&input);
+    // The decoders count time from the first input's origin; a transcode
+    // opened again from another time has its own, and its packets are
+    // moved onto the first one's timeline by this many seconds.
+    let origin = input.origin();
+    let mut shift = 0.0f64;
+    let restart = cfg.timeline.as_ref().and_then(|t| t.restart.clone());
     let mut last_video_ts = 0.0f64;
     let mut first_video_ts: Option<f64> = None;
     // After a seek, video waits for a keyframe so every decoder starts
@@ -689,7 +747,25 @@ fn demux_thread(
             sh.apkts.clear();
             sh.frames().clear();
             *lock(&sh.seek_floor) = req.precise.then_some((serial, req.target));
-            if let Err(e) = input.seek(req.target) {
+            if let Some(restart) = &restart {
+                match reopen(restart, &input, req.target, sh.quit.clone()) {
+                    Ok(next) => {
+                        input = next;
+                        time_base = time_bases(&input);
+                        shift = origin - input.origin();
+                    }
+                    Err(e) => {
+                        if sh.quit.load(Ordering::Acquire) {
+                            break;
+                        }
+                        sh.fail(format!("opening the stream at {:.0} s: {e}", req.target));
+                        let serial = sh.serial();
+                        sh.vpkts.push(serial, None);
+                        sh.apkts.push(serial, None);
+                        sh.demux_eof.store(true, Ordering::Release);
+                    }
+                }
+            } else if let Err(e) = input.seek(req.target) {
                 log::warn!("seek to {:.2}: {e}", req.target);
             }
             for (_, d) in subs.0.iter_mut() {
@@ -728,6 +804,18 @@ fn demux_thread(
                 read_errors = 0;
                 let serial = sh.serial();
                 let idx = pkt.stream_index();
+                if shift != 0.0
+                    && let Some(&tb) = time_base.get(idx)
+                {
+                    // SAFETY: valid packet.
+                    let p = unsafe { &mut *pkt.as_ptr() };
+                    let by = (shift / tb).round() as i64;
+                    for ts in [&mut p.pts, &mut p.dts] {
+                        if *ts != ff::AV_NOPTS_VALUE {
+                            *ts += by;
+                        }
+                    }
+                }
                 if Some(idx) == video_index {
                     // SAFETY: valid packet.
                     let p = unsafe { &*pkt.as_ptr() };
@@ -736,8 +824,7 @@ fn demux_thread(
                     } else {
                         p.dts
                     };
-                    let t = (ts != ff::AV_NOPTS_VALUE)
-                        .then(|| ts as f64 * time_bases[idx] - input.origin());
+                    let t = (ts != ff::AV_NOPTS_VALUE).then(|| ts as f64 * time_base[idx] - origin);
                     if let Some(limit) = await_key {
                         let key = p.flags & ff::AV_PKT_FLAG_KEY as i32 != 0;
                         if !key && t.is_none_or(|t| t <= limit) {
@@ -787,6 +874,22 @@ fn demux_thread(
             }
         }
     }
+}
+
+/// A server's transcode opened again from `at`, with the streams `current`
+/// has (the decoders were made for those).
+fn reopen(restart: &Restart, current: &Input, at: f64, quit: Arc<AtomicBool>) -> Result<Input> {
+    let src = restart(at).map_err(Error::Unsupported)?;
+    let mut next = Input::open(src, &current.name, quit)?;
+    next.start_at(at);
+    if next.streams().len() != current.streams().len() {
+        return Err(Error::Unsupported(format!(
+            "the server sent {} streams instead of {}",
+            next.streams().len(),
+            current.streams().len()
+        )));
+    }
+    Ok(next)
 }
 
 fn video_thread(sh: Arc<Shared>, mut dec: Decoder, cap: usize) {
@@ -1100,6 +1203,75 @@ mod tests {
         assert_eq!(at(&[0.90, 0.93, 0.96, 0.98, 1.2], 1.0), Some(2));
         // Everything due is too late: the newest.
         assert_eq!(at(&[0.80, 0.85, 0.90, 1.2], 1.0), Some(2));
+    }
+
+    /// A transcode of a 2 s clip (as MPEG-TS starting 10 s in, as servers'
+    /// streams may), opened at `start` of a 300 s video.
+    fn transcode(start: f64, restart: Option<Restart>) -> Player {
+        Player::open(
+            crate::ts_fixture::h264_aac_ts(10.0),
+            "stream.ts",
+            PlayerConfig {
+                start_paused: true,
+                start_at: 42.0,
+                timeline: Some(Timeline {
+                    start,
+                    duration: 300.0,
+                    restart,
+                }),
+                ..cfg()
+            },
+            |_| None,
+        )
+        .unwrap()
+    }
+
+    /// The first frame shown after opening or seeking.
+    fn first_frame(p: &Player) -> f64 {
+        run(p, 3.0, |p, f| {
+            f.is_some() && p.state() != PlayerState::Buffering
+        });
+        p.current_frame().expect("a frame").pts
+    }
+
+    #[test]
+    fn a_transcode_starts_where_opened_and_seeks_by_opening_again() {
+        let asked = Arc::new(Mutex::new(Vec::new()));
+        let restart: Restart = {
+            let asked = asked.clone();
+            Arc::new(move |t| {
+                lock(&asked).push(t);
+                Ok(crate::ts_fixture::h264_aac_ts(10.0) as Arc<dyn ByteSource>)
+            })
+        };
+        let p = transcode(100.0, Some(restart));
+        assert!(p.can_seek());
+        assert_eq!(p.duration(), 300.0);
+        // Its own start, not start_at (the stream already begins there).
+        let t = first_frame(&p);
+        assert!((t - 100.0).abs() < 0.1, "first frame at {t}");
+        assert!(lock(&asked).is_empty());
+
+        p.seek(200.0, true);
+        // The frame before the seek shows until the stream opened again
+        // sends its first.
+        run(&p, 3.0, |p, f| {
+            f.is_some_and(|f| f.pts > 150.0) && p.state() != PlayerState::Buffering
+        });
+        let t = p.current_frame().expect("a frame").pts;
+        assert!((t - 200.0).abs() < 0.1, "after seeking, first frame at {t}");
+        assert_eq!(*lock(&asked), [200.0]);
+        assert!((p.position() - 200.0).abs() < 0.1);
+    }
+
+    #[test]
+    fn a_transcode_that_cannot_restart_does_not_seek() {
+        let p = transcode(0.0, None);
+        assert!(!p.can_seek());
+        let t = first_frame(&p);
+        assert!(t.abs() < 0.1, "first frame at {t}");
+        p.seek(120.0, true);
+        assert!(p.position() < 1.0, "moved to {}", p.position());
     }
 
     #[test]

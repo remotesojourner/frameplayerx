@@ -93,6 +93,8 @@ pub struct Settings {
     pub panel_offsets: PanelOffsets,
     /// How folders are ordered when browsing a source.
     pub browse_sort: fp_sources::EntrySort,
+    /// What Jellyfin and Emby transcode video to.
+    pub transcode_codec: fp_sources::TranscodeCodec,
     /// Sources locked with a PIN: source id to the PIN's hash (see
     /// [`crate::pin`]). Left out of the file when empty.
     #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
@@ -141,6 +143,7 @@ impl Default for Settings {
             controls: crate::bindings::Bindings::default(),
             panel_offsets: PanelOffsets::default(),
             browse_sort: fp_sources::EntrySort::default(),
+            transcode_codec: fp_sources::TranscodeCodec::default(),
             source_pins: Default::default(),
         }
     }

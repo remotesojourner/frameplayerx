@@ -90,6 +90,13 @@ impl Input {
         self.origin
     }
 
+    /// Makes the stream's first moment `start` seconds into the video: a
+    /// server's transcode opened from that time on starts its own clock at
+    /// 0 (or wherever the container does).
+    pub(crate) fn start_at(&mut self, start: f64) {
+        self.origin -= start;
+    }
+
     /// The earliest start of an audio or video stream, when it is positive.
     /// Other streams don't count: a subtitle file's starts at its first
     /// cue. A start below 0 is an encoder's priming and is kept.

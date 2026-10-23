@@ -270,6 +270,25 @@ fn playback(ui: &mut egui::Ui, v: &mut View) {
             " s",
             0,
         );
+        use fp_sources::TranscodeCodec as C;
+        r.row(
+            "Jellyfin and Emby transcodes",
+            Some(match s.transcode_codec {
+                C::HevcOrH264 => {
+                    "HEVC, half the size of H.264 at the same quality; H.264 from a \
+                     server that doesn't encode HEVC."
+                }
+                C::H264 => "H.264, which every server encodes, at about twice the bitrate.",
+            }),
+            |ui| {
+                // Right to left: HEVC shows first.
+                for (c, label) in [(C::H264, "H.264"), (C::HevcOrH264, "HEVC")] {
+                    if widgets::chip(ui, label, s.transcode_codec == c).clicked() {
+                        s.transcode_codec = c;
+                    }
+                }
+            },
+        );
     });
     heading(ui, "Default format");
     note(

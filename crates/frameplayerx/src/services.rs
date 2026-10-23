@@ -74,6 +74,12 @@ impl Opener {
         errors
     }
 
+    /// Adds a source made in a test.
+    #[cfg(test)]
+    pub fn insert_source(&self, source: Arc<dyn Source>) {
+        write(&self.sources).insert(source.id().to_string(), source);
+    }
+
     pub fn source(&self, id: &str) -> Option<Arc<dyn Source>> {
         read(&self.sources).get(id).cloned()
     }

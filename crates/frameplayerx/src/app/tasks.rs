@@ -702,6 +702,21 @@ impl App {
         });
     }
 
+    /// Opens the video playing again as the server's transcode `id` (the
+    /// original for `None`), from where it is; the queue stays.
+    pub(super) fn select_transcode(&mut self, id: Option<String>) {
+        let Some(p) = &self.playback else {
+            return;
+        };
+        if p.transcode.as_ref().map(|t| &t.id) == id.as_ref() {
+            return;
+        }
+        let mut req = p.request.clone();
+        req.transcode = id;
+        req.start_at = Some(p.player.position());
+        self.open_request(req);
+    }
+
     /// Gives up on a video that has been opening for [`OPEN_TIMEOUT`]: says
     /// so, and closes it if it opens after all (its answer is stale then).
     pub(super) fn give_up_slow_open(&mut self) {

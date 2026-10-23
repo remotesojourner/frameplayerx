@@ -272,6 +272,30 @@ the sign-in expired) is noted in frameplayerx.log and not sent again.
 DeoVR feeds, DLNA, network shares and folders keep no watch state on the
 server: their resume points, favorites and ratings stay on the headset.
 
+### Server transcodes
+
+Jellyfin, Emby, DeoVR feeds and HereSphere APIs (Stash among them) can
+convert a video as they stream it. FramePlayerX plays the file itself;
+when the file is in a format it can't play, it switches to the server's
+transcode on its own and says so under the controls.
+
+While a video from one of these servers plays, **⚙** › **Audio & subs** ›
+**Quality** lists *Original* and the transcodes on offer: for Jellyfin and
+Emby the video's own height and 2160p, 1440p, 1080p and 720p below it,
+the tallest within the source's maximum height first; for a feed, the
+transcodes it lists. Pick one and the video carries on from where it was.
+
+A transcode seeks by asking the server to start again from the new time,
+which takes a moment longer than seeking a file. A feed's transcode that
+can't start at a time (anything but Stash's) plays from the beginning and
+can't be seeked.
+
+**Settings** › **Playback** › *Jellyfin and Emby transcodes* chooses what
+those servers convert to: **HEVC**, about half the size of H.264 at the
+same quality (a server that doesn't encode HEVC sends H.264), or
+**H.264**, which every server encodes. A feed's transcodes come in the
+codec its server chose.
+
 ### Libraries
 
 A library is a folder of videos, on the headset or on a microSD card or USB

@@ -15,6 +15,8 @@ use fp_library::{Library, MediaId, SessionId};
 use fp_media::{Cue, Player, PlayerConfig, PlayerState, StreamInfo};
 use fp_sources::sidecar::subtitle_file;
 use fp_sources::urlutil::last_segment;
+use fp_sources::{Source, Transcode};
+use std::sync::Arc;
 use std::sync::Mutex;
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -29,6 +31,9 @@ pub struct OpenRequest {
     pub title: Option<String>,
     /// Start here instead of the saved resume position.
     pub start_at: Option<f64>,
+    /// Play the server's transcode with this id ([`Transcode::id`]) instead
+    /// of the original.
+    pub transcode: Option<String>,
 }
 
 impl OpenRequest {
@@ -76,6 +81,10 @@ pub struct Playback {
     decode_check: (Instant, u64, u64, u64),
     /// Tells the server the video came from how watching it goes.
     watch: Option<Watch>,
+    /// The server's transcodes of the video, the most compatible first.
+    pub transcodes: Vec<Transcode>,
+    /// The one playing; `None` for the original.
+    pub transcode: Option<Transcode>,
 }
 
 /// The result of opening on a background thread.
@@ -183,9 +192,6 @@ pub fn open(
         e
     };
 
-    let src = opener
-        .open_in(req.source_id.as_deref(), &location)
-        .map_err(failed)?;
     // A server that keeps resume points knows where the video was left on
     // any device; the library only where it was left here.
     let start_at = req
@@ -211,18 +217,87 @@ pub fn open(
         source.clone(),
         settings.haptics_enabled,
     );
-    let mut pick = Pick::Off;
-    let player = Player::open(src, &name, player_config(settings, start_at), |info| {
-        pick = subtitles::choose(
-            settings.subtitles,
-            &settings.subtitle_language,
-            info,
-            &subs,
-            &name,
-        );
-        pick.stream()
-    })
-    .map_err(|e| failed(format!("{name}: {e}")))?;
+    let transcodes = match &source {
+        Some(src) => {
+            let video = entry
+                .clone()
+                .unwrap_or_else(|| Entry::new(name.clone(), location.clone(), EntryKind::Video));
+            src.transcodes(&video)
+        }
+        None => Vec::new(),
+    };
+    let duration = entry
+        .as_ref()
+        .and_then(|e| e.duration)
+        .or_else(|| record.as_ref().and_then(|r| r.duration))
+        .unwrap_or(0.0);
+    let start = |config: PlayerConfig, src| {
+        let mut pick = Pick::Off;
+        Player::open(src, &name, config, |info| {
+            pick = subtitles::choose(
+                settings.subtitles,
+                &settings.subtitle_language,
+                info,
+                &subs,
+                &name,
+            );
+            pick.stream()
+        })
+        .map(|p| (p, pick))
+    };
+    // From where it was asked to start when the server can start it there
+    // (and so seek), else from the beginning.
+    let transcoded = |t: &Transcode| -> Result<(Player, Pick), String> {
+        let src = source
+            .clone()
+            .ok_or_else(|| format!("{name}: no source to transcode it"))?;
+        let restart = transcode_restart(src, &location, t, settings.transcode_codec);
+        let first = if t.seekable { start_at } else { 0.0 };
+        let fail = |e: String| format!("{name} ({} transcode): {e}", t.label);
+        let stream = restart(first).map_err(fail)?;
+        let config = PlayerConfig {
+            timeline: Some(fp_media::Timeline {
+                start: first,
+                duration,
+                restart: t.seekable.then_some(restart),
+            }),
+            ..player_config(settings, 0.0)
+        };
+        start(config, stream).map_err(|e| fail(e.to_string()))
+    };
+    let asked = req
+        .transcode
+        .as_ref()
+        .and_then(|id| transcodes.iter().find(|t| &t.id == id))
+        .cloned();
+    let mut notice = None;
+    let (player, pick, transcode) = match asked {
+        Some(t) => {
+            let (p, pick) = transcoded(&t).map_err(failed)?;
+            (p, pick, Some(t))
+        }
+        None => match start(
+            player_config(settings, start_at),
+            opener
+                .open_in(req.source_id.as_deref(), &location)
+                .map_err(failed)?,
+        ) {
+            Ok((p, pick)) => (p, pick, None),
+            // The file isn't one this player can play: the server's most
+            // compatible transcode of it instead.
+            Err(e) if e.is_unsupported_format() && !transcodes.is_empty() => {
+                let t = transcodes[0].clone();
+                log::warn!("{name}: {e}; playing the server's {} transcode", t.label);
+                let (p, pick) = transcoded(&t).map_err(failed)?;
+                notice = Some(format!(
+                    "This file's format can't play here: playing the server's {} transcode",
+                    t.label
+                ));
+                (p, pick, Some(t))
+            }
+            Err(e) => return Err(failed(format!("{name}: {e}"))),
+        },
+    };
     let info = player.info().clone();
     if settings.hardware_decoding {
         warn_if_software(&name, &info, &player.stats());
@@ -304,9 +379,11 @@ pub fn open(
             active_subtitle_file,
             script_count: scripts.len(),
             last_save: Instant::now(),
-            notice: None,
+            notice,
             decode_check: (Instant::now(), 0, 0, 0),
             watch,
+            transcodes,
+            transcode,
         },
         scripts,
     })
@@ -327,6 +404,22 @@ fn player_config(settings: &Settings, start_at: f64) -> PlayerConfig {
         volume: settings.volume,
         ..Default::default()
     }
+}
+
+/// Opens transcode `t` of `location` from a time (seconds), through
+/// `source`.
+fn transcode_restart(
+    source: Arc<dyn Source>,
+    location: &str,
+    t: &Transcode,
+    codec: fp_sources::TranscodeCodec,
+) -> fp_media::Restart {
+    let (location, id) = (location.to_string(), t.id.clone());
+    Arc::new(move |at| {
+        source
+            .open_transcode(&location, &id, at, codec)
+            .map_err(|e| e.to_string())
+    })
 }
 
 /// Logs why a video the hardware could decode is decoded in software.
@@ -397,7 +490,7 @@ fn sidecars(
     name: &str,
     entry: Option<&Entry>,
     record: Option<&fp_library::MediaRecord>,
-    source: Option<std::sync::Arc<dyn fp_sources::Source>>,
+    source: Option<Arc<dyn Source>>,
     with_scripts: bool,
 ) -> (Vec<String>, Vec<SubtitleFile>) {
     let mut scripts: Vec<String> = record.map(|r| r.scripts.clone()).unwrap_or_default();
@@ -926,6 +1019,115 @@ mod tests {
             .unwrap();
         let r = lib.get_by_location(local).unwrap();
         assert_eq!(declared_format(None, r.as_ref()), None);
+    }
+
+    /// A server whose file this player can't read, with one transcode of
+    /// it (a real clip) when `transcodes`.
+    struct Unplayable {
+        transcodes: bool,
+        asked: Mutex<Vec<(String, f64)>>,
+    }
+
+    impl Source for Unplayable {
+        fn id(&self) -> &str {
+            "server"
+        }
+        fn name(&self) -> &str {
+            "Server"
+        }
+        fn kind(&self) -> fp_sources::SourceKind {
+            fp_sources::SourceKind::MediaBrowser
+        }
+        fn describe(&self) -> String {
+            String::new()
+        }
+        fn list(&self, _: Option<&str>) -> fp_sources::Result<Vec<Entry>> {
+            Ok(Vec::new())
+        }
+        fn open(&self, _: &str) -> fp_sources::Result<Arc<dyn fp_core::ByteSource>> {
+            Ok(Arc::new(fp_core::source::MemorySource(vec![7; 64 << 10])))
+        }
+        fn transcodes(&self, _: &Entry) -> Vec<Transcode> {
+            let t = Transcode {
+                id: "720".into(),
+                label: "720p".into(),
+                height: Some(720),
+                seekable: true,
+            };
+            if self.transcodes { vec![t] } else { Vec::new() }
+        }
+        fn open_transcode(
+            &self,
+            _: &str,
+            id: &str,
+            start: f64,
+            _: fp_sources::TranscodeCodec,
+        ) -> fp_sources::Result<Arc<dyn fp_core::ByteSource>> {
+            lock(&self.asked).push((id.to_string(), start));
+            let clip = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../fp-media/tests/data/h264_aac_180_LR.mp4");
+            Ok(Arc::new(fp_core::source::FileSource::open(&clip)?))
+        }
+    }
+
+    fn open_from(source: Arc<Unplayable>, transcode: Option<&str>) -> Result<Opened, String> {
+        let opener = Opener::new();
+        opener.insert_source(source);
+        let mut entry = Entry::new("Film", "mb:http://s#item=1", EntryKind::Video);
+        entry.duration = Some(300.0);
+        let req = OpenRequest {
+            location: entry.location.clone(),
+            source_id: Some("server".into()),
+            entry: Some(entry),
+            start_at: Some(30.0),
+            transcode: transcode.map(str::to_string),
+            ..Default::default()
+        };
+        let settings = Settings {
+            resume: false,
+            ..Settings::default()
+        };
+        let lib = Library::open_in_memory().unwrap();
+        open(req, &opener, &lib, &settings, &Reports::start())
+    }
+
+    #[test]
+    fn a_file_that_cannot_play_plays_the_servers_transcode() {
+        let server = Arc::new(Unplayable {
+            transcodes: true,
+            asked: Mutex::default(),
+        });
+        let pb = open_from(server.clone(), None).unwrap().playback;
+        assert_eq!(pb.transcode.as_ref().map(|t| t.id.as_str()), Some("720"));
+        assert!(pb.notice.as_deref().is_some_and(|n| n.contains("720p")));
+        // From where it was asked, as long as the video, which seeks.
+        assert_eq!(*lock(&server.asked), [("720".to_string(), 30.0)]);
+        assert_eq!(pb.player.duration(), 300.0);
+        assert!(pb.player.can_seek());
+    }
+
+    #[test]
+    fn a_transcode_asked_for_plays_without_trying_the_file() {
+        let server = Arc::new(Unplayable {
+            transcodes: true,
+            asked: Mutex::default(),
+        });
+        let pb = open_from(server.clone(), Some("720")).unwrap().playback;
+        assert_eq!(
+            pb.transcode.as_ref().map(|t| t.label.as_str()),
+            Some("720p")
+        );
+        assert!(pb.notice.is_none());
+        assert_eq!(pb.transcodes.len(), 1);
+    }
+
+    #[test]
+    fn without_a_transcode_a_file_that_cannot_play_fails() {
+        let server = Arc::new(Unplayable {
+            transcodes: false,
+            asked: Mutex::default(),
+        });
+        assert!(open_from(server, None).is_err());
     }
 
     #[test]

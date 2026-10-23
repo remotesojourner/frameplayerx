@@ -113,6 +113,9 @@ pub enum Action {
     SelectAudio(usize),
     SelectSubtitleStream(Option<usize>),
     SelectSubtitleFile(Option<usize>),
+    /// Plays the server's transcode with this id instead, from where the
+    /// video is; `None` the original.
+    SelectTranscode(Option<String>),
     SetFavorite(MediaId, bool),
     SetRating(MediaId, u8),
     SetUserFormat(MediaId, Option<VideoFormat>),
