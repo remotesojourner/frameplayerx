@@ -180,6 +180,8 @@ pub struct MbVersion {
     pub range: Option<String>,
     /// File size in bytes.
     pub size: Option<u64>,
+    /// Projection and stereo layout from its file name or 3D metadata.
+    pub format: Option<VideoFormat>,
 }
 
 impl MbVersion {
@@ -218,6 +220,9 @@ fn parse_versions(v: &Value) -> Vec<MbVersion> {
                         !r.eq_ignore_ascii_case("SDR") && !r.eq_ignore_ascii_case("Unknown")
                     }),
                 size: num(ms, "Size").filter(|s| *s > 0.0).map(|s| s as u64),
+                format: text(ms, "Path")
+                    .and_then(|p| detect_from_name(&p))
+                    .or_else(|| video_3d_format(ms)),
             })
         })
         .collect()
@@ -237,6 +242,15 @@ impl MbItem {
             (None, Some(e)) => Some(format!("E{e}")),
             _ => None,
         }
+    }
+
+    /// The format of the version chosen, else the item's own.
+    pub fn shown_format(&self) -> Option<VideoFormat> {
+        self.version
+            .as_ref()
+            .and_then(|id| self.versions.iter().find(|v| &v.id == id))
+            .and_then(|v| v.format)
+            .or(self.format)
     }
 
     /// The name to remember it by: episodes carry their series and number.

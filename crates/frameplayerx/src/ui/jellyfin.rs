@@ -666,7 +666,12 @@ fn card_facts(item: &MbItem) -> String {
 
 /// A VR format worth a badge (flat films get none).
 fn vr_badge(item: &MbItem) -> Option<String> {
-    let f = item.format?;
+    format_badge(item.format)
+}
+
+/// `format` when it is VR or 3D.
+fn format_badge(format: Option<fp_core::format::VideoFormat>) -> Option<String> {
+    let f = format?;
     let flat = f.projection == fp_core::format::Projection::Flat
         && f.stereo == fp_core::format::StereoLayout::Mono;
     (!flat).then(|| widgets::format_short(&f))
@@ -922,7 +927,7 @@ fn item_facts(item: &MbItem) -> Vec<String> {
     if let Some(r) = item.community_rating {
         f.push(page::rating(r));
     }
-    if let Some(b) = vr_badge(item) {
+    if let Some(b) = format_badge(item.shown_format()) {
         f.push(b);
     }
     if item.played {
@@ -1345,7 +1350,11 @@ fn version_chips(ui: &mut egui::Ui, item: &MbItem) -> Option<Option<String>> {
         }
         for version in &item.versions {
             let on = item.version.as_deref() == Some(version.id.as_str());
-            if widgets::chip(ui, &version.label(), on).clicked() {
+            let label = match format_badge(version.format) {
+                Some(b) => format!("{} · {b}", version.label()),
+                None => version.label(),
+            };
+            if widgets::chip(ui, &label, on).clicked() {
                 chosen = Some(Some(version.id.clone()));
             }
         }

@@ -4,7 +4,7 @@ mod common;
 
 use common::{Req, TestServer, pattern, resp, serve_bytes};
 use fp_core::format::{Projection, StereoLayout};
-use fp_core::source::EntryKind;
+use fp_core::source::{Entry, EntryKind};
 use fp_sources::{
     Credentials, MediaBrowserConfig, SourceConfig, SourceKind, WatchEvent, WatchKind, build,
 };
@@ -418,6 +418,44 @@ fn max_height_picks_the_version_that_plays() {
         .open(&format!("mb:{}#item=beach", server.url("")))
         .unwrap();
     assert_eq!(f.size(), Some(10_000));
+    let streams: Vec<String> = server
+        .requests()
+        .into_iter()
+        .filter(|r| r.path() == "/Videos/beach/stream")
+        .map(|r| r.url)
+        .collect();
+    assert!(!streams.is_empty());
+    assert!(
+        streams.iter().all(|u| u.contains("MediaSourceId=ms_4k")),
+        "{streams:?}"
+    );
+}
+
+#[test]
+fn a_version_location_streams_that_version() {
+    let item = r#"{"Id":"beach","Name":"Beach","Type":"Movie","MediaSources":[
+        {"Id":"ms_8k","MediaStreams":[{"Index":0,"Type":"Video","Width":8192,"Height":4096}]},
+        {"Id":"ms_4k","MediaStreams":[{"Index":0,"Type":"Video","Width":4096,"Height":2048}]}]}"#;
+    let server = jellyfin(
+        vec![("/Users/u1/Items/beach".into(), item.into())],
+        Arc::new(pattern(10_000)),
+    );
+    let config = mediabrowser_config(server.url(""), Some(Credentials::new("a", "b")));
+    let src = build(&SourceConfig::MediaBrowser(config)).unwrap();
+    let mb = src.as_media_browser().unwrap();
+    let plain = format!("mb:{}#item=beach", server.url(""));
+
+    // The details name the version that plays: the tallest, else the one chosen.
+    let entry = Entry::new("Beach", plain.clone(), EntryKind::Video);
+    let tallest = src.details(&entry).unwrap();
+    assert_eq!(tallest.location, format!("{plain}&version=ms_8k"));
+    mb.set_version(&plain, Some("ms_4k"));
+    let chosen = src.details(&entry).unwrap();
+    assert_eq!(chosen.location, format!("{plain}&version=ms_4k"));
+
+    // A version's location plays it, whatever is chosen now.
+    mb.set_version(&plain, None);
+    src.open(&chosen.location).unwrap();
     let streams: Vec<String> = server
         .requests()
         .into_iter()

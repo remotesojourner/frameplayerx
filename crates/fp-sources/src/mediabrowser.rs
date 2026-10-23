@@ -84,12 +84,28 @@ pub(crate) fn encode_location(base: &str, kind: &str, id: &str) -> String {
     format!("mb:{base}#{kind}={id}")
 }
 
+/// The location of one version (media source) of an item kept in several:
+/// each has its own library record, so its own format and adjustments.
+pub(crate) fn encode_version_location(base: &str, id: &str, version: &str) -> String {
+    format!("mb:{base}#item={id}&version={version}")
+}
+
 /// Decodes a location string into its `(kind, id)` parts.
 pub(crate) fn decode_location(loc: &str) -> Option<(&str, &str)> {
     let rest = loc.strip_prefix("mb:")?;
     let (_, fragment) = rest.rsplit_once('#')?;
-    let (kind, id) = fragment.split_once('=')?;
+    let (kind, rest) = fragment.split_once('=')?;
+    let id = rest.split_once('&').map_or(rest, |(id, _)| id);
     Some((kind, id))
+}
+
+/// The version a location names ([`encode_version_location`]).
+pub(crate) fn location_version(loc: &str) -> Option<&str> {
+    let (_, fragment) = loc.strip_prefix("mb:")?.rsplit_once('#')?;
+    fragment
+        .split('&')
+        .find_map(|p| p.strip_prefix("version="))
+        .filter(|v| !v.is_empty())
 }
 
 /// Extracts the item or folder identifier from a MediaBrowser location.
@@ -313,6 +329,16 @@ pub(crate) fn apply_item_details(
     let media_sources = array(v, "MediaSources");
     let ms = pick_media_source(media_sources, chosen, max_height).or_else(|| media_sources.first());
 
+    // Versions differ in format and are adjusted apart: each is its own video.
+    if media_sources.len() > 1
+        && let Some(id) = ms.and_then(|m| text(m, "Id"))
+    {
+        entry.location = encode_version_location(base_url, item_id, &id);
+        entry.size = None;
+        // The listing's guess came from the first version's file.
+        entry.format = None;
+    }
+
     if let Some(ms) = ms {
         if entry.size.is_none() {
             entry.size = num(ms, "Size").filter(|s| *s > 0.0).map(|s| s as u64);
@@ -361,7 +387,7 @@ pub(crate) fn apply_item_details(
         entry.format = detect_from_name(&entry.name);
     }
     if entry.format.is_none() {
-        entry.format = video_3d_format(v);
+        entry.format = ms.and_then(video_3d_format).or_else(|| video_3d_format(v));
     }
 
     for ch in array(v, "Chapters") {
@@ -862,14 +888,17 @@ impl Source for MediaBrowserSource {
         let mut url = format!("{}/Videos/{}/stream?static=true", self.base_url, id);
         // The version the details and subtitles came from (the one chosen,
         // else by max height); otherwise the server streams its own choice.
-        let version = self.chosen_version(&id).or_else(|| {
-            self.api_get_json(&format!("/Users/{user_id}/Items/{id}?Fields=MediaSources"))
-                .ok()
-                .and_then(|v| {
-                    best_media_source(array(&v, "MediaSources"), self.max_height)
-                        .and_then(|ms| text(ms, "Id"))
-                })
-        });
+        let version = location_version(location)
+            .map(str::to_string)
+            .or_else(|| self.chosen_version(&id))
+            .or_else(|| {
+                self.api_get_json(&format!("/Users/{user_id}/Items/{id}?Fields=MediaSources"))
+                    .ok()
+                    .and_then(|v| {
+                        best_media_source(array(&v, "MediaSources"), self.max_height)
+                            .and_then(|ms| text(ms, "Id"))
+                    })
+            });
         if let Some(ms) = version {
             url.push_str(&format!("&MediaSourceId={}", encode_form_value(&ms)));
         }
@@ -892,7 +921,9 @@ impl Source for MediaBrowserSource {
             format!("/Users/{user_id}/Items/{id}?Fields=MediaSources,Chapters,Path,Overview,Tags");
         let v = self.api_get_json(&path)?;
         let mut out = entry.clone();
-        let chosen = self.chosen_version(&id);
+        let chosen = location_version(&entry.location)
+            .map(str::to_string)
+            .or_else(|| self.chosen_version(&id));
         apply_item_details(
             &mut out,
             &v,
@@ -1374,6 +1405,49 @@ mod tests {
             entry.subtitles[0].location,
             "http://s/Videos/m1/b/Subtitles/5/Stream.srt"
         );
+    }
+
+    #[test]
+    fn a_version_has_its_own_location() {
+        let loc = encode_version_location("http://s:8096", "m1", "b");
+        assert_eq!(loc, "mb:http://s:8096#item=m1&version=b");
+        assert_eq!(item_id(&loc).unwrap(), "m1");
+        assert_eq!(location_version(&loc), Some("b"));
+        assert_eq!(location_version("mb:http://s:8096#item=m1"), None);
+    }
+
+    #[test]
+    fn each_version_is_its_own_video_with_its_own_format() {
+        let v = json!({
+            "Id": "m1",
+            "Path": "/films/Film_180_LR.mp4",
+            "MediaSources": [
+                {"Id": "a", "Height": 2160, "Path": "/films/Film_180_LR.mp4"},
+                {"Id": "b", "Height": 1080, "Path": "/films/Film - Flat.mkv", "Size": 5}
+            ]
+        });
+        // As listed: the guess from the first version's file.
+        let listed = || {
+            let mut e = Entry::new("Film", "mb:http://s#item=m1", EntryKind::Video);
+            e.format = detect_from_name("/films/Film_180_LR.mp4");
+            e
+        };
+        let mut flat = listed();
+        apply_item_details(&mut flat, &v, "http://s", "m1", Some("b"), None);
+        assert_eq!(flat.location, "mb:http://s#item=m1&version=b");
+        assert_eq!(flat.format, detect_from_name("/films/Film - Flat.mkv"));
+        assert_ne!(flat.format, detect_from_name("/films/Film_180_LR.mp4"));
+        assert_eq!(flat.size, Some(5));
+        let mut vr = listed();
+        apply_item_details(&mut vr, &v, "http://s", "m1", None, None);
+        assert_eq!(vr.location, "mb:http://s#item=m1&version=a");
+        assert_eq!(vr.format, detect_from_name("/films/Film_180_LR.mp4"));
+
+        // One version: the item's location, as before.
+        let one = json!({"Id": "m2", "MediaSources": [{"Id": "x"}]});
+        let mut e = Entry::new("Other", "mb:http://s#item=m2", EntryKind::Video);
+        apply_item_details(&mut e, &one, "http://s", "m2", None, None);
+        assert_eq!(e.location, "mb:http://s#item=m2");
     }
 
     #[test]
