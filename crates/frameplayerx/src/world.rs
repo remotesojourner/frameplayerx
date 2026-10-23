@@ -270,6 +270,26 @@ pub fn place_around(
         * Mat4::from_translation(Vec3::new(0.0, offset_y, -distance))
 }
 
+/// A panel `below_deg` below where you face, `distance` metres away, but
+/// upright like a flat screen rather than tilted back towards your eyes;
+/// turned `yaw_deg` and `pitch_deg` about the viewer by where it was moved.
+pub fn place_below(
+    anchor: Mat4,
+    yaw_deg: f32,
+    pitch_deg: f32,
+    distance: f32,
+    below_deg: f32,
+) -> Mat4 {
+    let below = below_deg.to_radians();
+    place_around(
+        anchor,
+        yaw_deg,
+        pitch_deg,
+        distance * below.cos(),
+        -distance * below.sin(),
+    )
+}
+
 /// `anchor` turned about the viewer the way the renderer turns a 180°/360°
 /// picture for its yaw and pitch (degrees, left and up positive), so a panel
 /// placed from it moves with the picture. Roll is left out: it levels a
@@ -904,6 +924,23 @@ mod tests {
             adjust.transform_vector3(Vec3::Y).abs_diff_eq(Vec3::Y, 1e-5),
             "adjust tilted"
         );
+    }
+
+    #[test]
+    fn the_browse_panel_starts_upright_a_little_below_where_you_face() {
+        let eye = Vec3::new(0.0, 1.2, 0.0);
+        let anchor = anchor_from_head(eye, Quat::IDENTITY);
+        let panel = place_below(anchor, 0.0, 0.0, 1.5, 12.0);
+        assert!(
+            panel.transform_vector3(Vec3::Y).abs_diff_eq(Vec3::Y, 1e-5),
+            "browse panel tilted"
+        );
+        let down = 12f32.to_radians();
+        let expected = eye + Vec3::new(0.0, -down.sin(), -down.cos()) * 1.5;
+        assert!(centre(panel).distance(expected) < 1e-4);
+        // Moved up and aside, it still faces you.
+        let moved = place_below(anchor, 30.0, 20.0, 1.5, 12.0);
+        assert!(moved.transform_vector3(Vec3::Z).dot(eye - centre(moved)) > 0.0);
     }
 
     #[test]

@@ -480,11 +480,11 @@ To recenter, hold the Steam button, as in any game (both grips together, or
 the left Menu button, do it too). The picture and the panels come to where
 you are looking; looking well up or down (lying back, say) counts, a glance
 a little up or down doesn't, so sitting up a flat screen comes back level.
-The browse panel (a little below where you look) and a flat screen come
-back in front of you, wherever you had moved them (a 180° or 360° picture
-keeps its turn). A flat screen opens upright at eye height, the way the
-browse panel faces: where you move it lasts while you watch, and isn't kept
-with the video.
+The browse panel (upright, a little below where you look) and a flat screen
+come back in front of you, wherever you had moved them (a 180° or 360°
+picture keeps its turn). A flat screen opens upright at eye height, the way
+the browse panel faces: where you move it lasts while you watch, and isn't
+kept with the video. Only the control bar is tilted back towards you.
 
 Each piece moves on its own and takes what hangs off it along. Drag the
 picture (grip + trigger) or use Yaw and Pitch to move a flat screen: the
