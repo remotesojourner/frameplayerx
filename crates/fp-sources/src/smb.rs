@@ -324,7 +324,7 @@ mod imp {
         FileDirectoryInformation, GetLen, IoctlBuffer, PipeTransceiveRequest,
         PipeTransceiveResponse, ReadAt, Status, UncPath,
     };
-    use std::collections::HashSet;
+    use std::collections::HashMap;
     use std::io;
     use std::str::FromStr;
     use std::sync::{Arc, Mutex};
@@ -337,21 +337,23 @@ mod imp {
     /// 2.0.2 limit).
     const DEFAULT_MAX_READ: usize = 64 << 10;
 
-    /// A client signed in to the server, with the shares it has connected
-    /// (the configured one, or for a whole server each as it is used).
+    /// A client connected and signed in to one share (`IPC$` for a whole
+    /// server's list of shares). Each share has its own connection and a
+    /// single sign-in: smb-rs signs in again for every further share on a
+    /// connection, and some servers fail the second sign-in ("session setup
+    /// succeeded before SSPI authentication completed").
     pub(super) struct Session {
         client: Client,
         max_read: usize,
-        /// Connected shares, lowercase.
-        shares: Mutex<HashSet<String>>,
     }
 
-    /// The share's current session, shared by the source and its open
-    /// files, so a file that loses its connection reconnects for everyone.
+    /// Each share's current session (by lowercase name, empty for `IPC$`),
+    /// shared by the source and its open files, so a file that loses its
+    /// connection reconnects for everyone.
     pub(super) struct Sessions {
         config: SmbConfig,
         root: String,
-        current: Mutex<Option<Arc<Session>>>,
+        current: Mutex<HashMap<String, Arc<Session>>>,
     }
 
     /// Maps an smb-rs error, keeping "not found" and "access denied"
@@ -388,13 +390,16 @@ mod imp {
             Sessions {
                 config: config.clone(),
                 root: root.to_string(),
-                current: Mutex::new(None),
+                current: Mutex::new(HashMap::new()),
             }
         }
 
-        fn session(&self) -> Result<Arc<Session>> {
+        /// The session for `share` (empty: the server's `IPC$`), connecting
+        /// it if there is none.
+        fn session(&self, share: &str) -> Result<Arc<Session>> {
+            let key = share.to_lowercase();
             let mut guard = lock(&self.current);
-            if let Some(s) = guard.as_ref() {
+            if let Some(s) = guard.get(&key) {
                 return Ok(s.clone());
             }
             let guest = self.config.credentials.is_none();
@@ -409,24 +414,22 @@ mod imp {
             };
             let client = Client::new(config);
             let (user, pass) = self.login();
-            log::info!("connecting to {}", self.root);
-            // A whole server signs in on its IPC$ share, which lists the
-            // others; they connect as they are opened.
-            let share = self.config.share.trim();
+            let loc = SmbLocation {
+                host: self.config.host.clone(),
+                port: self.config.port,
+                share: share.to_string(),
+                path: Vec::new(),
+            };
+            let url = loc.to_url();
+            log::info!("connecting to {url}");
             if share.is_empty() {
                 client
                     .ipc_connect(&self.config.host, &user, pass)
-                    .map_err(|e| map_err(e, &self.root))?;
+                    .map_err(|e| map_err(e, &url))?;
             } else {
-                let loc = SmbLocation {
-                    host: self.config.host.clone(),
-                    port: self.config.port,
-                    share: share.to_string(),
-                    path: Vec::new(),
-                };
                 client
                     .share_connect(&unc(&loc)?, &user, pass)
-                    .map_err(|e| map_err(e, &self.root))?;
+                    .map_err(|e| map_err(e, &url))?;
             }
             let max_read = client
                 .get_connection(&self.config.host)
@@ -434,13 +437,8 @@ mod imp {
                 .and_then(|c| c.conn_info().map(|i| i.negotiation.max_read_size as usize))
                 .filter(|n| *n >= 4096)
                 .unwrap_or(DEFAULT_MAX_READ);
-            let connected = Some(share.to_lowercase()).filter(|s| !s.is_empty());
-            let session = Arc::new(Session {
-                client,
-                max_read,
-                shares: Mutex::new(connected.into_iter().collect()),
-            });
-            *guard = Some(session.clone());
+            let session = Arc::new(Session { client, max_read });
+            guard.insert(key, session.clone());
             Ok(session)
         }
 
@@ -452,31 +450,11 @@ mod imp {
             }
         }
 
-        /// Connects `session` to the share `path` is on, once.
-        fn connect_share(&self, session: &Session, path: &UncPath, url: &str) -> Result<()> {
-            let Some(share) = path.share().filter(|s| !s.is_empty()) else {
-                return Ok(());
-            };
-            let key = share.to_lowercase();
-            if lock(&session.shares).contains(&key) {
-                return Ok(());
-            }
-            let (user, pass) = self.login();
-            let root = UncPath::from_str(&format!(r"\\{}\{share}", path.server()))
-                .map_err(|e| Error::invalid(url, e.to_string()))?;
-            session
-                .client
-                .share_connect(&root, &user, pass)
-                .map_err(|e| map_err(e, url))?;
-            lock(&session.shares).insert(key);
-            Ok(())
-        }
-
         /// The server's shares worth browsing, by name, asked for on its
         /// `srvsvc` pipe (see [`super::srvsvc`]).
         fn list_shares(&self) -> Result<Vec<String>> {
             use super::srvsvc;
-            self.with_session(|s| {
+            self.with_session("", |s| {
                 let pipe = s
                     .client
                     .open_pipe(&self.config.host, "srvsvc")
@@ -504,10 +482,14 @@ mod imp {
             })
         }
 
-        /// Runs `op` with a session; after a connection-level failure the
-        /// session is dropped so the next call reconnects.
-        fn with_session<T>(&self, op: impl Fn(&Arc<Session>) -> Result<T>) -> Result<T> {
-            let session = self.session()?;
+        /// Runs `op` with `share`'s session; after a connection-level
+        /// failure the session is dropped so the next call reconnects.
+        fn with_session<T>(
+            &self,
+            share: &str,
+            op: impl Fn(&Arc<Session>) -> Result<T>,
+        ) -> Result<T> {
+            let session = self.session(share)?;
             let r = op(&session);
             if let Err(Error::Smb(_)) = &r {
                 self.discard(&session);
@@ -518,16 +500,12 @@ mod imp {
         /// Forgets `stale` unless it was already replaced, so the next call
         /// connects again.
         fn discard(&self, stale: &Arc<Session>) {
-            let mut guard = lock(&self.current);
-            if guard.as_ref().is_some_and(|s| Arc::ptr_eq(s, stale)) {
-                *guard = None;
-            }
+            lock(&self.current).retain(|_, s| !Arc::ptr_eq(s, stale));
         }
 
         /// Opens a file for reading on the current session.
         fn open_file(&self, path: &UncPath, url: &str) -> Result<OpenFile> {
-            self.with_session(|s| {
-                self.connect_share(s, path, url)?;
+            self.with_session(path.share().unwrap_or_default(), |s| {
                 let args = FileCreateArgs::make_open_existing(
                     FileAccessMask::new().with_generic_read(true),
                 );
@@ -548,10 +526,6 @@ mod imp {
     }
 
     impl SmbSource {
-        fn with_session<T>(&self, op: impl Fn(&Arc<Session>) -> Result<T>) -> Result<T> {
-            self.sessions.with_session(op)
-        }
-
         pub(super) fn list_shares(&self) -> Result<Vec<String>> {
             self.sessions.list_shares()
         }
@@ -559,8 +533,7 @@ mod imp {
         pub(super) fn list_dir(&self, loc: &SmbLocation) -> Result<Vec<DirItem>> {
             let path = unc(loc)?;
             let url = loc.to_url();
-            self.with_session(|s| {
-                self.sessions.connect_share(s, &path, &url)?;
+            self.sessions.with_session(&loc.share, |s| {
                 let access = DirAccessMask::new()
                     .with_list_directory(true)
                     .with_synchronize(true);
