@@ -113,6 +113,9 @@ pub enum Action {
     SelectAudio(usize),
     SelectSubtitleStream(Option<usize>),
     SelectSubtitleFile(Option<usize>),
+    /// Puts a flat screen, the control bar, the adjust panel and the browse
+    /// panel back where they start.
+    ResetPlacement,
     SetFavorite(MediaId, bool),
     SetRating(MediaId, u8),
     SetUserFormat(MediaId, Option<VideoFormat>),

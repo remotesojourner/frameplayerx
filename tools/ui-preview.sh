@@ -178,6 +178,10 @@ adjust
 frames 8
 panel adjust adjust
 panel bar player-bar-adjust
+# The Position tab, with Put back for moved panels.
+adjust 1
+frames 8
+panel adjust adjust-position
 # The Passthrough tab, with chroma key on (unlocked above).
 adjust 4
 chroma

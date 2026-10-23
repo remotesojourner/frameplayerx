@@ -696,7 +696,12 @@ pub fn adjust_panel(ctx: &egui::Context, v: &mut View) {
                 let before = pb.settings;
                 match v.state.adjust_tab {
                     0 => format_tab(ui, pb, v.settings.hardware_decoding, v.actions),
-                    1 => position_tab(ui, &mut pb.settings),
+                    1 => {
+                        let flat = pb.format.projection == Projection::Flat;
+                        let moved = v.settings.panel_offsets != Default::default()
+                            || (flat && (pb.settings.yaw, pb.settings.pitch) != (0.0, 0.0));
+                        position_tab(ui, &mut pb.settings, moved, v.actions);
+                    }
                     2 => stereo_tab(ui, &mut pb.settings),
                     3 => picture_tab(ui, &mut pb.settings),
                     4 => {
@@ -893,8 +898,27 @@ fn format_tab(
     }
 }
 
-fn position_tab(ui: &mut egui::Ui, s: &mut ViewSettings) {
+fn position_tab(ui: &mut egui::Ui, s: &mut ViewSettings, moved: bool, actions: &mut Vec<Action>) {
     let d = ViewSettings::default();
+    widgets::rows(ui, |r| {
+        r.row(
+            "Screen and panels",
+            Some("Where a flat screen, the control bar, this panel and the browse panel start."),
+            |ui| {
+                let button = ui.add_enabled_ui(moved, |ui| {
+                    widgets::button(
+                        ui,
+                        Some(icons::ARROW_COUNTER_CLOCKWISE),
+                        "Put back",
+                        Kind::Secondary,
+                    )
+                });
+                if button.inner.clicked() {
+                    actions.push(Action::ResetPlacement);
+                }
+            },
+        );
+    });
     widgets::rows(ui, |r| {
         r.slider("Yaw", None, &mut s.yaw, -180.0..=180.0, 0.0, "°", 0);
         r.slider("Pitch", None, &mut s.pitch, -90.0..=90.0, 0.0, "°", 0);

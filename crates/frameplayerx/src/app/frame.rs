@@ -24,6 +24,25 @@ impl App {
         }
     }
 
+    /// A flat screen, the control bar, the adjust panel and the browse panel
+    /// back where they start, wherever they were moved. A 180°/360°
+    /// picture's turn is the video's own adjustment and stays (its Reset
+    /// puts that back).
+    pub(super) fn reset_placement(&mut self) {
+        self.panel_drag = None;
+        self.adjust_hold = None;
+        self.offsets = Default::default();
+        self.settings.panel_offsets = self.offsets;
+        if let Some(p) = &mut self.playback
+            && p.format.projection == Projection::Flat
+            && (p.settings.yaw, p.settings.pitch) != (0.0, 0.0)
+        {
+            p.settings.yaw = 0.0;
+            p.settings.pitch = 0.0;
+            p.settings_dirty = true;
+        }
+    }
+
     /// The panel the keyboard types into: the library or adjust panel with
     /// a text field in focus.
     pub(super) fn keyboard_target(&self) -> Option<usize> {

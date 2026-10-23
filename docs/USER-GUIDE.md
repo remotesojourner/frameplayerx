@@ -493,7 +493,10 @@ to move it about the screen: the adjust panel goes with it. Hold grip on
 the adjust panel to move it about the bar. During a 180° or 360° video,
 Yaw, Pitch and dragging turn only the picture; the control bar and adjust
 panel stay where they are. The browse panel (or the keyboard under it)
-moves the same way, with grip, and stays where you leave it. The format on the control bar
+moves the same way, with grip, and stays where you leave it. To put them all back where they start, press **Put back** at the top
+of the adjust panel's Position tab: a flat screen, the control bar, the
+adjust panel and the browse panel return (a 180° or 360° picture keeps
+its turn; the panel's **Reset** puts the picture's own adjustments back). The format on the control bar
 (for example 180° SBS) opens the adjust panel's Format tab.
 
 ### Watching lying down
