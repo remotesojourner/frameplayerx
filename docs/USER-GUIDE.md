@@ -165,7 +165,7 @@ that pairing, you can also delete `~/.ssh/id_rsa_frame_devkit` and
 |---|---|
 | Any folder on the headset, a microSD card or a USB drive | Browse it under Home › On this device, or make it a library: Sources › Add source › Library |
 | Any server with a DeoVR feed or HereSphere API | Sources › Add source › DeoVR feed or HereSphere API |
-| NAS / Windows share | Sources › Add source › SMB share (`smb://nas/videos`) |
+| NAS / Windows share | Sources › Add source › SMB share: a whole server (`smb://nas/`, which lists its shares) or one share or folder (`smb://nas/videos`) |
 | Nextcloud and other WebDAV | Sources › Add source › WebDAV |
 | Jellyfin, Emby | Sources › Add source › Jellyfin / Emby (a password, or Quick Connect on Jellyfin) |
 | Plex, Serviio and other DLNA servers | Sources › Add source › DLNA › Search the network |
@@ -478,18 +478,22 @@ picture. Play/pause and seeking are under either thumb.
 
 To recenter, hold the Steam button, as in any game (both grips together, or
 the left Menu button, do it too). The picture and the panels come to where
-you are looking, up or down included. The browse panel and a flat screen
-come back in front of you, wherever you had moved them, a little below
-where you look and lined up (a 180° or 360° picture keeps its turn), and
-the adjust panel stays beside the control bar. A flat screen opens where the
-browse panel is: where you move it lasts while you watch, and isn't kept
+you are looking; looking well up or down (lying back, say) counts, a glance
+a little up or down doesn't, so sitting up a flat screen comes back level.
+The browse panel (a little below where you look) and a flat screen come
+back in front of you, wherever you had moved them (a 180° or 360° picture
+keeps its turn). A flat screen opens upright at eye height, the way the
+browse panel faces: where you move it lasts while you watch, and isn't kept
 with the video.
 
-The picture, the control bar and the adjust panel beside it move as one
-player: drag the picture, or hold grip on the control bar and move it, and
-they all go together. Point at the browse or adjust panel (or the keyboard
-under it) and hold grip to move it; it stays where you leave it, the adjust
-panel in its place beside the control bar. The format on the control bar
+Each piece moves on its own and takes what hangs off it along. Drag the
+picture (grip + trigger) or use Yaw and Pitch to move a flat screen: the
+control bar and the adjust panel go with it. Hold grip on the control bar
+to move it about the screen: the adjust panel goes with it. Hold grip on
+the adjust panel to move it about the bar. During a 180° or 360° video,
+Yaw, Pitch and dragging turn only the picture; the control bar and adjust
+panel stay where they are. The browse panel (or the keyboard under it)
+moves the same way, with grip, and stays where you leave it. The format on the control bar
 (for example 180° SBS) opens the adjust panel's Format tab.
 
 ### Watching lying down

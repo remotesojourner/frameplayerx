@@ -532,7 +532,7 @@ const KINDS: [(SourceKind, &str); 8] = [
     ),
     (
         SourceKind::Smb,
-        "Windows / Samba share, e.g. smb://nas.local/videos",
+        "Windows / Samba server or share, e.g. smb://nas.local/ or smb://nas.local/videos",
     ),
     (
         SourceKind::Dlna,
@@ -1237,8 +1237,11 @@ pub fn build_config(f: &SourceForm, id: String) -> Result<SourceConfig, String> 
                 .unwrap_or_default()
                 .trim_end_matches('/')
                 .to_string();
-            if hostport.is_empty() || share.is_empty() {
-                return Err("Use smb://server/share[/folder]".into());
+            // No share: the whole server, which lists its shares.
+            if hostport.is_empty() {
+                return Err(
+                    "Use smb://server/, smb://server/share or smb://server/share/folder".into(),
+                );
             }
             let (host, port) = match hostport.rsplit_once(':') {
                 Some((h, p)) => (
@@ -1309,7 +1312,18 @@ mod tests {
             }
             other => panic!("{other:?}"),
         }
-        f.address = "\\\\nas".into();
+        // The whole server, by address or as Windows writes it.
+        for address in ["smb://192.168.0.10/", "smb://192.168.0.10", "\\\\nas"] {
+            f.address = address.into();
+            match build_config(&f, "x".into()).unwrap() {
+                SourceConfig::Smb(c) => {
+                    assert!(c.share.is_empty() && c.path.is_empty(), "{address}: {c:?}");
+                    assert!(!c.host.is_empty(), "{address}");
+                }
+                other => panic!("{other:?}"),
+            }
+        }
+        f.address = "smb://".into();
         assert!(build_config(&f, "x".into()).is_err());
         f.kind = SourceKind::DeoVr;
         f.address = "192.168.1.5:9999/deovr".into();
