@@ -317,13 +317,20 @@ headset and copies the text and JSON reports into `probe-reports/`.
      highest existing beta of it, and always above the latest stable),
      published as a GitHub pre-release. FramePlayerX offers it on the Beta
      update channel only.
+   - Alpha: tick **Alpha** when running the workflow (any branch, `main`
+     too) to get `X.Y.Z-alpha.N`, N being the run number, left as a draft
+     pre-release. Only people with push access see a draft, and the app
+     and `frameplayerx-install` never offer one, so install its zip by hand
+     to test it, then run the workflow again without Alpha to release a
+     beta (or merge for a stable release). Delete the draft once done; a
+     draft has no tag until it is published.
    - Pushing a `vX.Y.Z` or `vX.Y.Z-anything` tag releases exactly that
      version (a pre-release if it has a `-`).
 
    The release starts as a draft: it is published, and becomes the latest
    unless it's a beta, only once every file is in and downloads back
-   identical to the one built. A run that fails leaves a draft nobody
-   sees, which the next run of that version replaces.
+   identical to the one built (an alpha stays a draft). A run that fails
+   leaves a draft nobody sees, which the next run of that version replaces.
 
 CI runs only GitHub's own Actions. Dependabot opens one pull request a
 month with the crates' compatible updates (`Cargo.lock` only, within what

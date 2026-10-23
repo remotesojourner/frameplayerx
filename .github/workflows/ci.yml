@@ -6,9 +6,14 @@ on:
     tags: ['v*']
   pull_request:
   # Run from the Actions tab: on main it publishes a stable release, on any
-  # other branch a beta (a GitHub pre-release). The version is calculated
-  # either way.
+  # other branch a beta (a GitHub pre-release); with Alpha ticked, on any
+  # branch, an alpha left as a draft. The version is calculated either way.
   workflow_dispatch:
+    inputs:
+      alpha:
+        description: Alpha (a draft release to test before a beta; never offered as an update)
+        type: boolean
+        default: false
 
 # Read-only for every job but the release, which publishes.
 permissions:
@@ -27,7 +32,9 @@ jobs:
   # main: the next stable version, which git-cliff calculates from the
   # conventional commits since the last stable tag (see cliff.toml). Other
   # branches and pull requests: that version as a beta, X.Y.Z-beta.N, with
-  # N one above the highest existing beta of X.Y.Z. A pushed v* tag is used
+  # N one above the highest existing beta of X.Y.Z. An alpha (any branch):
+  # X.Y.Z-alpha.N with N the run number, as its draft has no tag to count;
+  # a re-run keeps it and replaces its own draft. A pushed v* tag is used
   # as it is.
   version:
     runs-on: ubuntu-24.04
@@ -36,6 +43,7 @@ jobs:
       tag: ${{ steps.calc.outputs.tag }}
       prerelease: ${{ steps.calc.outputs.prerelease }}
       is_release: ${{ steps.calc.outputs.is_release }}
+      draft: ${{ steps.calc.outputs.draft }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -47,15 +55,18 @@ jobs:
           echo "$RUNNER_TEMP/tools/bin" >> "$GITHUB_PATH"
       - name: Calculate version
         id: calc
+        env:
+          ALPHA: ${{ github.event_name == 'workflow_dispatch' && inputs.alpha }}
         run: |
           is_release=false
+          draft=false
           if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
             ver="${GITHUB_REF_NAME#v}"
             is_release=true
           else
             ver=$(git cliff --bumped-version)
             ver="${ver#v}"
-            if [ "$GITHUB_REF" = refs/heads/main ]; then
+            if [ "$GITHUB_REF" = refs/heads/main ] && [ "$ALPHA" != true ]; then
               # git-cliff repeats the last version when nothing came since.
               if git rev-parse -q --verify "refs/tags/v$ver" > /dev/null; then
                 echo "::warning::v$ver already exists and nothing was committed since: no release"
@@ -63,16 +74,21 @@ jobs:
                 is_release=true
               fi
             else
-              # A beta must sort above every stable release, also when the
-              # branch has nothing new or was cut before the latest one.
+              # A beta or alpha must sort above every stable release, also
+              # when the branch has nothing new or was cut before the latest.
               latest=$(git tag -l 'v*' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1)
               latest="${latest#v}"
               if [ -n "$latest" ] && [ "$(printf '%s\n' "$latest" "$ver" | sort -V | head -1)" = "$ver" ]; then
                 IFS=. read -r major minor patch <<< "$latest"
                 ver="$major.$minor.$((patch + 1))"
               fi
-              n=$(git tag -l "v$ver-beta.*" | sed -n "s/^v$ver-beta\.\([0-9]\+\)$/\1/p" | sort -n | tail -1)
-              ver="$ver-beta.$((${n:-0} + 1))"
+              if [ "$ALPHA" = true ]; then
+                ver="$ver-alpha.$GITHUB_RUN_NUMBER"
+                draft=true
+              else
+                n=$(git tag -l "v$ver-beta.*" | sed -n "s/^v$ver-beta\.\([0-9]\+\)$/\1/p" | sort -n | tail -1)
+                ver="$ver-beta.$((${n:-0} + 1))"
+              fi
               if [ "$GITHUB_EVENT_NAME" = workflow_dispatch ]; then
                 is_release=true
               fi
@@ -82,12 +98,13 @@ jobs:
             *-*) prerelease=true ;;
             *) prerelease=false ;;
           esac
-          echo "Version $ver, pre-release: $prerelease, release: $is_release"
+          echo "Version $ver, pre-release: $prerelease, release: $is_release, draft: $draft"
           {
             echo "version=$ver"
             echo "tag=v$ver"
             echo "prerelease=$prerelease"
             echo "is_release=$is_release"
+            echo "draft=$draft"
           } >> "$GITHUB_OUTPUT"
 
   check:
@@ -229,6 +246,7 @@ jobs:
     env:
       TAG: ${{ needs.version.outputs.tag }}
       PRERELEASE: ${{ needs.version.outputs.prerelease }}
+      DRAFT: ${{ needs.version.outputs.draft }}
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
     steps:
@@ -267,7 +285,14 @@ jobs:
           if [ ! -s ../dist/RELEASE_NOTES.md ]; then
             echo "Release $TAG" > ../dist/RELEASE_NOTES.md
           fi
-          if [ "$PRERELEASE" = true ]; then
+          if [ "$DRAFT" = true ]; then
+            {
+              echo "Alpha built from \`$GITHUB_REF_NAME\` (${GITHUB_SHA::7}), left as a draft for testing: FramePlayerX never offers a draft as an update, so install its zip by hand. Run the workflow again without Alpha to release it as a beta. Changes since the last stable release:"
+              echo
+              cat ../dist/RELEASE_NOTES.md
+            } > ../dist/notes.md
+            mv ../dist/notes.md ../dist/RELEASE_NOTES.md
+          elif [ "$PRERELEASE" = true ]; then
             {
               echo "Beta built from \`$GITHUB_REF_NAME\` (${GITHUB_SHA::7}). FramePlayerX offers it on the Beta channel only (Settings › Updates). Changes since the last stable release:"
               echo
@@ -323,6 +348,12 @@ jobs:
               exit 1
             fi
           done
+          # An alpha stays a draft: only people who can push to the
+          # repository see it, and update checks skip drafts.
+          if [ "$DRAFT" = true ]; then
+            echo "$TAG is ready as a draft: $(gh release view "$TAG" --json url --jq .url)"
+            exit 0
+          fi
           # releases/latest, which frameplayerx-install and the Desktop Mode
           # launcher read (and stable FramePlayerX when GitHub's release
           # list can't be read), must never point at a beta.
