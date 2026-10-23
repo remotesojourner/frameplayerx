@@ -167,6 +167,13 @@ pub enum Action {
         mark: jellyfin::Mark,
         on: bool,
     },
+    /// Plays a Jellyfin/Emby video from one of its versions (a media
+    /// source id) from now on; `None` from the tallest that fits.
+    JellyfinVersion {
+        source: String,
+        location: String,
+        version: Option<String>,
+    },
     /// Reads a DeoVR feed's or HereSphere API's groups and scenes.
     FeedLoad {
         source: String,

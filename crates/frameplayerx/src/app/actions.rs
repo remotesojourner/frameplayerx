@@ -163,6 +163,21 @@ impl App {
                 mark,
                 on,
             } => self.mark_jellyfin(&source, id, mark, on),
+            Action::JellyfinVersion {
+                source,
+                location,
+                version,
+            } => {
+                if let Some(mb) = self
+                    .services
+                    .opener
+                    .source(&source)
+                    .as_deref()
+                    .and_then(|s| s.as_media_browser())
+                {
+                    mb.set_version(&location, version.as_deref());
+                }
+            }
             Action::FeedLoad { source } => self.load_feed(source),
             Action::FeedFill {
                 source,

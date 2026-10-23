@@ -156,6 +156,71 @@ pub struct MbItem {
     pub location: String,
     /// Projection and stereo layout from the file name or 3D metadata.
     pub format: Option<VideoFormat>,
+    /// The files it can be played from (details only): one, or several
+    /// when the server keeps more than one version (4K and 1080p, a cut).
+    pub versions: Vec<MbVersion>,
+    /// The version chosen with [`MediaBrowserSource::set_version`]
+    /// (details only); `None` plays the tallest that fits the source's
+    /// maximum height.
+    pub version: Option<String>,
+}
+
+/// One version of a film or video: a media source of the item.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct MbVersion {
+    /// The media source id, for [`MediaBrowserSource::set_version`].
+    pub id: String,
+    /// The server's name for it ("2160p", "Director's Cut").
+    pub name: String,
+    /// Picture height in pixels.
+    pub height: Option<u32>,
+    /// Video codec ("hevc").
+    pub codec: Option<String>,
+    /// Dynamic range other than SDR ("HDR", "DOVI").
+    pub range: Option<String>,
+    /// File size in bytes.
+    pub size: Option<u64>,
+}
+
+impl MbVersion {
+    /// What tells it apart: "2160p · HEVC · HDR · 18.2 GB", after the
+    /// server's name when that says something more.
+    pub fn label(&self) -> String {
+        let mut parts = Vec::new();
+        let height = self.height.map(|h| format!("{h}p"));
+        if !self.name.is_empty() && height.as_deref() != Some(self.name.as_str()) {
+            parts.push(self.name.clone());
+        }
+        parts.extend(height);
+        parts.extend(self.codec.as_ref().map(|c| c.to_uppercase()));
+        parts.extend(self.range.clone());
+        parts.extend(self.size.map(|b| format!("{:.1} GB", b as f64 / 1e9)));
+        parts.join(" · ")
+    }
+}
+
+/// The versions in an item's `MediaSources`.
+fn parse_versions(v: &Value) -> Vec<MbVersion> {
+    array(v, "MediaSources")
+        .iter()
+        .filter_map(|ms| {
+            let video = array(ms, "MediaStreams")
+                .iter()
+                .find(|s| text(s, "Type").as_deref() == Some("Video"));
+            Some(MbVersion {
+                id: text(ms, "Id")?,
+                name: text(ms, "Name").unwrap_or_default(),
+                height: super::media_source_height(ms),
+                codec: video.and_then(|s| text(s, "Codec")),
+                range: video
+                    .and_then(|s| text(s, "VideoRangeType").or_else(|| text(s, "VideoRange")))
+                    .filter(|r| {
+                        !r.eq_ignore_ascii_case("SDR") && !r.eq_ignore_ascii_case("Unknown")
+                    }),
+                size: num(ms, "Size").filter(|s| *s > 0.0).map(|s| s as u64),
+            })
+        })
+        .collect()
 }
 
 impl MbItem {
@@ -590,6 +655,8 @@ pub(crate) fn parse_item(v: &Value, base: &str) -> Option<MbItem> {
         backdrop,
         location,
         format,
+        versions: parse_versions(v),
+        version: None,
         id,
     })
 }
@@ -682,8 +749,12 @@ impl MediaBrowserSource {
             encode_form_value(id)
         );
         let v = self.api_get_json(&path)?;
-        parse_item(&v, &self.base_url)
-            .ok_or_else(|| Error::NotFound(format!("item {id} on {}", self.name)))
+        let mut item = parse_item(&v, &self.base_url)
+            .ok_or_else(|| Error::NotFound(format!("item {id} on {}", self.name)))?;
+        item.version = self
+            .chosen_version(id)
+            .filter(|c| item.versions.iter().any(|v| &v.id == c));
+        Ok(item)
     }
 
     /// The titles matching `text`, by section (`SEARCH_SECTIONS`), best
@@ -853,6 +924,43 @@ mod tests {
     use serde_json::json;
 
     const BASE: &str = "http://jf:8096";
+
+    #[test]
+    fn versions_are_told_apart() {
+        let v = json!({
+            "Id": "m1",
+            "Name": "Film",
+            "Type": "Movie",
+            "MediaSources": [
+                {
+                    "Id": "a",
+                    "Name": "2160p",
+                    "Size": 18_200_000_000_u64,
+                    "MediaStreams": [
+                        {"Type": "Video", "Codec": "hevc", "Height": 2160, "VideoRange": "HDR"}
+                    ]
+                },
+                {
+                    "Id": "b",
+                    "Name": "Director's Cut",
+                    "MediaStreams": [
+                        {"Type": "Video", "Codec": "h264", "Height": 1080, "VideoRange": "SDR"}
+                    ]
+                }
+            ]
+        });
+        let item = parse_item(&v, "http://s").unwrap();
+        let labels: Vec<String> = item.versions.iter().map(MbVersion::label).collect();
+        assert_eq!(
+            labels,
+            [
+                "2160p · HEVC · HDR · 18.2 GB",
+                "Director's Cut · 1080p · H264"
+            ]
+        );
+        assert_eq!(item.versions[1].id, "b");
+        assert_eq!(item.version, None);
+    }
 
     #[test]
     fn movies_with_user_data_and_images() {

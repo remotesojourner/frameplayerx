@@ -333,6 +333,9 @@ enum Go {
     /// Load again what the page shows (`Load` with the page's number).
     Reload(Load),
     Mark(String, Mark, bool),
+    /// Play the item at this location from this version (`None`: the
+    /// tallest that fits).
+    Version(String, Option<String>),
     Search(String),
 }
 
@@ -466,6 +469,11 @@ fn follow(v: &mut View, source: &str, j: &mut JellyfinView, go: Go) {
                 on,
             });
         }
+        Go::Version(location, version) => v.actions.push(Action::JellyfinVersion {
+            source: source.to_string(),
+            location,
+            version,
+        }),
         Go::Details(item) => {
             let seq = v.state.next_seq();
             ask(
@@ -1173,7 +1181,7 @@ fn episode_row(ui: &mut egui::Ui, v: &mut View, e: &MbItem) -> (bool, bool) {
 }
 
 /// A film's, episode's or video's page.
-fn details(ui: &mut egui::Ui, v: &mut View, item: &MbItem) -> Option<Go> {
+fn details(ui: &mut egui::Ui, v: &mut View, item: &mut MbItem) -> Option<Go> {
     let mut go = None;
     ui.add_space(4.0);
     let key = item
@@ -1259,6 +1267,13 @@ fn details(ui: &mut egui::Ui, v: &mut View, item: &MbItem) -> Option<Go> {
     });
     ui.add_space(20.0);
     ui.set_max_width(1100.0);
+    if item.versions.len() > 1 {
+        if let Some(version) = version_chips(ui, item) {
+            item.version = version.clone();
+            go = Some(Go::Version(item.location.clone(), version));
+        }
+        ui.add_space(14.0);
+    }
     if let Some(o) = &item.overview {
         page::prose(ui, o);
         ui.add_space(14.0);
@@ -1313,6 +1328,29 @@ fn details(ui: &mut egui::Ui, v: &mut View, item: &MbItem) -> Option<Go> {
     }
     ui.add_space(20.0);
     go
+}
+
+/// The versions the server keeps of a film or video (4K and 1080p, a
+/// director's cut); the one clicked, to play it from wherever it is opened.
+fn version_chips(ui: &mut egui::Ui, item: &MbItem) -> Option<Option<String>> {
+    let mut chosen = None;
+    widgets::section_label(ui, "Version");
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing = Vec2::new(8.0, 8.0);
+        if widgets::chip(ui, "Automatic", item.version.is_none())
+            .tip("The best that fits the server's maximum height")
+            .clicked()
+        {
+            chosen = Some(None);
+        }
+        for version in &item.versions {
+            let on = item.version.as_deref() == Some(version.id.as_str());
+            if widgets::chip(ui, &version.label(), on).clicked() {
+                chosen = Some(Some(version.id.clone()));
+            }
+        }
+    });
+    chosen
 }
 
 #[cfg(test)]
