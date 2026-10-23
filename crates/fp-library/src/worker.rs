@@ -66,10 +66,21 @@ impl ThumbnailCrop {
     }
 }
 
+/// One frame asked of [`MediaProber::thumbnails`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FrameRequest {
+    /// Seconds into the video.
+    pub at_seconds: f64,
+    /// Bounding box.
+    pub max_width: u32,
+    /// Bounding box.
+    pub max_height: u32,
+}
+
 /// Reads metadata and frames from media. Implemented by the app on top of
-/// FFmpeg; the library only calls it from the worker thread. Either call
-/// may return [`Error::Cancelled`] to stop the pass and leave the video
-/// pending for the next one.
+/// FFmpeg; the library only calls it from the worker thread. Any call may
+/// return [`Error::Cancelled`] to stop the pass and leave the video pending
+/// for the next one.
 pub trait MediaProber: Send + Sync {
     /// Container and stream information for `location` (path or URL).
     fn probe(&self, location: &str) -> Result<ProbeInfo>;
@@ -85,6 +96,25 @@ pub trait MediaProber: Send + Sync {
         max_height: u32,
         crop: ThumbnailCrop,
     ) -> Result<RgbaImage>;
+
+    /// The frames `requests` ask for, one by one to `each` with their place
+    /// in `requests`, stopping at the first error (`each`'s too). A prober
+    /// can make them all from one opening of the file (the worker asks for
+    /// a video's thumbnail and preview frames together, after its
+    /// [`probe`](Self::probe)); by default each is a [`thumbnail`](Self::thumbnail).
+    fn thumbnails(
+        &self,
+        location: &str,
+        crop: ThumbnailCrop,
+        requests: &[FrameRequest],
+        each: &mut dyn FnMut(usize, RgbaImage) -> Result<()>,
+    ) -> Result<()> {
+        for (i, r) in requests.iter().enumerate() {
+            let img = self.thumbnail(location, r.at_seconds, r.max_width, r.max_height, crop)?;
+            each(i, img)?;
+        }
+        Ok(())
+    }
 }
 
 /// Tuning for the metadata worker.
@@ -213,25 +243,14 @@ fn strip_path(dir: &Path, id: MediaId) -> PathBuf {
     dir.join(format!("{id}_strip.jpg"))
 }
 
-fn make_strip(
-    prober: &dyn MediaProber,
+/// Writes the preview sheet of `frames`, taken `interval` seconds apart.
+fn write_strip(
     options: &WorkerOptions,
     rec: &MediaRecord,
-    duration: f64,
-    crop: ThumbnailCrop,
+    frames: &[RgbaImage],
+    interval: f64,
 ) -> Result<PreviewStrip> {
-    let n = options.strip_frames;
-    let interval = duration / n as f64;
-    let (mw, mh) = (
-        options.strip_frame_max_width.max(1),
-        options.strip_frame_max_height.max(1),
-    );
-    let mut frames = Vec::with_capacity(n as usize);
-    for i in 0..n {
-        let t = (i as f64 + 0.5) * interval;
-        let img = prober.thumbnail(&rec.location, t, mw, mh, crop)?;
-        frames.push(img.fit_within(mw, mh)?);
-    }
+    let n = frames.len() as u32;
     let widest = frames.iter().map(|f| f.width).max().unwrap_or(1).max(1);
     let max_columns = (u16::MAX as u32 / widest).max(1);
     let columns = options
@@ -239,7 +258,7 @@ fn make_strip(
         .unwrap_or(n)
         .clamp(1, n)
         .min(max_columns);
-    let (sheet, cell_width, cell_height) = tile(&frames, columns)?;
+    let (sheet, cell_width, cell_height) = tile(frames, columns)?;
     let path = strip_path(&options.cache_dir, rec.id);
     write_atomic(&path, &sheet.to_jpeg(options.jpeg_quality)?)?;
     Ok(PreviewStrip {
@@ -279,43 +298,65 @@ fn process_one(
         .filter(|d| d.is_finite() && *d > 0.0)
         .or(rec.duration);
 
-    let mut warnings: Vec<String> = Vec::new();
+    // The thumbnail, then the preview frames (at the middle of each of
+    // `strip_frames` stretches), from one opening of the file.
     let at = duration.map_or(0.0, |d| d * options.thumbnail_position.clamp(0.0, 1.0));
     let (tw, th) = (
         options.thumbnail_max_width.max(1),
         options.thumbnail_max_height.max(1),
     );
-    let thumbnail = prober
-        .thumbnail(&rec.location, at, tw, th, crop)
-        .and_then(|img| {
+    let (sw, sh) = (
+        options.strip_frame_max_width.max(1),
+        options.strip_frame_max_height.max(1),
+    );
+    let interval = duration
+        .filter(|_| options.strip_frames > 0)
+        .map(|d| d / options.strip_frames as f64);
+    let mut requests = vec![FrameRequest {
+        at_seconds: at,
+        max_width: tw,
+        max_height: th,
+    }];
+    if let Some(interval) = interval {
+        requests.extend((0..options.strip_frames).map(|i| FrameRequest {
+            at_seconds: (i as f64 + 0.5) * interval,
+            max_width: sw,
+            max_height: sh,
+        }));
+    }
+    let mut thumbnail = None;
+    let mut frames = Vec::new();
+    let made = prober.thumbnails(&rec.location, crop, &requests, &mut |i, img| {
+        if i == 0 {
             let jpg = img.fit_within(tw, th)?.to_jpeg(options.jpeg_quality)?;
             let path = thumbnail_path(&options.cache_dir, rec.id);
             write_atomic(&path, &jpg)?;
-            Ok(path)
-        });
-    let (thumbnail, thumb_error) = match thumbnail {
-        Ok(p) => (Some(p), None),
+            thumbnail = Some(path);
+        } else {
+            frames.push(img.fit_within(sw, sh)?);
+        }
+        Ok(())
+    });
+    let mut warnings: Vec<String> = Vec::new();
+    let mut thumb_error = None;
+    let mut preview_strip = None;
+    match made {
         Err(Error::Cancelled) => return Err(Error::Cancelled),
-        Err(e) => {
+        Err(e) if thumbnail.is_none() => {
             let msg = format!("thumbnail: {e}");
             warnings.push(msg.clone());
-            (None, Some(msg))
+            thumb_error = Some(msg);
         }
-    };
-
-    let preview_strip = match duration {
-        Some(d) if options.strip_frames > 0 && thumbnail.is_some() => {
-            match make_strip(prober, options, rec, d, crop) {
-                Ok(s) => Some(s),
-                Err(Error::Cancelled) => return Err(Error::Cancelled),
-                Err(e) => {
-                    warnings.push(format!("preview strip: {e}"));
-                    None
+        Err(e) => warnings.push(format!("preview strip: {e}")),
+        Ok(()) => {
+            if let Some(interval) = interval {
+                match write_strip(options, rec, &frames, interval) {
+                    Ok(s) => preview_strip = Some(s),
+                    Err(e) => warnings.push(format!("preview strip: {e}")),
                 }
             }
         }
-        _ => None,
-    };
+    }
 
     let positive = |v: u32| (v > 0).then_some(v);
     let stored = library.store_probe(
@@ -621,6 +662,92 @@ mod tests {
             let (w, h) = crate::image::fit_size(w, h, max_w, max_h);
             Ok(RgbaImage::filled(w, h, [200, 100, 50, 255]))
         }
+    }
+
+    /// A call for frames: the video, and each frame's time and width.
+    type Asked = (String, Vec<(f64, u32)>);
+
+    /// Records how frames are asked for: all of a video's together.
+    #[derive(Default)]
+    struct Batches {
+        inner: FakeProber,
+        asked: Mutex<Vec<Asked>>,
+    }
+
+    impl MediaProber for Batches {
+        fn probe(&self, location: &str) -> Result<ProbeInfo> {
+            self.inner.probe(location)
+        }
+
+        fn thumbnail(
+            &self,
+            location: &str,
+            at: f64,
+            max_w: u32,
+            max_h: u32,
+            crop: ThumbnailCrop,
+        ) -> Result<RgbaImage> {
+            self.inner.thumbnail(location, at, max_w, max_h, crop)
+        }
+
+        fn thumbnails(
+            &self,
+            location: &str,
+            crop: ThumbnailCrop,
+            requests: &[FrameRequest],
+            each: &mut dyn FnMut(usize, RgbaImage) -> Result<()>,
+        ) -> Result<()> {
+            self.asked.lock().unwrap().push((
+                location.into(),
+                requests
+                    .iter()
+                    .map(|r| (r.at_seconds, r.max_width))
+                    .collect(),
+            ));
+            for (i, r) in requests.iter().enumerate() {
+                each(
+                    i,
+                    self.inner.thumbnail(
+                        location,
+                        r.at_seconds,
+                        r.max_width,
+                        r.max_height,
+                        crop,
+                    )?,
+                )?;
+            }
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn a_videos_thumbnail_and_preview_frames_are_asked_for_together() {
+        let dir = tempfile::tempdir().unwrap();
+        let lib = Library::open_in_memory().unwrap();
+        let o = opts(dir.path());
+        lib.upsert(&MediaUpsert::new("/v/a.mp4", "a.mp4")).unwrap();
+        let prober = Batches {
+            inner: FakeProber::default().with(
+                "/v/a.mp4",
+                1920,
+                1080,
+                100.0,
+                ContainerHints::default(),
+            ),
+            ..Default::default()
+        };
+        let stats =
+            process_pending(&lib, &prober, &o, &AtomicBool::new(false), &mut |_| {}).unwrap();
+        assert_eq!(stats.processed, 1);
+        let asked = prober.asked.lock().unwrap();
+        assert_eq!(
+            *asked,
+            vec![(
+                "/v/a.mp4".to_string(),
+                vec![(20.0, 640), (12.5, 64), (37.5, 64), (62.5, 64), (87.5, 64)]
+            )],
+            "one call, the thumbnail first"
+        );
     }
 
     fn opts(dir: &Path) -> WorkerOptions {

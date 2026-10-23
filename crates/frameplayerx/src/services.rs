@@ -348,10 +348,10 @@ impl Services {
     }
 
     pub fn start_worker(&mut self) {
-        let prober = Arc::new(crate::prober::FfmpegProber {
-            opener: self.opener.clone(),
-            busy: self.worker_busy.clone(),
-        });
+        let prober = Arc::new(crate::prober::FfmpegProber::new(
+            self.opener.clone(),
+            self.worker_busy.clone(),
+        ));
         match fp_library::MetadataWorker::spawn(
             self.library.clone(),
             prober,

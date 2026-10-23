@@ -285,7 +285,8 @@ inside a library, or holding one, can't be another.
 FramePlayerX looks for new and removed videos in a library when you add
 it, when FramePlayerX starts, when its card is inserted, each time you open
 it, and when you press **Scan now** on its page. Its thumbnails are made in
-the background. The pencil next to it under **Sources** renames it or moves
+the background, on one core at low priority, from the video's keyframes,
+and wait while a video plays. The pencil next to it under **Sources** renames it or moves
 it to another folder, and offers **Rebuild thumbnails** and **Retry**
 (videos that couldn't be read).
 

@@ -44,6 +44,6 @@ pub use scan::{
 };
 pub use schema::SCHEMA_VERSION;
 pub use worker::{
-    MediaProber, MetadataWorker, ProbeInfo, ThumbnailCrop, WorkerEvent, WorkerOptions, WorkerStats,
-    process_pending,
+    FrameRequest, MediaProber, MetadataWorker, ProbeInfo, ThumbnailCrop, WorkerEvent,
+    WorkerOptions, WorkerStats, process_pending,
 };

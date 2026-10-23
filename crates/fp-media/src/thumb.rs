@@ -78,9 +78,10 @@ pub fn probe(
     Ok(read_info(&input))
 }
 
-/// Decodes the first frame at or after `at` seconds and scales it to fit
-/// within `max_w` x `max_h`, keeping the aspect ratio of the cropped area.
-/// Setting `interrupt` stops it at the next read.
+/// Decodes the frame a thumbnail at `at` seconds shows (see
+/// [`Grabber::grab`]) and scales it to fit within `max_w` x `max_h`, keeping
+/// the aspect ratio of the cropped area. Setting `interrupt` stops it at the
+/// next read.
 pub fn grab(
     src: Arc<dyn ByteSource>,
     name: &str,
@@ -90,50 +91,133 @@ pub fn grab(
     crop: Crop,
     interrupt: Arc<AtomicBool>,
 ) -> Result<Rgba> {
-    let mut input = Input::open(src, name, interrupt)?;
-    let vi = input
-        .best_stream(ff::AVMEDIA_TYPE_VIDEO)
-        .ok_or(Error::NoStream("video"))?;
-    let shape = crate::info::picture_shape(&input, vi);
-    // Software decoding: the hardware decoder is busy with playback.
-    let mut dec = Decoder::open(&input, vi, HwDecode::Off)?;
-    if at > 0.0 {
-        input.seek(at)?;
+    Grabber::open(src, name, interrupt)?.grab(at, max_w, max_h, crop)
+}
+
+/// Thumbnails of one video: opened (and probed) once, then any number of
+/// frames.
+pub struct Grabber {
+    input: Input,
+    info: MediaInfo,
+    /// The video stream, its clockwise turn and pixel aspect, and its
+    /// decoder, once a frame was asked for.
+    video: Option<(usize, (u32, f64), Decoder)>,
+    /// Whether it has read on from the start.
+    used: bool,
+    /// When the last picture grabbed shows.
+    last: Option<f64>,
+}
+
+impl Grabber {
+    /// Opens a video for thumbnails, reading what [`probe`] does. Setting
+    /// `interrupt` makes reads in progress fail.
+    pub fn open(
+        src: Arc<dyn ByteSource>,
+        name: &str,
+        interrupt: Arc<AtomicBool>,
+    ) -> Result<Grabber> {
+        let input = Input::open(src, name, interrupt)?;
+        let info = read_info(&input);
+        Ok(Grabber {
+            input,
+            info,
+            video: None,
+            used: false,
+            last: None,
+        })
     }
-    let mut pkt = Packet::new();
-    let mut frame = Frame::new();
-    let mut eof = false;
-    let mut fallback: Option<Frame> = None;
-    for _ in 0..2000 {
-        if !eof {
-            if input.read(pkt.as_ptr())? {
-                if pkt.stream_index() == vi {
-                    dec.send(pkt.as_ptr())?;
-                }
+
+    /// The video stream, its shape and its decoder, opened on first use:
+    /// in software (the hardware decoder is playback's), keyframes only.
+    fn video(&mut self) -> Result<&mut (usize, (u32, f64), Decoder)> {
+        if self.video.is_none() {
+            let index = self
+                .input
+                .best_stream(ff::AVMEDIA_TYPE_VIDEO)
+                .ok_or(Error::NoStream("video"))?;
+            let shape = crate::info::picture_shape(&self.input, index);
+            let dec = Decoder::open(&self.input, index, HwDecode::Stills)?;
+            self.video = Some((index, shape, dec));
+        }
+        Ok(self.video.as_mut().expect("just opened"))
+    }
+
+    /// What the video holds, as [`probe`] reads it.
+    pub fn info(&self) -> &MediaInfo {
+        &self.info
+    }
+
+    /// The keyframe at or before `at` seconds (the first picture when `at`
+    /// is 0), scaled to fit within `max_w` x `max_h` keeping the aspect
+    /// ratio of the cropped area. Only that one picture is decoded: the
+    /// frames between it and `at` would cost far more than they show, a
+    /// whole group of pictures of 4K or 8K for each thumbnail. When that
+    /// keyframe is the one grabbed last (thumbnails closer together than
+    /// keyframes), the next keyframe instead.
+    pub fn grab(&mut self, at: f64, max_w: u32, max_h: u32, crop: Crop) -> Result<Rgba> {
+        self.video()?;
+        if at > 0.0 || self.used {
+            self.input.seek(at.max(0.0))?;
+        }
+        self.used = true;
+        let (mut frame, mut shows) = self.keyframe()?;
+        if at > 0.0
+            && self.last.is_some()
+            && shows == self.last
+            && self.input.seek_after(at).is_ok()
+            && let Ok((next, next_shows)) = self.keyframe()
+            && next_shows > self.last
+        {
+            (frame, shows) = (next, next_shows);
+        }
+        self.last = shows;
+        let shape = self.video()?.1;
+        scale(&frame, max_w, max_h, crop, shape)
+    }
+
+    /// The first picture decoded from where the input is, and when it
+    /// shows.
+    fn keyframe(&mut self) -> Result<(Frame, Option<f64>)> {
+        let Grabber { input, video, .. } = self;
+        let (index, _, dec) = video.as_mut().expect("opened by grab");
+        dec.flush();
+        let mut pkt = Packet::new();
+        let mut frame = Frame::new();
+        for _ in 0..10_000 {
+            let more = input.read(pkt.as_ptr())?;
+            if more && pkt.stream_index() != *index {
                 pkt.unref();
-            } else {
-                eof = true;
-                dec.send(std::ptr::null())?;
+                continue;
             }
-        }
-        match dec.receive(&mut frame)? {
-            Some(true) => {
-                let t = dec.frame_time(&frame).unwrap_or(at);
-                if t + 0.05 >= at {
-                    return scale(&frame, max_w, max_h, crop, shape);
+            if more {
+                dec.send(pkt.as_ptr())?;
+                pkt.unref();
+                if let Some(true) = dec.receive(&mut frame)? {
+                    let t = dec.frame_time(&frame);
+                    return Ok((frame, t));
                 }
-                let keep = Frame::new();
-                // SAFETY: both frames valid; keep the latest as a fallback.
-                unsafe { ff::av_frame_move_ref(keep.as_ptr(), frame.as_ptr()) };
-                fallback = Some(keep);
             }
-            Some(false) => break,
-            None => {}
+            // A decoder holds pictures back to put them in order, until
+            // later ones are decoded, which here are skipped: drained, it
+            // hands the keyframe out now instead of after the next one.
+            dec.send(std::ptr::null())?;
+            for _ in 0..4 {
+                match dec.receive(&mut frame)? {
+                    Some(true) => {
+                        let t = dec.frame_time(&frame);
+                        return Ok((frame, t));
+                    }
+                    Some(false) => break,
+                    None => {}
+                }
+            }
+            if !more {
+                break;
+            }
+            // Nothing yet (a picture it skipped): on to the next packet.
+            dec.flush();
         }
-    }
-    match fallback {
-        Some(f) => scale(&f, max_w, max_h, crop, shape),
-        None => Err(Error::Unsupported("no frame decoded".into())),
+        Err(Error::Unsupported("no frame decoded".into()))
     }
 }
 
@@ -281,6 +365,59 @@ mod tests {
         assert!(distinct.len() > 10, "image looks blank");
     }
 
+    /// A grab from a session of its own.
+    fn grab_alone(at: f64) -> Rgba {
+        grab(
+            src("h264_aac_180_LR.mp4"),
+            "x.mp4",
+            at,
+            160,
+            160,
+            Crop::Full,
+            no_interrupt(),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn a_thumbnail_is_the_keyframe_before_its_time() {
+        // Keyframes at 0 and 1 s, 30 frames apart.
+        let (first, second) = (grab_alone(0.0), grab_alone(1.0));
+        assert_ne!(first, second);
+        assert_eq!(grab_alone(0.9), first);
+        assert_eq!(grab_alone(1.9), second);
+    }
+
+    #[test]
+    fn one_session_grabs_each_keyframe_once_where_it_can() {
+        let mut g = Grabber::open(src("h264_aac_180_LR.mp4"), "x.mp4", no_interrupt()).unwrap();
+        let mut at = |t| g.grab(t, 160, 160, Crop::Full).unwrap();
+        let (first, second) = (grab_alone(0.0), grab_alone(1.0));
+        assert_eq!(at(0.2), first);
+        // The keyframe before 0.6 s was the last one: the next instead.
+        assert_eq!(at(0.6), second);
+        // No keyframe after 1.9 s: the one before it again.
+        assert_eq!(at(1.9), second);
+        assert_eq!(at(0.5), first, "back again");
+        assert_eq!(g.info().video_stream().unwrap().width, 640);
+    }
+
+    #[test]
+    fn grabs_av1_and_vp9() {
+        for name in ["av1_opus.webm", "vp9.webm"] {
+            let mut g = Grabber::open(src(name), name, no_interrupt()).unwrap();
+            for at in [0.0, 0.5] {
+                let img = g.grab(at, 160, 160, Crop::Full).unwrap();
+                let distinct: std::collections::HashSet<_> = img
+                    .pixels
+                    .chunks(4)
+                    .map(|p| (p[0] / 32, p[1] / 32, p[2] / 32))
+                    .collect();
+                assert!(distinct.len() > 10, "{name} at {at}: looks blank");
+            }
+        }
+    }
+
     #[test]
     fn decodes_first_frame_full_size() {
         let f = decode_first_frame(src("h264_aac_180_LR.mp4"), "x.mp4").unwrap();
@@ -348,5 +485,56 @@ mod tests {
             stop,
         );
         assert!(r.is_err());
+    }
+
+    /// What making one video's thumbnails costs, as the library worker
+    /// does it: a probe, a 640 px thumbnail at 20 % and 20 preview frames
+    /// of 160 px. Prints wall and CPU time.
+    #[test]
+    #[ignore = "a benchmark: THUMB_BENCH=video"]
+    fn thumbnail_cost() {
+        let path = std::env::var("THUMB_BENCH").expect("THUMB_BENCH");
+        let src = || -> Arc<dyn ByteSource> {
+            Arc::new(FileSource::open(std::path::Path::new(&path)).unwrap())
+        };
+        let cpu = || {
+            // SAFETY: getrusage fills the struct.
+            unsafe {
+                let mut u: libc::rusage = std::mem::zeroed();
+                libc::getrusage(libc::RUSAGE_SELF, &mut u);
+                let t = |v: libc::timeval| v.tv_sec as f64 + v.tv_usec as f64 / 1e6;
+                (t(u.ru_utime) + t(u.ru_stime), u.ru_maxrss)
+            }
+        };
+        let (cpu0, _) = cpu();
+        let start = std::time::Instant::now();
+        let info = probe(src(), &path, no_interrupt()).unwrap();
+        let d = info.duration;
+        let mut g = Grabber::open(src(), &path, no_interrupt()).unwrap();
+        let out = std::env::var("THUMB_OUT").ok();
+        let save = |name: String, img: &Rgba| {
+            if let Some(dir) = &out {
+                let f = format!("{dir}/{name}_{}x{}.rgba", img.width, img.height);
+                std::fs::write(f, &img.pixels).unwrap();
+            }
+        };
+        save(
+            "main".into(),
+            &g.grab(d * 0.2, 640, 640, Crop::Full).unwrap(),
+        );
+        for i in 0..20 {
+            let t = (i as f64 + 0.5) * d / 20.0;
+            save(
+                format!("strip{i:02}"),
+                &g.grab(t, 160, 160, Crop::Full).unwrap(),
+            );
+        }
+        let (cpu1, rss) = cpu();
+        eprintln!(
+            "{path}: {:.2} s wall, {:.2} s CPU, peak RSS {} MiB",
+            start.elapsed().as_secs_f64(),
+            cpu1 - cpu0,
+            rss / 1024
+        );
     }
 }

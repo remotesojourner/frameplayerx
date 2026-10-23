@@ -120,6 +120,10 @@ pub enum HwDecode {
     #[default]
     Auto,
     Off,
+    /// Software, on one thread, keyframes only and without in-loop
+    /// filtering: stills for thumbnails, cheap in the background while the
+    /// library is browsed.
+    Stills,
 }
 
 /// Hardware (V4L2 stateful) decoder name for a codec, if FFmpeg has one.
@@ -159,6 +163,11 @@ fn candidates(
     ten_bit_hevc: bool,
 ) -> Vec<Candidate> {
     let mut c = Vec::new();
+    let hw = if hw == HwDecode::Stills {
+        HwDecode::Off
+    } else {
+        hw
+    };
     let eight_bit = matches!(
         format,
         ff::AV_PIX_FMT_NONE | ff::AV_PIX_FMT_YUV420P | ff::AV_PIX_FMT_YUVJ420P
@@ -387,7 +396,7 @@ impl Decoder {
                     if c.is_null() {
                         continue;
                     }
-                    Self::try_open(c, par, time_base, hardware)
+                    Self::try_open(c, par, time_base, hardware, hw == HwDecode::Stills)
                 }
                 Candidate::Default => {
                     // SAFETY: as above.
@@ -395,7 +404,7 @@ impl Decoder {
                     if c.is_null() {
                         continue;
                     }
-                    Self::try_open(c, par, time_base, false)
+                    Self::try_open(c, par, time_base, false, hw == HwDecode::Stills)
                 }
             };
             match r {
@@ -470,6 +479,7 @@ impl Decoder {
         par: *const ff::AVCodecParameters,
         time_base: ff::AVRational,
         hardware: bool,
+        stills: bool,
     ) -> Result<Decoder> {
         // SAFETY: standard decoder setup; ctx freed by Decoder::drop or here.
         unsafe {
@@ -500,7 +510,17 @@ impl Decoder {
                 "decoder parameters",
             )?;
             (*ctx).pkt_timebase = time_base;
-            if !hardware {
+            if stills {
+                // Only keyframes (the first picture after a seek is one),
+                // skipping the rest unparsed past their headers, and no
+                // deblocking: invisible once scaled down to a thumbnail.
+                // One thread: frame threads would hold back pictures to
+                // decode several at once, for nothing here.
+                (*ctx).thread_count = 1;
+                (*ctx).skip_frame = ff::AVDISCARD_NONINTRA;
+                (*ctx).skip_loop_filter = ff::AVDISCARD_ALL;
+                (*ctx).flags2 |= ff::AV_CODEC_FLAG2_FAST as i32;
+            } else if !hardware {
                 (*ctx).thread_count = 0; // auto
                 (*ctx).thread_type = (ff::FF_THREAD_FRAME | ff::FF_THREAD_SLICE) as i32;
             }
@@ -514,7 +534,7 @@ impl Decoder {
                 ff::av_dict_set(&mut opts, k.as_ptr(), v.as_ptr(), 0);
             }
             let video = (*par).codec_type == ff::AVMEDIA_TYPE_VIDEO;
-            let r = if video && !hardware {
+            let r = if video && !hardware && !stills {
                 on_all_cpus(|| ff::avcodec_open2(ctx, codec, &mut opts))
             } else {
                 ff::avcodec_open2(ctx, codec, &mut opts)
@@ -1016,6 +1036,41 @@ mod tests {
             .iter()
             .fold((255u8, 0u8), |(a, b), &v| (a.min(v), b.max(v)));
         assert!(mx - mn > 100);
+    }
+
+    #[test]
+    fn stills_decode_only_keyframes() {
+        // Keyframes at 0 and 1 s of 60 frames; one of 25 frames.
+        for (name, keyframes) in [("h264_aac_180_LR.mp4", 2), ("hevc10_tb.mkv", 1)] {
+            let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/data")
+                .join(name);
+            let mut input = Input::open(
+                Arc::new(FileSource::open(&path).unwrap()),
+                name,
+                Arc::new(AtomicBool::new(false)),
+            )
+            .unwrap();
+            let vi = input.best_stream(ff::AVMEDIA_TYPE_VIDEO).unwrap();
+            let mut dec = Decoder::open(&input, vi, HwDecode::Stills).unwrap();
+            assert!(!dec.hardware);
+            let (mut pkt, mut frame) = (Packet::new(), Frame::new());
+            let mut frames = 0;
+            let mut more = true;
+            while more {
+                more = input.read(pkt.as_ptr()).unwrap();
+                if !more {
+                    dec.send(std::ptr::null()).unwrap();
+                } else if pkt.stream_index() == vi {
+                    dec.send(pkt.as_ptr()).unwrap();
+                }
+                pkt.unref();
+                while let Some(true) = dec.receive(&mut frame).unwrap() {
+                    frames += 1;
+                }
+            }
+            assert_eq!(frames, keyframes, "{name}");
+        }
     }
 
     #[test]

@@ -1,9 +1,10 @@
 //! The library's metadata worker, implemented with FFmpeg through fp-media.
 
 use crate::services::Opener;
-use fp_library::{MediaProber, ProbeInfo, RgbaImage, ThumbnailCrop};
-use std::sync::Arc;
+use fp_library::{FrameRequest, MediaProber, ProbeInfo, RgbaImage, ThumbnailCrop};
+use fp_media::thumb::{Crop, Grabber};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 
 pub struct FfmpegProber {
     pub opener: Arc<Opener>,
@@ -13,9 +14,20 @@ pub struct FfmpegProber {
     /// CPU and the network from playback for minutes (and quitting waited
     /// for it).
     pub busy: Arc<AtomicBool>,
+    /// The video probed last, still open for its thumbnails: the worker
+    /// asks for them right after the probe.
+    open: Mutex<Option<(String, Grabber)>>,
 }
 
 impl FfmpegProber {
+    pub fn new(opener: Arc<Opener>, busy: Arc<AtomicBool>) -> FfmpegProber {
+        FfmpegProber {
+            opener,
+            busy,
+            open: Mutex::new(None),
+        }
+    }
+
     /// Maps an error, as cancelled when `busy` caused it.
     fn err(&self, e: impl std::fmt::Display) -> fp_library::Error {
         if self.busy.load(Ordering::Acquire) {
@@ -32,23 +44,73 @@ impl FfmpegProber {
             Ok(())
         }
     }
+
+    fn grabber(&self, location: &str) -> fp_library::Result<Grabber> {
+        background();
+        let src = self.opener.open(location).map_err(|e| self.err(e))?;
+        Grabber::open(src, location, self.busy.clone()).map_err(|e| self.err(e))
+    }
+
+    /// `location` open for thumbnails: as its probe left it, or anew.
+    fn take(&self, location: &str) -> fp_library::Result<Grabber> {
+        let open = self
+            .open
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        match open {
+            Some((at, g)) if at == location => Ok(g),
+            _ => self.grabber(location),
+        }
+    }
+}
+
+/// Lowers the calling thread's priority, once: thumbnails are background
+/// work, and the interface and the audio come first.
+fn background() {
+    thread_local! {
+        static LOWERED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    }
+    if LOWERED.replace(true) {
+        return;
+    }
+    #[cfg(target_os = "linux")]
+    // SAFETY: a plain call; Linux keeps a nice value per thread, and 0 is
+    // the calling one.
+    unsafe {
+        libc::setpriority(libc::PRIO_PROCESS, 0, 10);
+    }
+}
+
+fn crop(crop: ThumbnailCrop) -> Crop {
+    match crop {
+        ThumbnailCrop::LeftEye => Crop::LeftHalf,
+        ThumbnailCrop::LeftEyeStretched => Crop::LeftHalfStretched,
+        ThumbnailCrop::TopEye => Crop::TopHalf,
+        ThumbnailCrop::TopEyeStretched => Crop::TopHalfStretched,
+        ThumbnailCrop::Full => Crop::Full,
+    }
 }
 
 impl MediaProber for FfmpegProber {
     fn probe(&self, location: &str) -> fp_library::Result<ProbeInfo> {
         self.check()?;
-        let src = self.opener.open(location).map_err(|e| self.err(e))?;
-        let info =
-            fp_media::thumb::probe(src, location, self.busy.clone()).map_err(|e| self.err(e))?;
+        let g = self.grabber(location)?;
+        let info = g.info();
         let v = info.video_stream();
         let (width, height) = v.map(fp_media::StreamInfo::display_size).unwrap_or((0, 0));
-        Ok(ProbeInfo {
+        let probed = ProbeInfo {
             duration: (info.duration > 0.0).then_some(info.duration),
             width,
             height,
             video_codec: v.map(|v| v.codec.clone()),
             hints: info.hints,
-        })
+        };
+        *self
+            .open
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some((location.to_string(), g));
+        Ok(probed)
     }
 
     fn thumbnail(
@@ -59,29 +121,42 @@ impl MediaProber for FfmpegProber {
         max_height: u32,
         crop: ThumbnailCrop,
     ) -> fp_library::Result<RgbaImage> {
-        self.check()?;
-        let src = self.opener.open(location).map_err(|e| self.err(e))?;
-        let crop = match crop {
-            ThumbnailCrop::LeftEye => fp_media::thumb::Crop::LeftHalf,
-            ThumbnailCrop::LeftEyeStretched => fp_media::thumb::Crop::LeftHalfStretched,
-            ThumbnailCrop::TopEye => fp_media::thumb::Crop::TopHalf,
-            ThumbnailCrop::TopEyeStretched => fp_media::thumb::Crop::TopHalfStretched,
-            ThumbnailCrop::Full => fp_media::thumb::Crop::Full,
-        };
-        let img = fp_media::thumb::grab(
-            src,
-            location,
+        let mut img = None;
+        let request = FrameRequest {
             at_seconds,
             max_width,
             max_height,
-            crop,
-            self.busy.clone(),
-        )
-        .map_err(|e| self.err(e))?;
-        Ok(RgbaImage {
-            width: img.width,
-            height: img.height,
-            pixels: img.pixels,
-        })
+        };
+        self.thumbnails(location, crop, &[request], &mut |_, i| {
+            img = Some(i);
+            Ok(())
+        })?;
+        img.ok_or_else(|| fp_library::Error::Probe("no frame".into()))
+    }
+
+    fn thumbnails(
+        &self,
+        location: &str,
+        crop: ThumbnailCrop,
+        requests: &[FrameRequest],
+        each: &mut dyn FnMut(usize, RgbaImage) -> fp_library::Result<()>,
+    ) -> fp_library::Result<()> {
+        self.check()?;
+        let mut g = self.take(location)?;
+        for (i, r) in requests.iter().enumerate() {
+            self.check()?;
+            let img = g
+                .grab(r.at_seconds, r.max_width, r.max_height, self::crop(crop))
+                .map_err(|e| self.err(e))?;
+            each(
+                i,
+                RgbaImage {
+                    width: img.width,
+                    height: img.height,
+                    pixels: img.pixels,
+                },
+            )?;
+        }
+        Ok(())
     }
 }

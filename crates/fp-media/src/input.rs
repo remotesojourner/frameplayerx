@@ -138,6 +138,20 @@ impl Input {
         Ok(())
     }
 
+    /// Seeks so the next packets start at the first keyframe after
+    /// `seconds`.
+    pub(crate) fn seek_after(&mut self, seconds: f64) -> Result<()> {
+        let ts = ((seconds.max(0.0) + self.origin) * ff::AV_TIME_BASE as f64) as i64;
+        // SAFETY: fmt is open.
+        unsafe {
+            check(
+                ff::avformat_seek_file(self.fmt, -1, ts + 1, ts + 1, i64::MAX, 0),
+                "seek",
+            )?;
+        }
+        Ok(())
+    }
+
     /// Reads the next packet into `pkt`. Returns false at end of file.
     pub fn read(&mut self, pkt: *mut ff::AVPacket) -> Result<bool> {
         // SAFETY: pkt is a valid allocated packet owned by the caller.
