@@ -225,6 +225,7 @@ impl Source for SmbSource {
             let mut out: Vec<Entry> = self
                 .list_shares()?
                 .into_iter()
+                .filter(|share| self.can_open_share(share))
                 .map(|share| {
                     let url = smb_url(&loc.host, loc.port, &share, "");
                     dir_entry(share, format!("{url}/"), None)
@@ -287,6 +288,28 @@ struct DirItem {
     modified: Option<i64>,
 }
 
+impl SmbSource {
+    /// Whether `share` takes this source's sign-in (a guest one without a
+    /// login): a server's list holds the shares that need another login,
+    /// or that this one may not open, and those are left out. Tried by
+    /// connecting, and the connection kept for browsing it. A share that
+    /// fails any other way (the server stopped answering) stays, so opening
+    /// it says why.
+    fn can_open_share(&self, share: &str) -> bool {
+        match self.connect_share(share) {
+            Ok(()) => true,
+            Err(e @ (Error::Auth(_) | Error::NotFound(_))) => {
+                log::info!("{}: leaving out share {share}: {e}", self.root);
+                false
+            }
+            Err(e) => {
+                log::warn!("{}: share {share}: {e}", self.root);
+                true
+            }
+        }
+    }
+}
+
 /// Whether a share is one to browse: not the server's own (`IPC$`,
 /// `ADMIN$`, `C$`, `print$`: hidden ones end in `$`).
 #[cfg_attr(not(feature = "smb"), allow(dead_code))]
@@ -296,6 +319,10 @@ fn browsable_share(name: &str) -> bool {
 
 #[cfg(not(feature = "smb"))]
 impl SmbSource {
+    fn connect_share(&self, _share: &str) -> Result<()> {
+        Err(Error::SmbUnavailable("compiled without SMB support".into()))
+    }
+
     fn list_shares(&self) -> Result<Vec<String>> {
         Err(Error::SmbUnavailable("compiled without SMB support".into()))
     }
@@ -359,8 +386,14 @@ mod imp {
     /// Maps an smb-rs error, keeping "not found" and "access denied"
     /// distinguishable.
     fn map_err(e: smb::Error, what: &str) -> Error {
-        if let smb::Error::ReceivedErrorMessage(status, _) = &e {
-            match *status {
+        let status = match &e {
+            // An answer with an error, or a sign-in the server turned down.
+            smb::Error::ReceivedErrorMessage(status, _)
+            | smb::Error::UnexpectedMessageStatus(status) => Some(*status),
+            _ => None,
+        };
+        if let Some(status) = status {
+            match status {
                 Status::U32_LOGON_FAILURE | Status::U32_ACCESS_DENIED => {
                     return Error::Auth(what.to_string());
                 }
@@ -528,6 +561,11 @@ mod imp {
     impl SmbSource {
         pub(super) fn list_shares(&self) -> Result<Vec<String>> {
             self.sessions.list_shares()
+        }
+
+        /// Connects to `share` (kept for later), or says why it can't.
+        pub(super) fn connect_share(&self, share: &str) -> Result<()> {
+            self.sessions.session(share).map(|_| ())
         }
 
         pub(super) fn list_dir(&self, loc: &SmbLocation) -> Result<Vec<DirItem>> {

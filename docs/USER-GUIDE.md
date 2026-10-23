@@ -165,7 +165,7 @@ that pairing, you can also delete `~/.ssh/id_rsa_frame_devkit` and
 |---|---|
 | Any folder on the headset, a microSD card or a USB drive | Browse it under Home › On this device, or make it a library: Sources › Add source › Library |
 | Any server with a DeoVR feed or HereSphere API | Sources › Add source › DeoVR feed or HereSphere API |
-| NAS / Windows share | Sources › Add source › SMB share: a whole server (`smb://nas/`, which lists its shares) or one share or folder (`smb://nas/videos`) |
+| NAS / Windows share | Sources › Add source › SMB share: a whole server (`smb://nas/`, which lists the shares your login, or a guest without one, may open) or one share or folder (`smb://nas/videos`) |
 | Nextcloud and other WebDAV | Sources › Add source › WebDAV |
 | Jellyfin, Emby | Sources › Add source › Jellyfin / Emby (a password, or Quick Connect on Jellyfin) |
 | Plex, Serviio and other DLNA servers | Sources › Add source › DLNA › Search the network |

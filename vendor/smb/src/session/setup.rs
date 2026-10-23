@@ -229,9 +229,17 @@ where
             .take()
             .ok_or_else(|| Error::InvalidState("Missing final session setup response.".into()))?;
         let session_key = self.authenticator.session_key()?;
+        // FramePlayerX patch: a server that takes the login as a guest (Samba's
+        // `map to guest = Bad User` for a client with no account) answers with
+        // success and no final SPNEGO token, as a guest session has no key to
+        // sign one with, so SSPI never completes. Such a session is accepted
+        // when the client asked for guest access (an unsigned guest session is
+        // allowed): there was no secret to prove, and nothing to downgrade.
+        let accepted_guest = response.session_flags.is_guest_or_null_session()
+            && self.conn_info.config.allow_unsigned_guest_access;
         // A successful SMB reply may carry the last SPNEGO token. Consume it
         // locally; sending another setup request would restart a completed exchange.
-        if !self.authenticator.authentication_completed()? {
+        if !accepted_guest && !self.authenticator.authentication_completed()? {
             let output = self.authenticator.next(&response.buffer).await?;
             if !output.is_empty() {
                 return Err(Error::InvalidState(
@@ -239,7 +247,7 @@ where
                 ));
             }
         }
-        if !self.authenticator.authentication_completed()? {
+        if !accepted_guest && !self.authenticator.authentication_completed()? {
             return Err(Error::InvalidState(
                 "SMB session setup succeeded before SSPI authentication completed.".into(),
             ));

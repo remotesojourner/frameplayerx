@@ -4,7 +4,8 @@ This is [smb](https://crates.io/crates/smb) 0.12.1 (smb-rs,
 https://github.com/afiffon/smb-rs, MIT, see LICENSE.md) as published on
 crates.io, used through `[patch.crates-io]` in the workspace `Cargo.toml`.
 The tests and dev-dependencies are left out; everything else is unchanged
-except for the SMB credit accounting below and two compiler warnings (see
+except for the SMB credit accounting below, guest sign-in (see
+[Guest sign-in](#guest-sign-in)) and two compiler warnings (see
 [Warnings](#warnings)). The same code is still on
 upstream `main` (f4524d0) as of October 2026. Drop this copy once a release
 fixes it.
@@ -43,6 +44,23 @@ FUSE folder that delays one read in 40 by 1.2 s hung the old code within
   then reconnects).
 - `src/sync_helpers.rs`: `Semaphore::acquire_many_timeout`.
 - `src/error.rs`: `TimedOutTask::AcquireCredits`.
+
+## Guest sign-in
+
+A server that takes a login as a guest (Samba's default `map to guest = Bad
+User`, for a client with no account on it) answers the last session setup
+with success and the guest flag, but with no final SPNEGO token: a guest
+session has no key to sign one with. smb-rs waits for that token to finish
+SSPI and failed every such sign-in with "SMB session setup succeeded before
+SSPI authentication completed", so an SMB source with no login reached no
+share on such a server.
+
+- `src/session/setup.rs` (`complete_authentication`): a success reply
+  flagged guest or anonymous finishes the setup without the token when the
+  connection allows unsigned guest sessions (`allow_unsigned_guest_access`,
+  which FramePlayerX sets only for a source with no login). With a login,
+  the token is still required, so a real sign-in can't be turned into a
+  guest one.
 
 ## Warnings
 
