@@ -415,9 +415,13 @@ says why ("No hardware decoding for AV1", "… for 4:2:2 HEVC"). Convert them
 to 4:2:0 HEVC once on a PC and they play smoothly.
 
 "Hardware decoder busy" means the file is fine but the decoder had no room
-for it (Steam's own streaming uses it too, and an 8192×4096 H.264 or
-10-bit HEVC video only fits when nothing else is decoding). "The hardware decoder can't play
-this HEVC" means it tried and refused the file; frameplayerx.log says why.
+for it: Steam's own streaming holds a session too, and beside it the
+decoder takes at most about 8192×4080 pixels a frame. 8K UHD (7680×4320),
+5760×5760 and 8-bit 8192×4096 HEVC play in hardware; 10-bit 8192×4096
+HEVC, 8192×4096 H.264, 6144×6144 and larger only fit when nothing else is
+decoding. The pill's tip says how much room was left. "The hardware
+decoder can't play this HEVC" means it tried and refused the file;
+frameplayerx.log says why.
 
 The pill next to the format on the control bar says which decoder plays
 the video: HW, or SW in amber, with the codec and bit depth. Hover it, or

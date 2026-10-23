@@ -858,13 +858,12 @@ fn format_tab(
         widgets::rows(ui, |r| {
             let st = pb.player.stats();
             let decoder = decoder_text(video, &st, hardware_decoding);
-            r.row("Decoder", None, |ui| {
-                ui.label(RichText::new(decoder).color(if st.hardware {
-                    theme::TEXT
-                } else {
-                    theme::WARN
-                }));
-            });
+            let color = if st.hardware {
+                theme::TEXT
+            } else {
+                theme::WARN
+            };
+            r.info_colored("Decoder", &decoder, color);
             let codec_name = match video.codec.as_str() {
                 "hevc" => "HEVC (H.265)".to_string(),
                 "h264" => "H.264 (AVC)".to_string(),

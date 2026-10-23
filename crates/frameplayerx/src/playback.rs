@@ -801,14 +801,15 @@ fn stream_desc(v: &StreamInfo) -> String {
 }
 
 /// Why a video decodes in software, for the stream info: the hardware
-/// decoder's error when it was tried, else why it wasn't.
+/// decoder's error when it was tried (less the "unsupported: " most start
+/// with), else why it wasn't.
 pub(crate) fn software_reason(
     v: &StreamInfo,
     hardware_on: bool,
     hardware_error: Option<&str>,
 ) -> String {
     match hardware_error {
-        Some(e) => e.to_string(),
+        Some(e) => e.strip_prefix("unsupported: ").unwrap_or(e).to_string(),
         None if !has_hardware_decoder(v) => {
             format!("no hardware decoding for {}", stream_desc(v))
         }
@@ -998,8 +999,12 @@ mod tests {
         );
         let n = slow_decode_notice(&stream("av1", 8), true, None);
         assert!(n.contains("for AV1,"), "{n}");
-        let busy = "V4L2 REQBUFS: Cannot allocate memory (os error 12)";
+        let busy = "hardware decoder busy: other video sessions leave room for 8192x4064, \
+                    not 8192x4096 10-bit";
         let n = slow_decode_notice(&stream("hevc", 8), true, Some(busy));
+        assert!(n.contains("busy"), "{n}");
+        let wrapper = "V4L2 REQBUFS: Cannot allocate memory (os error 12)";
+        let n = slow_decode_notice(&stream("hevc", 8), true, Some(wrapper));
         assert!(n.contains("busy"), "{n}");
         // 8-bit, but 4:2:2: the hardware can't, whatever Windows says.
         let mut s422 = stream("hevc", 8);
@@ -1008,7 +1013,7 @@ mod tests {
         assert!(n.contains("for 4:2:2 HEVC"), "{n}");
         let n = slow_decode_notice(&stream("hevc", 8), false, None);
         assert!(n.contains("turn on hardware decoding"), "{n}");
-        let refused = "V4L2: stream size unknown";
+        let refused = "unsupported: V4L2: stream size unknown";
         let n = slow_decode_notice(&stream("hevc", 8), true, Some(refused));
         assert!(n.contains("can't play this HEVC (8192x4096)"), "{n}");
 
@@ -1019,8 +1024,10 @@ mod tests {
         assert_eq!(r, "no hardware decoding for 10-bit HEVC");
         let r = software_reason(&stream("hevc", 8), false, None);
         assert_eq!(r, "hardware decoding is off in Settings");
-        let r = software_reason(&stream("hevc", 8), true, Some(busy));
+        let r = software_reason(&stream("hevc", 10), true, Some(busy));
         assert_eq!(r, busy);
+        let r = software_reason(&stream("hevc", 8), true, Some(refused));
+        assert_eq!(r, "V4L2: stream size unknown");
 
         // 10-bit HEVC in hardware where the renderer shows it; never other
         // 10-bit codecs.

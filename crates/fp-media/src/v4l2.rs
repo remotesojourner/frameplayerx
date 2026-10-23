@@ -144,6 +144,18 @@ pub(crate) fn primer_matches(stream: (u32, u32), primer: (u32, u32)) -> bool {
         && macroblocks(primer.0, primer.1) < macroblocks(stream.0, stream.1)
 }
 
+/// The error for a stream of size `stream` the admission check refuses,
+/// `admitted` being the largest height it takes at that width beside the
+/// sessions open, if any.
+pub(crate) fn refused(stream: (u32, u32), ten_bit: bool, admitted: Option<u32>) -> crate::Error {
+    let (w, h) = stream;
+    let depth = if ten_bit { " 10-bit" } else { "" };
+    crate::Error::HardwareBusy(match admitted {
+        Some(c) => format!("other video sessions leave room for {w}x{c}, not {w}x{h}{depth}"),
+        None => "no room for another video session".into(),
+    })
+}
+
 /// Whether CAPTURE buffers already allocated can serve the new stream format
 /// after a resolution change, so decoding can resume without `REQBUFS`: the
 /// coded size must be the one they were allocated for, every buffer large
@@ -1023,6 +1035,13 @@ mod linux {
             Ok(r.count)
         }
 
+        /// [`refused`], logging the driver's error.
+        fn busy(&self, admitted: Option<u32>, e: &std::io::Error) -> Error {
+            let refused = refused(self.stream_size, self.pixelformat == Q10C, admitted);
+            log::info!("V4L2 REQBUFS output: {e}; {refused}");
+            refused
+        }
+
         fn free_output(&self) {
             let mut r = RequestBuffers {
                 count: 0,
@@ -1038,14 +1057,10 @@ mod linux {
             let count = match self.try_output(w, h) {
                 Ok(n) => n,
                 Err(e) if e.raw_os_error() == Some(libc::ENOMEM) => {
-                    // The admission check: retry with a lower declared size
-                    // and open CAPTURE through the primer, if one fits (NV12
-                    // only, see the module docs).
-                    let Some((_, primer)) = self.codec.primer().filter(|(_, size)| {
-                        self.pixelformat == NV12 && primer_matches((w, h), *size)
-                    }) else {
-                        return Err(err("REQBUFS output", e));
-                    };
+                    // The admission check: find the largest height admitted
+                    // beside the sessions open, then declare that and open
+                    // CAPTURE through the primer, if one fits (NV12 only,
+                    // see the module docs).
                     let mut fits = |cand: u32| {
                         let ok = self.try_output(w, cand).is_ok();
                         if ok {
@@ -1053,19 +1068,17 @@ mod linux {
                         }
                         ok
                     };
-                    let capped = capped_height(h, MIN_DECLARED_HEIGHT.min(h), &mut fits)
-                        .ok_or_else(|| {
-                            Error::Unsupported(format!(
-                                "V4L2 REQBUFS output {w}x{h}: {e} (no smaller size admitted)"
-                            ))
-                        })?;
-                    if capped + HEIGHT_STEP <= primer.1 {
-                        // Not even the primer would be admitted.
-                        return Err(Error::Unsupported(format!(
-                            "V4L2 {w}x{h}: too many other decoder sessions ({e}; \
-                             only {w}x{capped} admitted)"
-                        )));
-                    }
+                    let admitted = capped_height(h, MIN_DECLARED_HEIGHT.min(h), &mut fits);
+                    let primer =
+                        self.codec.primer().map(|(_, size)| size).filter(|size| {
+                            self.pixelformat == NV12 && primer_matches((w, h), *size)
+                        });
+                    // No primer for this stream, or not even it is admitted.
+                    let Some(capped) =
+                        admitted.filter(|&c| primer.is_some_and(|p| c + HEIGHT_STEP > p.1))
+                    else {
+                        return Err(self.busy(admitted, &e));
+                    };
                     log::info!(
                         "V4L2 {w}x{h} refused by the driver's admission check ({e}); \
                          declaring {w}x{capped} and priming"
@@ -1720,6 +1733,31 @@ mod tests {
         // Floor above the stream: nothing to try.
         assert_eq!(capped_height(300, 512, |_| true), None);
         assert_eq!(capped_height(1080, 1080, |_| true), None);
+    }
+
+    #[test]
+    fn a_refused_stream_says_how_much_room_was_left() {
+        // 10-bit 8K gets no primer: beside Steam's vrlink it is refused.
+        let admitted = capped_height(4096, 512, iris_admits(2, 8192));
+        assert_eq!(
+            refused((8192, 4096), true, admitted).to_string(),
+            "hardware decoder busy: other video sessions leave room for 8192x4064, \
+             not 8192x4096 10-bit"
+        );
+        // Nor does 6K top-bottom, 8-bit or not; 8K UHD and 5.7K top-bottom
+        // fit as they are.
+        assert!(!primer_matches((6144, 6144), (8192, 4080)));
+        let admitted = capped_height(6144, 512, iris_admits(2, 6144));
+        assert_eq!(
+            refused((6144, 6144), false, admitted).to_string(),
+            "hardware decoder busy: other video sessions leave room for 6144x5440, \
+             not 6144x6144"
+        );
+        assert!(iris_admits(2, 7680)(4320) && iris_admits(2, 5760)(5760));
+        assert_eq!(
+            refused((8192, 4096), false, None).to_string(),
+            "hardware decoder busy: no room for another video session"
+        );
     }
 
     #[test]

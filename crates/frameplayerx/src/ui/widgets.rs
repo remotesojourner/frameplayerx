@@ -38,8 +38,9 @@ impl Tip for Response {
                 self.id.with("tip"),
             ));
             let screen = self.ctx.screen_rect();
-            let g = one_line(
-                &painter,
+            // Wrapped to the panel, so a long one (the stream info's) is
+            // read whole.
+            let g = painter.layout(
                 word.to_string(),
                 theme::font(Weight::SemiBold, 15.0),
                 theme::BG,
@@ -687,6 +688,11 @@ impl Rows<'_> {
     /// A row with a read-only value on the right. A long value (a path, a
     /// list) wraps within its column and the row grows to fit.
     pub fn info(&mut self, title: &str, value: &str) {
+        self.info_colored(title, value, theme::TEXT_2);
+    }
+
+    /// [`Rows::info`] with the value in `color`.
+    pub fn info_colored(&mut self, title: &str, value: &str, color: Color32) {
         self.next_row(|ui| {
             let w = ui.available_width();
             let title_g = ui.painter().layout(
@@ -701,7 +707,7 @@ impl Rows<'_> {
             let mut job = LayoutJob::simple(
                 value.to_string(),
                 theme::font(Weight::Regular, 18.0),
-                theme::TEXT_2,
+                color,
                 value_w,
             );
             job.halign = Align::RIGHT;
@@ -717,11 +723,7 @@ impl Rows<'_> {
                 theme::TEXT,
             );
             // Right-aligned rows lie left of x = 0: anchor at the right edge.
-            p.galley(
-                Pos2::new(rect.right(), mid - value_h / 2.0),
-                value_g,
-                theme::TEXT_2,
-            );
+            p.galley(Pos2::new(rect.right(), mid - value_h / 2.0), value_g, color);
         });
     }
 

@@ -49,6 +49,10 @@ pub enum Error {
     NoStream(&'static str),
     #[error("unsupported: {0}")]
     Unsupported(String),
+    /// The hardware decoder has no room for the stream beside the other
+    /// video sessions open (Steam's streaming holds one).
+    #[error("hardware decoder busy: {0}")]
+    HardwareBusy(String),
     #[error("audio output: {0}")]
     Audio(String),
     #[error("I/O: {0}")]
