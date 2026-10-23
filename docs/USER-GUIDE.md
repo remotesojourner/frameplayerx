@@ -344,6 +344,12 @@ real shape. A portrait video's screen is as tall as **Screen width**.
 When a 3D file's metadata says the right eye comes first, the eyes are
 swapped to match.
 
+3D Blu-ray rips (MKV from MakeMKV, the disc's H.264 MVC video) play as full
+3D, each eye at full 1080p, on the Frame's hardware decoder. The few
+streams it can't take that way (none of the discs tried) play their left
+eye in 2D; the decoder line in the video's info says "3D Blu-ray as 2D".
+Disc images (`.iso`) and BDMV folders don't play yet: rip them to MKV.
+
 To change it: open the video, press **⚙** on the control bar, **Format**.
 Overrides are remembered per video. The same panel has position, zoom,
 IPD/depth, stereo alignment, picture controls, subtitle depth and

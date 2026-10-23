@@ -295,13 +295,15 @@ pub struct Decoder {
     /// Reads H.264 and HEVC packets' NAL units.
     nal: Option<NalReader>,
     skip: Option<Skip>,
+    /// 3D Blu-ray video (MVC), decoded by the H.264 decoder it holds.
+    mvc: Option<Box<crate::mvc::MvcDecoder>>,
     /// Packets precise seeks left out.
     pub(crate) left_out: u64,
 }
 
 /// What a precise seek leaves out: frames shown mostly before its target.
 #[derive(Clone, Copy, Debug)]
-struct Skip {
+pub(crate) struct Skip {
     /// The target in the stream's time base.
     target: f64,
     /// The duration of frames without one, in the same units.
@@ -314,7 +316,7 @@ struct Skip {
 impl Skip {
     /// Whether a frame at `pts` lasting `duration` (0 when unknown), both
     /// in the stream's time base, shows mostly before the target.
-    fn drops(self, pts: i64, duration: i64) -> bool {
+    pub(crate) fn drops(self, pts: i64, duration: i64) -> bool {
         let pts = if pts == ff::AV_NOPTS_VALUE {
             self.start
         } else {
@@ -350,6 +352,11 @@ impl Decoder {
         let stream = input.streams()[index];
         // SAFETY: stream belongs to an open input.
         let (par, time_base) = unsafe { ((*stream).codecpar, (*stream).time_base) };
+        if let Some(config) = crate::mvc::stream_config(input, index) {
+            let mut dec = Self::open_mvc(par, time_base, hw, &config)?;
+            dec.origin = input.origin();
+            return Ok(dec);
+        }
         let mut dec = Self::open_with(par, time_base, hw, crate::v4l2::enabled())?;
         dec.origin = input.origin();
         // SAFETY: as above; extradata holds extradata_size bytes.
@@ -365,7 +372,68 @@ impl Decoder {
         Ok(dec)
     }
 
-    fn open_with(
+    /// A decoder of 3D Blu-ray video (MVC): an H.264 decoder of the stream
+    /// [`crate::mvc`] rewrites it into, the same size, without extradata.
+    fn open_mvc(
+        par: *const ff::AVCodecParameters,
+        time_base: ff::AVRational,
+        hw: HwDecode,
+        config: &crate::mvc::Config,
+    ) -> Result<Decoder> {
+        // SAFETY: copies the parameters into a fresh allocation, freed below
+        // (the decoders keep copies of their own).
+        let inner = unsafe {
+            let mut p = ff::avcodec_parameters_alloc();
+            if p.is_null() || ff::avcodec_parameters_copy(p, par) < 0 {
+                ff::avcodec_parameters_free(&mut p);
+                return Err(Error::Unsupported("codec parameters copy".into()));
+            }
+            ff::av_freep((&raw mut (*p).extradata).cast());
+            (*p).extradata_size = 0;
+            (*p).codec_tag = 0;
+            (*p).profile = ff::AV_PROFILE_H264_HIGH as i32;
+            (*p).level = 51;
+            let inner = Self::open_with(p, time_base, hw, crate::v4l2::enabled());
+            ff::avcodec_parameters_free(&mut p);
+            inner?
+        };
+        let mvc = crate::mvc::MvcDecoder::new(inner, config);
+        let mut dec = Decoder {
+            ctx: std::ptr::null_mut(),
+            #[cfg(target_os = "linux")]
+            native: None,
+            replay: Default::default(),
+            name: String::new(),
+            hardware: false,
+            hardware_error: None,
+            time_base,
+            origin: 0.0,
+            nal: None,
+            skip: None,
+            mvc: Some(Box::new(mvc)),
+            left_out: 0,
+        };
+        dec.follow_mvc();
+        Ok(dec)
+    }
+
+    /// Takes the MVC decoder's inner decoder's name and hardware state
+    /// (which change when the hardware decoder fails and software takes
+    /// over).
+    fn follow_mvc(&mut self) {
+        if let Some(m) = &self.mvc {
+            let what = if m.two_d.is_some() {
+                "3D Blu-ray as 2D"
+            } else {
+                "3D Blu-ray"
+            };
+            self.name = format!("{} ({what})", m.inner.name);
+            self.hardware = m.inner.hardware;
+            self.hardware_error = m.inner.hardware_error.clone();
+        }
+    }
+
+    pub(crate) fn open_with(
         par: *const ff::AVCodecParameters,
         time_base: ff::AVRational,
         hw: HwDecode,
@@ -452,6 +520,7 @@ impl Decoder {
             origin: 0.0,
             nal: None,
             skip: None,
+            mvc: None,
             left_out: 0,
         })
     }
@@ -490,6 +559,7 @@ impl Decoder {
                 origin: 0.0,
                 nal: None,
                 skip: None,
+                mvc: None,
                 left_out: 0,
             };
             if hardware {
@@ -584,6 +654,11 @@ impl Decoder {
     /// Sends a packet (or end of stream when `pkt` is null). Returns false if
     /// the decoder is full and frames must be received first.
     pub(crate) fn send(&mut self, pkt: *const ff::AVPacket) -> Result<bool> {
+        if let Some(m) = self.mvc.as_mut() {
+            let r = m.send(pkt);
+            self.follow_mvc();
+            return r;
+        }
         if self.leaves_out(pkt) {
             self.left_out += 1;
             return Ok(true);
@@ -640,6 +715,11 @@ impl Decoder {
     /// Receives a frame. `Ok(None)` means more input is needed, `Ok(Some(false))`
     /// means the decoder is fully drained.
     pub fn receive(&mut self, frame: &mut Frame) -> Result<Option<bool>> {
+        if let Some(m) = self.mvc.as_mut() {
+            let r = m.receive(frame);
+            self.follow_mvc();
+            return r;
+        }
         #[cfg(target_os = "linux")]
         if let Some(n) = self.native.as_mut() {
             let skip = self.skip;
@@ -703,6 +783,9 @@ impl Decoder {
             frame_duration: frame_duration / tb,
             start: self.origin / tb,
         });
+        if let Some(m) = self.mvc.as_mut() {
+            m.skip = self.skip.take();
+        }
     }
 
     /// Whether `pkt` holds only pictures a precise seek skips that no other
@@ -727,6 +810,10 @@ impl Decoder {
     /// A flag that, once set, cuts the native decoder's waits for the
     /// device short (the player sets it when closing).
     pub(crate) fn set_interrupt(&mut self, flag: Arc<AtomicBool>) {
+        if let Some(m) = self.mvc.as_mut() {
+            m.inner.set_interrupt(flag);
+            return;
+        }
         #[cfg(target_os = "linux")]
         if let Some(n) = self.native.as_mut() {
             n.dec.set_interrupt(flag);
@@ -737,6 +824,10 @@ impl Decoder {
 
     pub fn flush(&mut self) {
         self.skip = None;
+        if let Some(m) = self.mvc.as_mut() {
+            m.flush();
+            return;
+        }
         #[cfg(target_os = "linux")]
         if let Some(n) = self.native.as_mut() {
             n.dec.flush();

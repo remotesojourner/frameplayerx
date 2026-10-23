@@ -129,7 +129,7 @@ impl NalReader {
 
 /// The NAL units in `data`, each from its header on. A unit cut short by
 /// the end of the data is returned as far as it goes.
-fn units(data: &[u8], length_size: usize) -> impl Iterator<Item = &[u8]> {
+pub(crate) fn units(data: &[u8], length_size: usize) -> impl Iterator<Item = &[u8]> {
     let mut rest = data;
     std::iter::from_fn(move || {
         if length_size > 0 {

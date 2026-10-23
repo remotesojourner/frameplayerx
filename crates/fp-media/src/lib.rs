@@ -7,6 +7,7 @@
 //!   subtitle decoders.
 //! - `v4l2`: the native V4L2 stateful decoder for H.264/HEVC (10-bit HEVC as
 //!   Q10C), with the Steam Frame's admission-check workaround.
+//! - `mvc`: 3D Blu-ray video (H.264 MVC) on a plain H.264 decoder.
 //! - [`frame`]: decoded video frames in GPU-uploadable layouts.
 //! - [`player`]: the threaded player with a video-master clock.
 //! - [`audio`]: output, time-stretch and ambisonic rendering.
@@ -20,6 +21,7 @@ pub mod frame;
 pub mod info;
 pub(crate) mod input;
 pub(crate) mod io;
+pub(crate) mod mvc;
 pub(crate) mod nal;
 pub mod player;
 pub mod subtitle;

@@ -412,6 +412,12 @@ pub(crate) fn stream_info_labels(
         "vp9" => "VP9",
         c => c,
     };
+    // 3D Blu-ray: H.264 with a second view, decoded side by side.
+    let codec = if v.mvc {
+        format!("{codec} MVC")
+    } else {
+        codec.to_string()
+    };
     let hw = if st.hardware { "HW" } else { "SW" };
     let bits = if v.bit_depth > 8 {
         format!(" {}-bit", v.bit_depth)
@@ -427,9 +433,14 @@ pub(crate) fn stream_info_labels(
     } else {
         format!("{} ({}-bit {chroma})", v.pixel_format, v.bit_depth)
     };
+    let size = if v.mvc {
+        format!("{}×{} per eye", v.width / 2, v.height)
+    } else {
+        format!("{}×{}", v.width, v.height)
+    };
     let tooltip = format!(
-        "Decoder: {decoder}\nFormat: {codec} · {pixel}\nResolution: {}×{} @ {:.2} fps",
-        v.width, v.height, v.fps
+        "Decoder: {decoder}\nFormat: {codec} · {pixel}\nResolution: {size} @ {:.2} fps",
+        v.fps
     );
     (badge_text, tooltip)
 }

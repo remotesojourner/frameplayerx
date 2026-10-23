@@ -54,6 +54,9 @@ pub struct StreamInfo {
     /// Width of a stored pixel relative to its height. Anamorphic video
     /// (DVDs, some cameras) is stored squeezed and shown wider.
     pub pixel_aspect: f64,
+    /// 3D Blu-ray video (H.264 MVC): both eyes decode side by side, so
+    /// `width` is twice an eye's.
+    pub mvc: bool,
     // audio
     pub sample_rate: u32,
     pub channels: u32,
@@ -306,6 +309,7 @@ pub fn read_info(input: &Input) -> MediaInfo {
             transfer: Transfer::Sdr,
             rotation: 0,
             pixel_aspect: 1.0,
+            mvc: false,
             sample_rate: 0,
             channels: 0,
             ambisonic: false,
@@ -335,7 +339,13 @@ pub fn read_info(input: &Input) -> MediaInfo {
                 if hints.projection.is_none() {
                     hints.projection = spherical(par);
                 }
-                if hints.stereo.is_none()
+                s.mvc = crate::mvc::stream_config(input, index).is_some();
+                if s.mvc {
+                    s.width *= 2;
+                    hints.stereo = Some(StereoLayout::SideBySide);
+                    hints.eyes_swapped =
+                        dict_get(st.metadata, "stereo_mode").as_deref() == Some("block_rl");
+                } else if hints.stereo.is_none()
                     && let Some((stereo, swapped)) = stereo3d(par, st.metadata)
                 {
                     hints.stereo = Some(stereo);

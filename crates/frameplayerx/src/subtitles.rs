@@ -340,6 +340,7 @@ mod tests {
             transfer: Default::default(),
             rotation: 0,
             pixel_aspect: 1.0,
+            mvc: false,
             sample_rate: 0,
             channels: 0,
             ambisonic: false,
