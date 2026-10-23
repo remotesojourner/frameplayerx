@@ -140,13 +140,13 @@ jobs:
             bash -n "$s"
           done
           shellcheck packaging/*.sh tools/*.sh
-      # A new zig or meson builds it again.
+      # A new zig or meson, or a changed patch, builds it again.
       - name: Restore FFmpeg builds
         id: ffmpeg-cache
         uses: actions/cache/restore@v4
         with:
           path: third_party/ffmpeg
-          key: ffmpeg-${{ hashFiles('tools/build-ffmpeg.sh', 'tools/requirements.txt') }}
+          key: ffmpeg-${{ hashFiles('tools/build-ffmpeg.sh', 'tools/ffmpeg-patches/*', 'tools/requirements.txt') }}
       - name: Build FFmpeg (x86_64 for tests, aarch64 for the Frame)
         if: steps.ffmpeg-cache.outputs.cache-hit != 'true'
         run: tools/build-ffmpeg.sh x86_64 aarch64
@@ -156,7 +156,7 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: third_party/ffmpeg
-          key: ffmpeg-${{ hashFiles('tools/build-ffmpeg.sh', 'tools/requirements.txt') }}
+          key: ffmpeg-${{ hashFiles('tools/build-ffmpeg.sh', 'tools/ffmpeg-patches/*', 'tools/requirements.txt') }}
       - name: Format
         run: cargo fmt --all --check
       - name: Clippy

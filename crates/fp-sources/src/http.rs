@@ -976,6 +976,15 @@ impl std::fmt::Debug for HttpFile {
     }
 }
 
+/// An HLS playlist's playlists and segments, fetched as any other file.
+impl fp_core::UrlOpener for HttpClient {
+    fn open_url(&self, url: &str) -> io::Result<std::sync::Arc<dyn ByteSource>> {
+        self.open(url)
+            .map(|f| std::sync::Arc::new(f) as std::sync::Arc<dyn ByteSource>)
+            .map_err(io::Error::other)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

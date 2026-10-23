@@ -7,6 +7,9 @@ FFmpeg 7.1.1 (libavformat, libavcodec, libavutil, libswresample, libswscale)
   (also http://archive.ubuntu.com/ubuntu/pool/universe/f/ffmpeg/ffmpeg_7.1.1.orig.tar.xz)
   Exact build recipe and configure flags: tools/build-ffmpeg.sh in the
   FramePlayerX repository, https://github.com/remotesojourner/frameplayerx
+  Modified: libavformat/hls.c lets http(s) playlist and segment URLs through
+  to the application's own I/O callback (tools/ffmpeg-patches/ in the
+  repository); everything else is the release as published.
   You may replace the libraries in lib/ with your own build of the same
   major versions (libavcodec.so.61, libavformat.so.61, libavutil.so.59,
   libswresample.so.5, libswscale.so.8).

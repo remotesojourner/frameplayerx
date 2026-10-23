@@ -15,7 +15,7 @@ use fp_library::{Library, MediaId, SessionId};
 use fp_media::{Cue, Player, PlayerConfig, PlayerState, StreamInfo};
 use fp_sources::sidecar::subtitle_file;
 use fp_sources::urlutil::last_segment;
-use fp_sources::{Source, Transcode};
+use fp_sources::{Source, Transcode, TranscodeStream};
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::thread::JoinHandle;
@@ -231,9 +231,9 @@ pub fn open(
         .and_then(|e| e.duration)
         .or_else(|| record.as_ref().and_then(|r| r.duration))
         .unwrap_or(0.0);
-    let start = |config: PlayerConfig, src| {
+    let start_named = |as_name: &str, config: PlayerConfig, src| {
         let mut pick = Pick::Off;
-        Player::open(src, &name, config, |info| {
+        Player::open(src, as_name, config, |info| {
             pick = subtitles::choose(
                 settings.subtitles,
                 &settings.subtitle_language,
@@ -245,25 +245,50 @@ pub fn open(
         })
         .map(|p| (p, pick))
     };
-    // From where it was asked to start when the server can start it there
-    // (and so seek), else from the beginning.
+    let start = |config: PlayerConfig, src| start_named(&name, config, src);
+    // An HLS playlist plays and seeks as a file does; one stream starts
+    // where it was asked to when the server can start it there (and so
+    // seek), else from the beginning.
     let transcoded = |t: &Transcode| -> Result<(Player, Pick), String> {
         let src = source
             .clone()
             .ok_or_else(|| format!("{name}: no source to transcode it"))?;
-        let restart = transcode_restart(src, &location, t, settings.transcode_codec);
-        let first = if t.seekable { start_at } else { 0.0 };
         let fail = |e: String| format!("{name} ({} transcode): {e}", t.label);
-        let stream = restart(first).map_err(fail)?;
-        let config = PlayerConfig {
-            timeline: Some(fp_media::Timeline {
-                start: first,
-                duration,
-                restart: t.seekable.then_some(restart),
-            }),
-            ..player_config(settings, 0.0)
+        let first = if t.seekable { start_at } else { 0.0 };
+        let opened = src
+            .open_transcode(&location, &t.id, first, settings.transcode_codec)
+            .map_err(|e| fail(e.to_string()))?;
+        let (config, stream, url) = match opened {
+            TranscodeStream::Playlist {
+                url,
+                playlist,
+                urls,
+            } => {
+                let config = PlayerConfig {
+                    playlist: Some(fp_media::Playlist(urls)),
+                    ..player_config(settings, start_at)
+                };
+                (config, playlist, Some(url))
+            }
+            TranscodeStream::Stream(stream) => {
+                let restart = transcode_restart(src, &location, t, settings.transcode_codec);
+                let config = PlayerConfig {
+                    timeline: Some(fp_media::Timeline {
+                        start: first,
+                        duration,
+                        restart: t.seekable.then_some(restart),
+                    }),
+                    ..player_config(settings, 0.0)
+                };
+                (config, stream, None)
+            }
         };
-        start(config, stream).map_err(|e| fail(e.to_string()))
+        // A playlist goes by its address: what it names is relative to it.
+        let opened = match &url {
+            Some(url) => start_named(url, config, stream),
+            None => start(config, stream),
+        };
+        opened.map_err(|e| fail(e.to_string()))
     };
     let asked = req
         .transcode
@@ -406,8 +431,8 @@ fn player_config(settings: &Settings, start_at: f64) -> PlayerConfig {
     }
 }
 
-/// Opens transcode `t` of `location` from a time (seconds), through
-/// `source`.
+/// Opens transcode `t` of `location` as one stream from a time (seconds),
+/// through `source`: how a [`TranscodeStream::Stream`] seeks.
 fn transcode_restart(
     source: Arc<dyn Source>,
     location: &str,
@@ -417,7 +442,7 @@ fn transcode_restart(
     let (location, id) = (location.to_string(), t.id.clone());
     Arc::new(move |at| {
         source
-            .open_transcode(&location, &id, at, codec)
+            .open_transcode_at(&location, &id, at, codec)
             .map_err(|e| e.to_string())
     })
 }
@@ -1022,10 +1047,24 @@ mod tests {
     }
 
     /// A server whose file this player can't read, with one transcode of
-    /// it (a real clip) when `transcodes`.
+    /// it (a real clip) when `transcodes`: an HLS playlist of it when
+    /// `hls`, else the clip as one stream.
     struct Unplayable {
         transcodes: bool,
+        hls: bool,
         asked: Mutex<Vec<(String, f64)>>,
+    }
+
+    fn clip() -> std::path::PathBuf {
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../fp-media/tests/data/h264_aac_180_LR.mp4")
+    }
+
+    impl fp_core::UrlOpener for Unplayable {
+        fn open_url(&self, url: &str) -> std::io::Result<Arc<dyn fp_core::ByteSource>> {
+            lock(&self.asked).push((url.to_string(), -1.0));
+            Ok(Arc::new(fp_core::source::FileSource::open(&clip())?))
+        }
     }
 
     impl Source for Unplayable {
@@ -1062,11 +1101,24 @@ mod tests {
             id: &str,
             start: f64,
             _: fp_sources::TranscodeCodec,
-        ) -> fp_sources::Result<Arc<dyn fp_core::ByteSource>> {
+        ) -> fp_sources::Result<TranscodeStream> {
             lock(&self.asked).push((id.to_string(), start));
-            let clip = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("../fp-media/tests/data/h264_aac_180_LR.mp4");
-            Ok(Arc::new(fp_core::source::FileSource::open(&clip)?))
+            if self.hls {
+                let playlist = "#EXTM3U\n#EXT-X-TARGETDURATION:2\n#EXT-X-PLAYLIST-TYPE:VOD\n\
+                    #EXTINF:2.0,\nseg/0.mp4\n#EXT-X-ENDLIST\n";
+                return Ok(TranscodeStream::Playlist {
+                    url: "https://s/videos/1/main.m3u8".into(),
+                    playlist: Arc::new(fp_core::source::MemorySource(playlist.into())),
+                    urls: Arc::new(Unplayable {
+                        transcodes: false,
+                        hls: false,
+                        asked: Mutex::default(),
+                    }),
+                });
+            }
+            Ok(TranscodeStream::Stream(Arc::new(
+                fp_core::source::FileSource::open(&clip())?,
+            )))
         }
     }
 
@@ -1095,6 +1147,7 @@ mod tests {
     fn a_file_that_cannot_play_plays_the_servers_transcode() {
         let server = Arc::new(Unplayable {
             transcodes: true,
+            hls: false,
             asked: Mutex::default(),
         });
         let pb = open_from(server.clone(), None).unwrap().playback;
@@ -1110,6 +1163,7 @@ mod tests {
     fn a_transcode_asked_for_plays_without_trying_the_file() {
         let server = Arc::new(Unplayable {
             transcodes: true,
+            hls: false,
             asked: Mutex::default(),
         });
         let pb = open_from(server.clone(), Some("720")).unwrap().playback;
@@ -1122,9 +1176,28 @@ mod tests {
     }
 
     #[test]
+    fn an_hls_transcode_plays_as_a_file_does() {
+        let server = Arc::new(Unplayable {
+            transcodes: true,
+            hls: true,
+            asked: Mutex::default(),
+        });
+        let pb = open_from(server.clone(), None).unwrap().playback;
+        assert_eq!(pb.transcode.as_ref().map(|t| t.id.as_str()), Some("720"));
+        // Its length and seeking are the playlist's, not a restarted stream's.
+        assert!(
+            (pb.player.duration() - 2.0).abs() < 0.1,
+            "{}",
+            pb.player.duration()
+        );
+        assert!(pb.player.can_seek());
+    }
+
+    #[test]
     fn without_a_transcode_a_file_that_cannot_play_fails() {
         let server = Arc::new(Unplayable {
             transcodes: false,
+            hls: false,
             asked: Mutex::default(),
         });
         assert!(open_from(server, None).is_err());

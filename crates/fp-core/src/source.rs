@@ -18,6 +18,13 @@ pub trait ByteSource: Send + Sync {
     fn describe(&self) -> String;
 }
 
+/// Opens the files a container names by URL, for the demuxer reading it:
+/// an HLS playlist's variant playlists and segments. FFmpeg has no network
+/// protocols of its own; these come through the app's HTTP client.
+pub trait UrlOpener: Send + Sync {
+    fn open_url(&self, url: &str) -> io::Result<std::sync::Arc<dyn ByteSource>>;
+}
+
 /// A `ByteSource` over a local file.
 pub struct FileSource {
     file: std::fs::File,

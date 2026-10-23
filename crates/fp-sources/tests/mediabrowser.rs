@@ -6,8 +6,8 @@ use common::{Req, TestServer, pattern, resp, serve_bytes};
 use fp_core::format::{Projection, StereoLayout};
 use fp_core::source::{Entry, EntryKind};
 use fp_sources::{
-    Credentials, MediaBrowserConfig, SourceConfig, SourceKind, TranscodeCodec, WatchEvent,
-    WatchKind, build,
+    Credentials, MediaBrowserConfig, SourceConfig, SourceKind, TranscodeCodec, TranscodeStream,
+    WatchEvent, WatchKind, build,
 };
 use std::sync::Arc;
 
@@ -470,55 +470,133 @@ fn a_version_location_streams_that_version() {
     );
 }
 
-#[test]
-fn a_transcode_is_what_the_server_offers_from_the_time_asked() {
+/// A Jellyfin server that transcodes `beach` over HLS when `hls`, else
+/// only as one stream.
+fn transcoding_server(hls: bool) -> TestServer {
     let item = r#"{"Id":"beach","Name":"Beach","Type":"Movie","MediaSources":[
         {"Id":"ms_4k","MediaStreams":[{"Index":0,"Type":"Video","Width":3840,"Height":2160}]}]}"#;
     let video = Arc::new(pattern(5_000));
-    let server = TestServer::start(move |req: &Req| {
+    TestServer::start(move |req: &Req| {
         let json = |body: &str| resp(200, body, &[("Content-Type", "application/json")]);
         match req.path() {
             "/Users/AuthenticateByName" => json(r#"{"AccessToken":"tok","User":{"Id":"u1"}}"#),
             "/Users/u1/Items/beach" => json(item),
+            "/Items/beach/PlaybackInfo" if req.body.contains(r#""Protocol":"hls""#) => json(
+                r#"{"MediaSources":[{"Id":"ms_4k",
+                "TranscodingUrl":"/videos/beach/master.m3u8?MediaSourceId=ms_4k&PlaySessionId=p1"}]}"#,
+            ),
             "/Items/beach/PlaybackInfo" => json(
                 r#"{"MediaSources":[{"Id":"ms_4k",
-                "TranscodingUrl":"/videos/beach/stream.ts?MediaSourceId=ms_4k&PlaySessionId=p1"}]}"#,
+                "TranscodingUrl":"/videos/beach/stream.ts?MediaSourceId=ms_4k&PlaySessionId=p2"}]}"#,
             ),
+            "/videos/beach/master.m3u8" if hls => resp(
+                200,
+                "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=8000000\nmain.m3u8?PlaySessionId=p1\n",
+                &[],
+            ),
+            "/videos/beach/main.m3u8" => resp(200, "#EXTM3U\n#EXT-X-ENDLIST\n", &[]),
             "/videos/beach/stream.ts" => serve_bytes(req, &video, false),
             _ => resp(404, "", &[]),
         }
-    });
+    })
+}
+
+fn transcoding_source(server: &TestServer) -> Box<dyn fp_sources::Source> {
     let mut config = mediabrowser_config(server.url(""), Some(Credentials::new("a", "b")));
     config.max_height = Some(1440);
-    let src = build(&SourceConfig::MediaBrowser(config)).unwrap();
+    build(&SourceConfig::MediaBrowser(config)).unwrap()
+}
+
+/// The device profile a `PlaybackInfo` request sent.
+fn profile(r: &Req) -> serde_json::Value {
+    let body: serde_json::Value = serde_json::from_str(&r.body).unwrap();
+    assert_eq!(body["EnableDirectPlay"], false);
+    body["DeviceProfile"].clone()
+}
+
+#[test]
+fn a_transcode_is_the_servers_hls_playlist() {
+    let server = transcoding_server(true);
+    let src = transcoding_source(&server);
     let location = format!("mb:{}#item=beach", server.url(""));
-    let video_entry = Entry::new("Beach", location.clone(), EntryKind::Video);
 
     // Its own height and those below; the tallest within max height first.
-    let transcodes = src.transcodes(&video_entry);
-    let ids: Vec<&str> = transcodes.iter().map(|t| t.id.as_str()).collect();
+    let video = Entry::new("Beach", location.clone(), EntryKind::Video);
+    let ids: Vec<String> = src.transcodes(&video).into_iter().map(|t| t.id).collect();
     assert_eq!(ids, ["1440", "1080", "720", "2160"]);
-    assert!(transcodes.iter().all(|t| t.seekable));
 
-    let f = src
-        .open_transcode(&location, "1080", 90.0, TranscodeCodec::H264)
+    let opened = src
+        .open_transcode(&location, "1080", 90.0, TranscodeCodec::HevcOrH264)
         .unwrap();
-    assert_eq!(f.size(), None, "a transcode has no size");
+    let TranscodeStream::Playlist {
+        url,
+        playlist,
+        urls,
+    } = opened
+    else {
+        panic!("not a playlist: {opened:?}");
+    };
+    assert!(url.contains("/videos/beach/master.m3u8?"), "{url}");
+    assert!(url.contains("api_key=tok"), "{url}");
+    let mut head = [0u8; 7];
+    playlist.read_at(0, &mut head).unwrap();
+    assert_eq!(&head, b"#EXTM3U");
+    // What it names comes through the client, signed in.
+    let main = url.replace("master.m3u8", "main.m3u8");
+    urls.open_url(&main).unwrap();
+
     let requests = server.requests();
     let info = requests
         .iter()
         .find(|r| r.path() == "/Items/beach/PlaybackInfo")
         .expect("asked the server");
-    assert_eq!(info.method, "POST");
-    let body: serde_json::Value = serde_json::from_str(&info.body).unwrap();
-    let profile = &body["DeviceProfile"];
-    assert_eq!(profile["TranscodingProfiles"][0]["VideoCodec"], "h264");
-    assert_eq!(profile["TranscodingProfiles"][0]["Container"], "ts");
+    let p = profile(info);
+    let t = &p["TranscodingProfiles"][0];
     assert_eq!(
-        profile["CodecProfiles"][1]["Conditions"][0]["Value"],
-        "1080"
+        (t["Protocol"].as_str(), t["Container"].as_str()),
+        (Some("hls"), Some("mp4"))
     );
-    assert_eq!(body["EnableDirectPlay"], false);
+    assert_eq!(t["VideoCodec"], "hevc,h264");
+    assert_eq!(p["CodecProfiles"][1]["Conditions"][0]["Value"], "1080");
+    let child = requests
+        .iter()
+        .find(|r| r.path() == "/videos/beach/main.m3u8")
+        .expect("fetched the media playlist");
+    assert!(
+        child
+            .header("authorization")
+            .is_some_and(|a| a.contains("Token=\"tok\""))
+    );
+}
+
+#[test]
+fn without_hls_a_transcode_is_one_stream_from_the_time_asked() {
+    let server = transcoding_server(false);
+    let src = transcoding_source(&server);
+    let location = format!("mb:{}#item=beach", server.url(""));
+    let opened = src
+        .open_transcode(&location, "1080", 90.0, TranscodeCodec::H264)
+        .unwrap();
+    let TranscodeStream::Stream(f) = opened else {
+        panic!("not one stream: {opened:?}");
+    };
+    assert_eq!(f.size(), None, "a transcode has no size");
+    let requests = server.requests();
+    let asked: Vec<serde_json::Value> = requests
+        .iter()
+        .filter(|r| r.path() == "/Items/beach/PlaybackInfo")
+        .map(profile)
+        .collect();
+    let protocols: Vec<&str> = asked
+        .iter()
+        .map(|p| p["TranscodingProfiles"][0]["Protocol"].as_str().unwrap())
+        .collect();
+    assert_eq!(protocols, ["hls", "http"]);
+    let t = &asked[1]["TranscodingProfiles"][0];
+    assert_eq!(
+        (t["Container"].as_str(), t["VideoCodec"].as_str()),
+        (Some("ts"), Some("h264"))
+    );
     let stream = requests
         .iter()
         .find(|r| r.path() == "/videos/beach/stream.ts")
@@ -529,7 +607,6 @@ fn a_transcode_is_what_the_server_offers_from_the_time_asked() {
         stream.url
     );
     assert!(stream.url.contains("api_key=tok"), "{}", stream.url);
-    assert!(stream.url.contains("PlaySessionId=p1"), "{}", stream.url);
 }
 
 #[test]

@@ -2,10 +2,13 @@
 //! transcode to what the player asks for, DeoVR feeds and HereSphere APIs
 //! (Stash among them) list the transcodes they offer.
 //!
-//! A transcode has no size and no byte ranges: it plays from the start it
-//! was opened at, and seeking opens it again from another time when the
-//! server takes one ([`Transcode::seekable`]).
+//! Jellyfin and Emby send an HLS playlist, which FFmpeg reads and seeks in
+//! as it would a file ([`TranscodeStream::Playlist`]). Otherwise a
+//! transcode is one stream with no size and no byte ranges: it plays from
+//! the start it was opened at, and seeking opens it again from another
+//! time when the server takes one ([`Transcode::seekable`]).
 
+use fp_core::UrlOpener;
 use fp_core::source::ByteSource;
 use serde::{Deserialize, Serialize};
 use std::io;
@@ -34,6 +37,29 @@ impl TranscodeCodec {
     }
 }
 
+/// How a transcode is read.
+pub enum TranscodeStream {
+    /// One stream from the time asked on (see the module docs).
+    Stream(Arc<dyn ByteSource>),
+    /// An HLS playlist (the server's own transcoding path): FFmpeg reads
+    /// `playlist`, fetches what it names, relative to `url`, through
+    /// `urls`, and seeks in it itself.
+    Playlist {
+        url: String,
+        playlist: Arc<dyn ByteSource>,
+        urls: Arc<dyn UrlOpener>,
+    },
+}
+
+impl std::fmt::Debug for TranscodeStream {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            TranscodeStream::Stream(s) => write!(f, "Stream({})", s.describe()),
+            TranscodeStream::Playlist { .. } => f.write_str("Playlist"),
+        }
+    }
+}
+
 /// One transcode a server offers of a video.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Transcode {
@@ -46,6 +72,9 @@ pub struct Transcode {
     /// The server can start it at a time, so seeking works.
     pub seekable: bool,
 }
+
+/// Largest HLS playlist read (a few hours of segments is well under it).
+pub(crate) const PLAYLIST_LIMIT: u64 = 8 << 20;
 
 /// A transcode as the player reads it: from the start on, with no size,
 /// even when the server sends an estimated one. Knowing a size, FFmpeg

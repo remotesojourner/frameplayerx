@@ -15,7 +15,9 @@ use crate::error::{Error, Result};
 use crate::http::{HttpClient, HttpOptions, HttpReply};
 use crate::json::{array, boolean, get, num, text, uint};
 use crate::sidecar::Sidecars;
-use crate::transcode::{Streamed, Transcode, TranscodeCodec, height_label, with_query};
+use crate::transcode::{
+    PLAYLIST_LIMIT, Streamed, Transcode, TranscodeCodec, TranscodeStream, height_label, with_query,
+};
 use crate::urlutil::{encode_form_value, redact};
 use crate::watch::{WatchEvent, WatchKind, WatchSession};
 use fp_core::format::{Projection, StereoLayout, VideoFormat, detect_from_name};
@@ -417,6 +419,12 @@ pub(crate) fn transcode_heights(height: Option<u32>, max_height: Option<u32>) ->
     heights
 }
 
+/// The height a transcode id names.
+fn transcode_height(location: &str, id: &str) -> Result<u32> {
+    id.parse()
+        .map_err(|_| Error::invalid(location, format!("no transcode {id}")))
+}
+
 /// The bitrate asked for a transcode `height` pixels tall, bits a second.
 fn transcode_bitrate(height: u32) -> u64 {
     match height {
@@ -430,11 +438,17 @@ fn transcode_bitrate(height: u32) -> u64 {
 }
 
 /// What the player takes, as a MediaBrowser device profile: no direct play,
-/// and a transcode to MPEG-TS over HTTP (one stream, no playlist) in
-/// `codec`, at most `height` pixels tall. A server that doesn't encode the
-/// first codec listed uses the next; video already in a codec it may keep
-/// (and within the limits) is copied.
-pub(crate) fn transcode_profile(height: u32, codec: TranscodeCodec, bitrate: u64) -> Value {
+/// and a transcode in `codec`, at most `height` pixels tall: over HLS
+/// (`hls`; HEVC needs fragmented MP4 segments, H.264 alone goes in
+/// MPEG-TS ones), else as one MPEG-TS stream over HTTP. A server that
+/// doesn't encode the first codec listed uses the next; video already in a
+/// codec it may keep (and within the limits) is copied.
+pub(crate) fn transcode_profile(
+    height: u32,
+    codec: TranscodeCodec,
+    bitrate: u64,
+    hls: bool,
+) -> Value {
     let condition = |property: &str, value: String| {
         serde_json::json!({
             "Condition": "LessThanEqual",
@@ -467,11 +481,11 @@ pub(crate) fn transcode_profile(height: u32, codec: TranscodeCodec, bitrate: u64
         "MaxStaticBitrate": bitrate,
         "DirectPlayProfiles": [],
         "TranscodingProfiles": [{
-            "Container": "ts",
+            "Container": if hls && codec == TranscodeCodec::HevcOrH264 { "mp4" } else { "ts" },
             "Type": "Video",
             "VideoCodec": codec.codecs(),
             "AudioCodec": "aac,ac3,eac3,mp3",
-            "Protocol": "http",
+            "Protocol": if hls { "hls" } else { "http" },
             "Context": "Streaming",
             "MaxAudioChannels": "6",
         }],
@@ -740,6 +754,85 @@ impl MediaBrowserSource {
         let url = format!("{}{}", self.base_url, path);
         serde_json::from_slice(&reply.body)
             .map_err(|e| Error::invalid(&url, format!("invalid JSON: {e}")))
+    }
+
+    /// Asks the server how it would stream the version that plays from
+    /// `location` to a player that only takes `codec` at most `height`
+    /// pixels tall (`PlaybackInfo` with [`transcode_profile`]): the
+    /// transcode's address, starting at `start` seconds.
+    fn transcoding_url(
+        &self,
+        location: &str,
+        height: u32,
+        start: f64,
+        codec: TranscodeCodec,
+        hls: bool,
+    ) -> Result<(HttpClient, String)> {
+        let item = item_id(location)?;
+        let (client, user_id) = self.client()?;
+        let version = location_version(location)
+            .map(str::to_string)
+            .or_else(|| self.chosen_version(&item));
+        let bitrate = transcode_bitrate(height);
+        let ticks = seconds_to_ticks(start.max(0.0));
+        let mut path = format!(
+            "/Items/{}/PlaybackInfo?UserId={user_id}&StartTimeTicks={ticks}\
+            &IsPlayback=true&AutoOpenLiveStream=true&MaxStreamingBitrate={bitrate}",
+            encode_form_value(&item)
+        );
+        if let Some(ms) = &version {
+            path.push_str(&format!("&MediaSourceId={}", encode_form_value(ms)));
+        }
+        let body = serde_json::json!({
+            "UserId": user_id,
+            "MaxStreamingBitrate": bitrate,
+            "StartTimeTicks": ticks,
+            "MediaSourceId": version,
+            "EnableDirectPlay": false,
+            "EnableDirectStream": false,
+            "EnableTranscoding": true,
+            "AllowVideoStreamCopy": true,
+            "AllowAudioStreamCopy": true,
+            "DeviceProfile": transcode_profile(height, codec, bitrate, hls),
+        });
+        let v = self.api_post_json_reply(&path, &body)?;
+        let relative = transcoding_url(&v, version.as_deref()).ok_or_else(|| {
+            Error::NotFound(format!(
+                "{} offered no transcode of {}",
+                self.name,
+                redact(location)
+            ))
+        })?;
+        let mut url = format!("{}{relative}", self.base_url);
+        if !hls {
+            url = with_query(&url, "StartTimeTicks", &ticks.to_string());
+        }
+        let token = self.auth_credentials().map(|(t, _)| t).unwrap_or_default();
+        if !token.is_empty() && !url.to_ascii_lowercase().contains("api_key=") {
+            url = with_query(&url, "api_key", &token);
+        }
+        Ok((client, url))
+    }
+
+    /// The server's HLS transcode: its master playlist, read whole, and the
+    /// client that fetches what it names (the server signs them with the
+    /// playlist's `api_key`; the client also sends the sign-in header).
+    fn hls_transcode(
+        &self,
+        location: &str,
+        height: u32,
+        codec: TranscodeCodec,
+    ) -> Result<TranscodeStream> {
+        let (client, url) = self.transcoding_url(location, height, 0.0, codec, true)?;
+        let playlist = client.get_bytes(&url, PLAYLIST_LIMIT)?;
+        if !playlist.starts_with(b"#EXTM3U") {
+            return Err(Error::invalid(&redact(&url), "not an HLS playlist"));
+        }
+        Ok(TranscodeStream::Playlist {
+            url,
+            playlist: Arc::new(fp_core::source::MemorySource(playlist)),
+            urls: Arc::new(client),
+        })
     }
 
     /// The version of the item `id` that plays from `location`: the one it
@@ -1060,64 +1153,35 @@ impl Source for MediaBrowserSource {
             .collect()
     }
 
-    /// Asks the server how it would stream the version that plays to a
-    /// player that only takes `codec` in MPEG-TS at most `id` pixels tall
-    /// (`PlaybackInfo` with a device profile), and opens its answer from
-    /// `start` on.
+    /// The server's HLS transcode (its master playlist), else one stream.
     fn open_transcode(
         &self,
         location: &str,
         id: &str,
         start: f64,
         codec: TranscodeCodec,
+    ) -> Result<TranscodeStream> {
+        let height = transcode_height(location, id)?;
+        match self.hls_transcode(location, height, codec) {
+            Ok(playlist) => return Ok(playlist),
+            Err(e) => log::warn!(
+                "{}: no HLS transcode ({e}), asking for one stream",
+                self.name
+            ),
+        }
+        self.open_transcode_at(location, id, start, codec)
+            .map(TranscodeStream::Stream)
+    }
+
+    fn open_transcode_at(
+        &self,
+        location: &str,
+        id: &str,
+        start: f64,
+        codec: TranscodeCodec,
     ) -> Result<Arc<dyn ByteSource>> {
-        let item = item_id(location)?;
-        let height: u32 = id
-            .parse()
-            .map_err(|_| Error::invalid(location, format!("no transcode {id}")))?;
-        let (client, user_id) = self.client()?;
-        let version = location_version(location)
-            .map(str::to_string)
-            .or_else(|| self.chosen_version(&item));
-        let bitrate = transcode_bitrate(height);
-        let ticks = seconds_to_ticks(start.max(0.0));
-        let mut path = format!(
-            "/Items/{}/PlaybackInfo?UserId={user_id}&StartTimeTicks={ticks}\
-            &IsPlayback=true&AutoOpenLiveStream=true&MaxStreamingBitrate={bitrate}",
-            encode_form_value(&item)
-        );
-        if let Some(ms) = &version {
-            path.push_str(&format!("&MediaSourceId={}", encode_form_value(ms)));
-        }
-        let body = serde_json::json!({
-            "UserId": user_id,
-            "MaxStreamingBitrate": bitrate,
-            "StartTimeTicks": ticks,
-            "MediaSourceId": version,
-            "EnableDirectPlay": false,
-            "EnableDirectStream": false,
-            "EnableTranscoding": true,
-            "AllowVideoStreamCopy": true,
-            "AllowAudioStreamCopy": true,
-            "DeviceProfile": transcode_profile(height, codec, bitrate),
-        });
-        let v = self.api_post_json_reply(&path, &body)?;
-        let relative = transcoding_url(&v, version.as_deref()).ok_or_else(|| {
-            Error::NotFound(format!(
-                "{} offered no transcode of {}",
-                self.name,
-                redact(location)
-            ))
-        })?;
-        let mut url = with_query(
-            &format!("{}{relative}", self.base_url),
-            "StartTimeTicks",
-            &ticks.to_string(),
-        );
-        let token = self.auth_credentials().map(|(t, _)| t).unwrap_or_default();
-        if !token.is_empty() && !url.to_ascii_lowercase().contains("api_key=") {
-            url = with_query(&url, "api_key", &token);
-        }
+        let height = transcode_height(location, id)?;
+        let (client, url) = self.transcoding_url(location, height, start, codec, false)?;
         Ok(Streamed::wrap(client.open(&url)?))
     }
 
@@ -1688,8 +1752,26 @@ mod tests {
             transcoding_url(&json!({"MediaSources": [{"Id": "a"}]}), None),
             None
         );
-        let profile = transcode_profile(1080, TranscodeCodec::HevcOrH264, 12_000_000);
-        assert_eq!(profile["TranscodingProfiles"][0]["VideoCodec"], "hevc,h264");
+        let profile = |codec, hls| {
+            transcode_profile(1080, codec, 12_000_000, hls)["TranscodingProfiles"][0].clone()
+        };
+        // HEVC over HLS needs fragmented MP4 segments; H.264 alone takes
+        // MPEG-TS ones, as one stream does.
+        let hevc = profile(TranscodeCodec::HevcOrH264, true);
+        assert_eq!(
+            (&hevc["VideoCodec"], &hevc["Container"], &hevc["Protocol"]),
+            (&json!("hevc,h264"), &json!("mp4"), &json!("hls"))
+        );
+        let h264 = profile(TranscodeCodec::H264, true);
+        assert_eq!(
+            (&h264["VideoCodec"], &h264["Container"]),
+            (&json!("h264"), &json!("ts"))
+        );
+        let stream = profile(TranscodeCodec::HevcOrH264, false);
+        assert_eq!(
+            (&stream["Container"], &stream["Protocol"]),
+            (&json!("ts"), &json!("http"))
+        );
     }
 
     #[test]

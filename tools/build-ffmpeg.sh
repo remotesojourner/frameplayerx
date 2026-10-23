@@ -4,6 +4,10 @@
 # zlib for compressed Matroska tracks (mkvmerge compresses PGS subtitles)
 # and the V4L2 memory-to-memory decoders for Qualcomm hardware decode.
 #
+# tools/ffmpeg-patches/*.patch are applied to the release first: the HLS
+# demuxer takes http(s) playlist and segment URLs, which fp-media's
+# io_open callback opens through the app's HTTP client.
+#
 # Usage: tools/build-ffmpeg.sh [aarch64|x86_64]...   (default: both)
 # Output: third_party/ffmpeg/<arch>/{include,lib}
 #
@@ -69,6 +73,11 @@ build_arch() {
   tar -xf "$src/zlib-$ZLIB_VER.tar.gz" -C "$work"
   local dav1d_dir; dav1d_dir="$(ls -d "$work"/dav1d-*/)"
   local ff_dir; ff_dir="$(ls -d "$work"/ffmpeg-*/)"
+  local patch_file
+  for patch_file in "$root"/tools/ffmpeg-patches/*.patch; do
+    patch -d "$ff_dir" -p1 --quiet --forward < "$patch_file" ||
+      { echo "$patch_file does not apply to FFmpeg $FFMPEG_VER" >&2; exit 1; }
+  done
   local zlib_dir; zlib_dir="$(ls -d "$work"/zlib-*/)"
 
   local cc=cc ar=ar ranlib=ranlib cross_args=() meson_cross=()

@@ -58,7 +58,7 @@ pub use mediabrowser::{
 };
 pub use sidecar::{ScriptFile, Sidecars, SubtitleFile, match_sidecars};
 pub use smb::SmbSource;
-pub use transcode::{Transcode, TranscodeCodec};
+pub use transcode::{Transcode, TranscodeCodec, TranscodeStream};
 pub use watch::{WatchEvent, WatchKind, WatchSession};
 pub use webdav::WebDavSource;
 
@@ -122,17 +122,34 @@ pub trait Source: Send + Sync {
         Vec::new()
     }
 
-    /// Opens transcode `id` (from [`Source::transcodes`]) of `location`
-    /// from `start` seconds on (0 for one that isn't seekable). Jellyfin
-    /// and Emby encode the video to `codec`.
+    /// Opens transcode `id` (from [`Source::transcodes`]) of `location`:
+    /// an HLS playlist, or one stream from `start` seconds on (0 for one
+    /// that isn't seekable). Jellyfin and Emby encode the video to `codec`.
     fn open_transcode(
         &self,
         location: &str,
         id: &str,
         _start: f64,
         _codec: TranscodeCodec,
-    ) -> Result<Arc<dyn ByteSource>> {
+    ) -> Result<TranscodeStream> {
         Err(Error::NotFound(format!("transcode {id} of {location}")))
+    }
+
+    /// Transcode `id` of `location` as one stream from `start` seconds on:
+    /// how a [`TranscodeStream::Stream`] seeks.
+    fn open_transcode_at(
+        &self,
+        location: &str,
+        id: &str,
+        start: f64,
+        codec: TranscodeCodec,
+    ) -> Result<Arc<dyn ByteSource>> {
+        match self.open_transcode(location, id, start, codec)? {
+            TranscodeStream::Stream(s) => Ok(s),
+            TranscodeStream::Playlist { .. } => Err(Error::Unsupported(format!(
+                "transcode {id} of {location} is a playlist"
+            ))),
+        }
     }
 
     /// Tells the server one change in a [`Source::watch_session`].

@@ -93,7 +93,13 @@ updates) runs as a background job whose result comes back on a channel, so
 a frame doesn't wait on the network.
 
 **Video.** FFmpeg demuxes through fp-core's `ByteSource`, so every network
-protocol is implemented in Rust and looks like a file to FFmpeg. H.264 and
+protocol is implemented in Rust and looks like a file to FFmpeg. FFmpeg is
+built without network protocols; what a demuxer opens beside its input
+goes through fp-media's `io_open` hook: an HLS playlist's playlists and
+segments through a `UrlOpener` (the app's HTTP client), other network
+addresses refused. One patch, in `tools/ffmpeg-patches/`, lets the HLS
+demuxer take http(s) addresses without the protocols built; check it
+still applies when moving to a new FFmpeg. H.264 and
 HEVC go to the Frame's V4L2 stateful decoder; anything it can't take is
 decoded in software. Frames are uploaded to Vulkan as YUV and converted in
 the shader, which maps each pixel of each eye onto the video for the chosen

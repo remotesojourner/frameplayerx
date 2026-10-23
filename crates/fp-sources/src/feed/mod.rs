@@ -519,7 +519,7 @@ impl Source for FeedSource {
         id: &str,
         start: f64,
         _codec: crate::TranscodeCodec,
-    ) -> Result<Arc<dyn ByteSource>> {
+    ) -> Result<crate::TranscodeStream> {
         let scene = self.scene(location, true)?;
         let source = scene
             .sources
@@ -531,7 +531,9 @@ impl Source for FeedSource {
         } else {
             source.url.clone()
         };
-        Ok(crate::transcode::Streamed::wrap(self.client.open(&url)?))
+        Ok(crate::TranscodeStream::Stream(
+            crate::transcode::Streamed::wrap(self.client.open(&url)?),
+        ))
     }
 
     fn details(&self, entry: &Entry) -> Result<Entry> {

@@ -15,6 +15,13 @@ const AUDIO_PID: u16 = 0x101;
 
 /// h264_aac_180_LR.mp4 as MPEG-TS, its timestamps moved `offset` seconds on.
 pub(crate) fn h264_aac_ts(offset: f64) -> Arc<MemorySource> {
+    Arc::new(MemorySource(h264_aac_ts_keyed(offset).0))
+}
+
+/// [`h264_aac_ts`]'s bytes, and the time and byte offset of each video
+/// keyframe: where a server would cut HLS segments.
+pub(crate) fn h264_aac_ts_keyed(offset: f64) -> (Vec<u8>, Vec<(f64, usize)>) {
+    let mut keys = Vec::new();
     let path =
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/h264_aac_180_LR.mp4");
     let src = Arc::new(FileSource::open(&path).expect("fixture"));
@@ -56,6 +63,7 @@ pub(crate) fn h264_aac_ts(offset: f64) -> Arc<MemorySource> {
                 let mut es = Vec::new();
                 if p.flags & ff::AV_PKT_FLAG_KEY as i32 != 0 {
                     es.extend_from_slice(&parameter_sets);
+                    keys.push((pts as f64 / 90_000.0 - offset, ts.out.len()));
                 }
                 annex_b(data, length_size, &mut es);
                 let pcr = dts.saturating_sub(9000);
@@ -70,7 +78,7 @@ pub(crate) fn h264_aac_ts(offset: f64) -> Arc<MemorySource> {
         }
         pkt.unref();
     }
-    Arc::new(MemorySource(ts.out))
+    (ts.out, keys)
 }
 
 /// The SPS and PPS of an `avcC` record as Annex B, and its NAL length size.

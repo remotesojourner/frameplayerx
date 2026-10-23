@@ -63,6 +63,38 @@ impl IoContext {
     pub fn as_ptr(&self) -> *mut ff::AVIOContext {
         self.ctx
     }
+
+    /// Hands the context to FFmpeg (a demuxer's `io_open`); it comes back
+    /// to [`IoContext::free_raw`] through `io_close2`.
+    pub(crate) fn into_raw(self) -> *mut ff::AVIOContext {
+        let ctx = self.ctx;
+        std::mem::forget(self);
+        ctx
+    }
+
+    /// Whether `ctx` was made here (and not by FFmpeg).
+    ///
+    /// # Safety
+    /// `ctx` must be a valid `AVIOContext`.
+    pub(crate) unsafe fn is_ours(ctx: *mut ff::AVIOContext) -> bool {
+        // SAFETY: valid per the contract.
+        unsafe { (*ctx).read_packet }.is_some_and(|f| {
+            std::ptr::fn_addr_eq(
+                f,
+                read_cb as unsafe extern "C" fn(*mut c_void, *mut u8, c_int) -> c_int,
+            )
+        })
+    }
+
+    /// Frees a context from [`IoContext::into_raw`].
+    ///
+    /// # Safety
+    /// `ctx` must come from `into_raw` and not be used afterwards.
+    pub(crate) unsafe fn free_raw(ctx: *mut ff::AVIOContext) {
+        // SAFETY: into_raw's context, whose opaque is our State.
+        let state = unsafe { (*ctx).opaque } as *mut State;
+        drop(IoContext { ctx, state });
+    }
 }
 
 impl Drop for IoContext {

@@ -285,10 +285,12 @@ Emby the video's own height and 2160p, 1440p, 1080p and 720p below it,
 the tallest within the source's maximum height first; for a feed, the
 transcodes it lists. Pick one and the video carries on from where it was.
 
-A transcode seeks by asking the server to start again from the new time,
-which takes a moment longer than seeking a file. A feed's transcode that
-can't start at a time (anything but Stash's) plays from the beginning and
-can't be seeked.
+Jellyfin and Emby send their transcodes in short segments (HLS), as their
+own apps get them: seeking fetches the segment with that moment in it,
+which takes a moment longer than seeking a file. A feed's transcode comes
+as one stream: a Stash server starts it again from the new time, and one
+that can't (any other server) plays from the beginning and can't be
+seeked.
 
 **Settings** › **Playback** › *Jellyfin and Emby transcodes* chooses what
 those servers convert to: **HEVC**, about half the size of H.264 at the

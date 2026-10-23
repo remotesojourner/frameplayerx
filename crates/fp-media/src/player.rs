@@ -72,6 +72,20 @@ pub struct PlayerConfig {
     pub volume: f32,
     /// Set for a server's transcode; [`Self::start_at`] is then ignored.
     pub timeline: Option<Timeline>,
+    /// Opens what an HLS playlist names; the source is then the playlist,
+    /// and its URL the name the player is opened with.
+    pub playlist: Option<Playlist>,
+}
+
+/// Opens an HLS playlist's playlists and segments (see
+/// [`PlayerConfig::playlist`]).
+#[derive(Clone)]
+pub struct Playlist(pub Arc<dyn fp_core::UrlOpener>);
+
+impl std::fmt::Debug for Playlist {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Playlist")
+    }
 }
 
 impl Default for PlayerConfig {
@@ -86,6 +100,7 @@ impl Default for PlayerConfig {
             start_paused: false,
             volume: 1.0,
             timeline: None,
+            playlist: None,
         }
     }
 }
@@ -249,7 +264,8 @@ impl Player {
         subtitle: impl FnOnce(&MediaInfo) -> Option<usize>,
     ) -> Result<Player> {
         let quit = Arc::new(AtomicBool::new(false));
-        let mut input = Input::open(src, name, quit.clone())?;
+        let urls = config.playlist.as_ref().map(|p| p.0.clone());
+        let mut input = Input::open_with(src, name, quit.clone(), urls)?;
         if let Some(tl) = &config.timeline {
             input.start_at(tl.start);
         }
@@ -1272,6 +1288,132 @@ mod tests {
         assert!(t.abs() < 0.1, "first frame at {t}");
         p.seek(120.0, true);
         assert!(p.position() < 1.0, "moved to {}", p.position());
+    }
+
+    /// A server's HLS transcode, in memory: a master playlist, its media
+    /// playlist, and the 2 s clip as MPEG-TS in two segments. Records the
+    /// URLs asked for.
+    struct Hls {
+        files: Vec<(String, Vec<u8>)>,
+        asked: Mutex<Vec<String>>,
+    }
+
+    impl Hls {
+        fn new() -> Arc<Hls> {
+            // Cut at the keyframe nearest 1 s, as a server cuts segments.
+            // Timestamps start 10 s in, as transport streams' do: the
+            // clip's first decode time is below its first picture's, and
+            // MPEG-TS has no negative times.
+            let (ts, keys) = crate::ts_fixture::h264_aac_ts_keyed(10.0);
+            let (_, half) = *keys
+                .iter()
+                .filter(|(t, _)| *t > 0.0)
+                .min_by(|a, b| (a.0 - 1.0).abs().total_cmp(&(b.0 - 1.0).abs()))
+                .expect("a keyframe after the first");
+            // Each segment starts with the stream's tables (PAT and PMT),
+            // which come before the first keyframe.
+            let tables = &ts[..keys[0].1];
+            let second = [tables, &ts[half..]].concat();
+            let media = "#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:2\n\
+                #EXT-X-PLAYLIST-TYPE:VOD\n#EXT-X-MEDIA-SEQUENCE:0\n\
+                #EXTINF:1.0,\nseg/0.ts?token=t\n#EXTINF:1.0,\nseg/1.ts?token=t\n#EXT-X-ENDLIST\n";
+            let master = "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=4000000,RESOLUTION=960x540\n\
+                main.m3u8?token=t\n";
+            let url = |p: &str| format!("https://jf.lan/videos/1/{p}");
+            Arc::new(Hls {
+                files: vec![
+                    (url("master.m3u8?token=t"), master.as_bytes().to_vec()),
+                    (url("main.m3u8?token=t"), media.as_bytes().to_vec()),
+                    (url("seg/0.ts?token=t"), ts[..half].to_vec()),
+                    (url("seg/1.ts?token=t"), second),
+                ],
+                asked: Mutex::new(Vec::new()),
+            })
+        }
+
+        fn master(&self) -> (String, Arc<dyn ByteSource>) {
+            let (url, bytes) = &self.files[0];
+            (
+                url.clone(),
+                Arc::new(fp_core::source::MemorySource(bytes.clone())),
+            )
+        }
+    }
+
+    impl fp_core::UrlOpener for Hls {
+        fn open_url(&self, url: &str) -> std::io::Result<Arc<dyn ByteSource>> {
+            lock(&self.asked).push(url.to_string());
+            self.files
+                .iter()
+                .find(|(u, _)| u == url)
+                .map(|(_, b)| Arc::new(fp_core::source::MemorySource(b.clone())) as _)
+                .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, url))
+        }
+    }
+
+    fn open_hls(hls: &Arc<Hls>, start_at: f64) -> Player {
+        let (url, master) = hls.master();
+        Player::open(
+            master,
+            &url,
+            PlayerConfig {
+                start_at,
+                playlist: Some(Playlist(hls.clone())),
+                ..cfg()
+            },
+            |_| None,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn an_hls_playlist_plays_its_segments_through_the_opener() {
+        let hls = Hls::new();
+        let p = open_hls(&hls, 0.0);
+        assert!(p.can_seek());
+        assert!(
+            (p.duration() - 2.0).abs() < 0.1,
+            "duration {}",
+            p.duration()
+        );
+        let shown = run(&p, 6.0, |p, _| p.state() == PlayerState::Ended);
+        assert_eq!(p.state(), PlayerState::Ended);
+        assert!(shown.len() > 50, "only {} frames", shown.len());
+        assert!(shown.windows(2).all(|w| w[1] > w[0]), "frames out of order");
+        // Relative to the playlist that named them, the query kept.
+        let asked = lock(&hls.asked).clone();
+        for u in ["main.m3u8?token=t", "seg/0.ts?token=t", "seg/1.ts?token=t"] {
+            let u = format!("https://jf.lan/videos/1/{u}");
+            assert!(asked.contains(&u), "{u} not asked for: {asked:?}");
+        }
+    }
+
+    #[test]
+    fn an_hls_playlist_seeks_into_a_later_segment() {
+        // FFmpeg's HLS demuxer picks the segment by the playlist's times and
+        // resumes at a keyframe at or after the time asked (servers start
+        // each segment with one): here the second segment's own start.
+        let hls = Hls::new();
+        let p = open_hls(&hls, 1.0);
+        run(&p, 3.0, |p, f| {
+            f.is_some() && p.state() != PlayerState::Buffering
+        });
+        let t = p.current_frame().expect("a frame").pts;
+        assert!((t - 1.0).abs() < 0.05, "first frame at {t}");
+        assert!(
+            lock(&hls.asked)
+                .iter()
+                .any(|u| u.ends_with("seg/1.ts?token=t"))
+        );
+    }
+
+    #[test]
+    fn without_an_opener_nothing_is_fetched_from_the_network() {
+        let hls = Hls::new();
+        let (url, master) = hls.master();
+        let opened = Player::open(master, &url, cfg(), |_| None);
+        assert!(opened.is_err(), "a playlist opened without its segments");
+        assert!(lock(&hls.asked).is_empty());
     }
 
     #[test]
