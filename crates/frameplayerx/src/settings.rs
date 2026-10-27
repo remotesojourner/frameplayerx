@@ -51,6 +51,10 @@ pub const UI_SCALES: std::ops::RangeInclusive<f32> = 0.8..=1.5;
 /// Settings › Image cache: the sizes offered, in MB.
 pub const IMAGE_CACHE_SIZES: [u32; 5] = [100, 250, 500, 1000, 2000];
 
+/// Settings › Video position › Background: the colour it starts as, a
+/// near-black grey.
+pub const BACKGROUND: [f32; 3] = [0.086, 0.086, 0.11];
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
@@ -69,6 +73,9 @@ pub struct Settings {
     pub default_view: ViewSettings,
     /// Show the real world around flat screens and the UI.
     pub passthrough: bool,
+    /// The colour around flat screens and the UI while the room doesn't
+    /// show: sRGB, 0 to 1 per channel.
+    pub background: [f32; 3],
     /// Resume videos where they were left.
     pub resume: bool,
     /// The format a video starts in when nothing identifies it (no
@@ -145,6 +152,7 @@ impl Default for Settings {
             language: None,
             default_view: ViewSettings::default(),
             passthrough: false,
+            background: BACKGROUND,
             resume: true,
             default_format: fp_core::format::VideoFormat::FALLBACK,
             auto_hide_secs: 4.0,
@@ -280,6 +288,7 @@ mod tests {
         assert_eq!(p.seek_step, 10.0);
         assert!(!p.haptics_enabled, "haptics stay off until turned on");
         assert_eq!(p.default_format, fp_core::format::VideoFormat::FALLBACK);
+        assert_eq!(p.background, BACKGROUND, "older files keep today's colour");
         // Saved before the global chroma key: the old green default goes.
         std::fs::write(
             &path,

@@ -514,7 +514,15 @@ impl App {
         input: &FrameInput,
         anchor: Mat4,
     ) -> (Option<Arc<VideoFrame>>, VideoParams, bool) {
-        let mut video = VideoParams::default();
+        // The chosen colour is sRGB; the eyes are cleared in linear light.
+        let [r, g, b] = self
+            .settings
+            .background
+            .map(egui::ecolor::linear_from_gamma);
+        let mut video = VideoParams {
+            background: [r, g, b, 1.0],
+            ..VideoParams::default()
+        };
         let mut frame = None;
         let flat_or_none = self
             .playback

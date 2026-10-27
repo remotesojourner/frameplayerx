@@ -111,6 +111,16 @@ settings-screen-curvature = Screen curvature
 settings-vr-videos = 180° and 360° videos
 settings-height = Height
 settings-height-desc = Raise or lower yourself in videos without their own.
+settings-background = Background
+settings-background-desc = Around flat videos and the menus, for every video. Your room replaces it while it shows.
+# Short: a chip.
+background-black = Black
+# Short: a chip.
+background-dark-grey = Dark grey
+# Short: a chip.
+background-grey = Grey
+# Short: a chip.
+background-navy = Navy
 settings-sound-heading = Sound
 settings-volume = Volume
 settings-audio-device = Audio device

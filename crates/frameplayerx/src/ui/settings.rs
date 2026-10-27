@@ -451,6 +451,64 @@ fn video_position(ui: &mut egui::Ui, v: &mut View) {
             2,
         );
     });
+    background(ui, &mut v.settings.background);
+}
+
+/// Background colours offered as one tap.
+fn backgrounds() -> [(&'static str, [f32; 3]); 4] {
+    [
+        (tr!("background-black"), [0.0, 0.0, 0.0]),
+        (tr!("background-dark-grey"), crate::settings::BACKGROUND),
+        (tr!("background-grey"), [0.25, 0.25, 0.25]),
+        (tr!("background-navy"), [0.04, 0.06, 0.16]),
+    ]
+}
+
+/// The colour around flat videos and the menus while the room doesn't
+/// show. One for all videos, unlike the rest of the tab.
+fn background(ui: &mut egui::Ui, c: &mut [f32; 3]) {
+    let d = crate::settings::BACKGROUND;
+    heading(ui, tr!("settings-background"));
+    widgets::rows(ui, |r| {
+        r.row(
+            tr!("adjust-chroma-colour"),
+            Some(tr!("settings-background-desc")),
+            |ui| {
+                let [cr, cg, cb] = c.map(|x| (x.clamp(0.0, 1.0) * 255.0) as u8);
+                let (rect, _) = ui.allocate_exact_size(Vec2::new(64.0, 32.0), Sense::hover());
+                let p = ui.painter();
+                p.rect_filled(
+                    rect,
+                    egui::CornerRadius::same(8),
+                    Color32::from_rgb(cr, cg, cb),
+                );
+                // Black would vanish into the card without an edge.
+                p.rect_stroke(
+                    rect,
+                    egui::CornerRadius::same(8),
+                    (1.0, theme::STROKE),
+                    egui::StrokeKind::Inside,
+                );
+            },
+        );
+        r.content(|ui| {
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing = Vec2::new(8.0, 8.0);
+                for (label, preset) in backgrounds() {
+                    let on = c.iter().zip(preset).all(|(a, b)| (a - b).abs() < 0.02);
+                    if widgets::chip(ui, label, on).clicked() {
+                        *c = preset;
+                    }
+                }
+            });
+        });
+        for (i, label) in [tr!("adjust-red"), tr!("adjust-green"), tr!("adjust-blue")]
+            .into_iter()
+            .enumerate()
+        {
+            r.slider(label, None, &mut c[i], 0.0..=1.0, d[i], "", 2);
+        }
+    });
 }
 
 fn sound(ui: &mut egui::Ui, v: &mut View) {
