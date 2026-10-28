@@ -30,8 +30,8 @@ impl MediaSource {
         self.label.to_ascii_lowercase().contains("transcod")
     }
 
-    /// An encoding the server can start transcoding at a time, so it seeks (see
-    /// [`takes_start`]).
+    /// An encoding the server can start transcoding at a time, so it seeks
+    /// (a `…/stream.mp4?resolution=FULL_HD` address, taking `start=`).
     pub fn takes_start(&self) -> bool {
         self.is_transcode() && takes_start(&self.url)
     }
