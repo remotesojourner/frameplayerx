@@ -350,7 +350,7 @@ impl Sim {
                     "original" => Quality::Original,
                     label => {
                         let p = self.app.playback.as_ref().ok_or("no video open")?;
-                        let t = p.transcodes.iter().find(|t| t.label == label);
+                        let t = p.targets.iter().find(|t| t.label == label);
                         Quality::Transcode(t.ok_or(format!("no transcode {label}"))?.id.clone())
                     }
                 };

@@ -348,10 +348,10 @@ impl App {
         );
         match &self.playback {
             Some(p) => format!(
-                "{} copy={} state={:?} pos={:.1}/{:.1} vol={:.2} zoom={:.2} yaw={:.1} pitch={:.1} \
+                "{} playing={} state={:?} pos={:.1}/{:.1} vol={:.2} zoom={:.2} yaw={:.1} pitch={:.1} \
                  queue={}/{} paused={} {ui}",
                 p.title,
-                p.transcode.as_ref().map_or("file", |t| t.label.as_str()),
+                p.transcoding.as_ref().map_or("file", |t| t.label.as_str()),
                 p.player.state(),
                 p.player.position(),
                 p.player.duration(),

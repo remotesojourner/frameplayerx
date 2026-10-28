@@ -735,9 +735,10 @@ impl App {
         }
     }
 
-    /// Opens the video playing again from where it is, as `quality` with
-    /// `transcode` (the file when `None`), saying `notice` once it plays.
-    pub(super) fn play_copy(
+    /// Opens the video playing again from where it is, as `quality`, the
+    /// server transcoding it to `transcode` (the file as it is when `None`),
+    /// saying `notice` once it plays.
+    pub(super) fn play_quality(
         &mut self,
         quality: playback::Quality,
         transcode: Option<String>,

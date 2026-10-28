@@ -499,21 +499,21 @@ impl Source for FeedSource {
         Ok(Arc::new(self.client.open(&url)?))
     }
 
-    fn transcodes(&self, video: &Entry) -> Vec<crate::Transcode> {
+    fn transcode_targets(&self, video: &Entry) -> Vec<crate::TranscodeTarget> {
         if is_direct_file(&video.location) {
             return Vec::new();
         }
         match self.scene(&video.location, true) {
-            Ok(s) => crate::transcode::within(self.max_height, s.transcodes()),
+            Ok(s) => crate::transcode::within(self.max_height, s.transcode_targets()),
             Err(e) => {
-                log::warn!("transcodes of {}: {e}", redact(&video.location));
+                log::warn!("transcode targets of {}: {e}", redact(&video.location));
                 Vec::new()
             }
         }
     }
 
-    /// `id` is the transcode's own address, as the scene listed it. The
-    /// server stops encoding when its stream is closed.
+    /// `id` is the address the scene names for that encoding; the server
+    /// encodes from it when asked and stops when the stream is closed.
     fn open_transcode(&self, _location: &str, id: &str, start: f64) -> Result<Arc<dyn ByteSource>> {
         let url = if start > 0.0 && scene::takes_start(id) {
             crate::transcode::with_query(id, "start", &format!("{start:.3}"))
@@ -683,7 +683,7 @@ mod tests {
             ]}
         ]});
         let s = deovr::parse_deovr_scene(&v, "https://vr/");
-        let t = s.transcodes();
+        let t = s.transcode_targets();
         let labels: Vec<&str> = t.iter().map(|t| t.label.as_str()).collect();
         assert_eq!(labels, ["2160p", "1080p", "720p"]);
         // The MP4 of two at one height; a stream.*?resolution= one starts at

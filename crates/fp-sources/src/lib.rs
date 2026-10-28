@@ -58,7 +58,7 @@ pub use mediabrowser::{
 };
 pub use sidecar::{ScriptFile, Sidecars, SubtitleFile, match_sidecars};
 pub use smb::SmbSource;
-pub use transcode::Transcode;
+pub use transcode::TranscodeTarget;
 pub use watch::{WatchEvent, WatchKind, WatchSession};
 pub use webdav::WebDavSource;
 
@@ -120,17 +120,18 @@ pub trait Source: Send + Sync {
         Ok(())
     }
 
-    /// The server's transcodes of `video`, tallest first: what plays when
-    /// the file itself can't, or not smoothly. May ask the server, so not
-    /// on the frame loop.
-    fn transcodes(&self, _video: &Entry) -> Vec<Transcode> {
+    /// What the server can transcode `video` to, tallest first: for when
+    /// the file itself can't play, or not smoothly. Nothing is encoded
+    /// until one is opened. May ask the server, so not on the frame loop.
+    fn transcode_targets(&self, _video: &Entry) -> Vec<TranscodeTarget> {
         Vec::new()
     }
 
-    /// Opens transcode `id` (from [`Source::transcodes`]) of `location`
-    /// from `start` seconds on; one that isn't seekable opens from the
-    /// beginning whatever `start` is. Only one transcode a server makes
-    /// plays at a time: opening another stops the one before.
+    /// Asks the server to transcode `location` to target `id` (from
+    /// [`Source::transcode_targets`]) from `start` seconds on, and returns
+    /// the stream as it encodes; one that isn't seekable starts at the
+    /// beginning whatever `start` is. The server encodes one at a time for
+    /// us: asking for another stops the one before.
     fn open_transcode(&self, location: &str, id: &str, _start: f64) -> Result<Arc<dyn ByteSource>> {
         Err(Error::NotFound(format!("transcode {id} of {location}")))
     }

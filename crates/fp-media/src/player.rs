@@ -28,13 +28,13 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
-/// Opens a server's transcode again from a time (seconds into the video).
+/// Asks the server to transcode again from a time (seconds into the video).
 pub type Restart =
     Arc<dyn Fn(f64) -> std::result::Result<Arc<dyn ByteSource>, String> + Send + Sync>;
 
-/// A stream a server makes as it sends it (a transcode): it starts at
+/// A stream a server encodes as it sends it (transcoding): it starts at
 /// [`Timeline::start`], doesn't know the video's length, and seeks by
-/// opening it again from the time asked ([`Timeline::restart`]).
+/// asking for it again from the time asked ([`Timeline::restart`]).
 #[derive(Clone)]
 pub struct Timeline {
     /// Where in the video the stream opened starts, seconds.
@@ -70,7 +70,8 @@ pub struct PlayerConfig {
     pub start_at: f64,
     pub start_paused: bool,
     pub volume: f32,
-    /// Set for a server's transcode; [`Self::start_at`] is then ignored.
+    /// Set for a stream a server transcodes; [`Self::start_at`] is then
+    /// ignored.
     pub timeline: Option<Timeline>,
 }
 
@@ -210,7 +211,7 @@ struct Shared {
     has_audio: AtomicBool,
     duration: f64,
     video_fps: f64,
-    /// Seeks are carried out (not a transcode the server can't restart).
+    /// Seeks are carried out (not a transcoding stream the server can't restart).
     seekable: bool,
 }
 
@@ -472,8 +473,8 @@ impl Player {
         s.frames_cv.notify_all();
     }
 
-    /// Whether [`Self::seek`] does anything: not in a server's transcode
-    /// that can't be opened from another time.
+    /// Whether [`Self::seek`] does anything: not in a stream a server
+    /// transcodes that it can't start at another time.
     pub fn can_seek(&self) -> bool {
         self.shared.seekable
     }
@@ -734,8 +735,8 @@ fn demux_thread(
             .collect()
     };
     let mut time_base = time_bases(&input);
-    // The decoders count time from the first input's origin; a transcode
-    // opened again from another time has its own, and its packets are
+    // The decoders count time from the first input's origin; a stream the
+    // server encodes again from another time has its own, and its packets are
     // moved onto the first one's timeline by this many seconds.
     let origin = input.origin();
     let mut shift = 0.0f64;
@@ -888,7 +889,7 @@ fn demux_thread(
     }
 }
 
-/// A server's transcode opened again from `at`, with the streams `current`
+/// The server's transcoding stream asked for again from `at`, with the streams `current`
 /// has (the decoders were made for those).
 fn reopen(restart: &Restart, current: &Input, at: f64, quit: Arc<AtomicBool>) -> Result<Input> {
     let src = restart(at).map_err(Error::Unsupported)?;

@@ -137,7 +137,7 @@ impl App {
                     playback::Quality::Transcode(id) => Some(id.clone()),
                     _ => None,
                 };
-                self.play_copy(q, transcode, None);
+                self.play_quality(q, transcode, None);
             }
             Action::ResetPlacement => self.reset_placement(),
             Action::SetFavorite(id, f) => {

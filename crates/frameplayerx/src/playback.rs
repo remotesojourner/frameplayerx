@@ -15,7 +15,7 @@ use fp_library::{Library, MediaId, SessionId};
 use fp_media::{Cue, Player, PlayerConfig, PlayerState, StreamInfo};
 use fp_sources::sidecar::subtitle_file;
 use fp_sources::urlutil::last_segment;
-use fp_sources::{Source, Transcode};
+use fp_sources::{Source, TranscodeTarget};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -30,26 +30,27 @@ pub struct OpenRequest {
     pub title: Option<String>,
     /// Start here instead of the saved resume position.
     pub start_at: Option<f64>,
-    /// Which copy plays.
+    /// The file as it is, or transcoded by the server.
     pub quality: Quality,
-    /// The server's transcode to open ([`Transcode::id`]): the one
-    /// [`Quality::Transcode`] names, or the one Automatic moved to.
+    /// What to ask the server to transcode the file to
+    /// ([`TranscodeTarget::id`]): what [`Quality::Transcode`] names, or
+    /// where Automatic moved to.
     pub transcode: Option<String>,
     /// Said in the control bar once it plays.
     pub notice: Option<String>,
 }
 
-/// Which copy of a video plays, as the Quality list in the audio and
-/// subtitles picker offers them.
+/// Whether the file plays as it is or the server transcodes it, as the
+/// Quality list in the audio and subtitles picker offers them.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub enum Quality {
-    /// The file; the server's next transcode down when the file can't
-    /// play here, or keeps stuttering.
+    /// The file; when it can't play here, or keeps stuttering, the server
+    /// transcodes it, one height down at a time.
     #[default]
     Automatic,
     /// The file, whatever happens.
     Original,
-    /// The server's transcode with this [`Transcode::id`].
+    /// The server transcodes it to this [`TranscodeTarget::id`].
     Transcode(String),
 }
 
@@ -103,10 +104,10 @@ pub struct Playback {
     decode_check: (Instant, u64, u64, u64),
     /// Tells the server the video came from how watching it goes.
     watch: Option<Watch>,
-    /// The server's transcodes of the video, tallest first.
-    pub transcodes: Vec<Transcode>,
-    /// The one playing; `None` for the file.
-    pub transcode: Option<Transcode>,
+    /// What the server can transcode the video to, tallest first.
+    pub targets: Vec<TranscodeTarget>,
+    /// What the server is transcoding it to; `None` for the file as it is.
+    pub transcoding: Option<TranscodeTarget>,
     /// Last stutter check for Automatic: when, the player's stall and
     /// frame counts, and how many checks in a row found it stuttering.
     stutter_check: (Instant, u64, u64, u64, u32),
@@ -265,13 +266,13 @@ pub fn open(
         })
         .map(|p| (p, pick))
     };
-    let transcodes = source
+    let targets = source
         .as_ref()
         .map(|src| {
             let video = entry
                 .clone()
                 .unwrap_or_else(|| Entry::new(name.clone(), location.clone(), EntryKind::Video));
-            src.transcodes(&video)
+            src.transcode_targets(&video)
         })
         .unwrap_or_default();
     let duration = entry
@@ -281,7 +282,7 @@ pub fn open(
         .unwrap_or(0.0);
     // From where it was asked to start when the server can start it there
     // (and so seek), else from the beginning.
-    let transcoded = |t: &Transcode| {
+    let transcoded = |t: &TranscodeTarget| {
         let fail = |e: String| format!("{name} ({}): {e}", t.label);
         let src = source.clone().ok_or_else(|| fail("no server".into()))?;
         let restart = restart_at(src, &location, t);
@@ -300,10 +301,10 @@ pub fn open(
     let asked = req
         .transcode
         .as_ref()
-        .and_then(|id| transcodes.iter().find(|t| &t.id == id))
+        .and_then(|id| targets.iter().find(|t| &t.id == id))
         .cloned();
     let mut notice = req.notice.clone();
-    let (player, pick, transcode) = match asked {
+    let (player, pick, transcoding) = match asked {
         Some(t) => {
             let (p, pick) = transcoded(&t).map_err(failed)?;
             (p, pick, Some(t))
@@ -317,10 +318,10 @@ pub fn open(
                 Err(e)
                     if e.cannot_play_here()
                         && req.quality == Quality::Automatic
-                        && !transcodes.is_empty() =>
+                        && !targets.is_empty() =>
                 {
-                    let t = transcodes[0].clone();
-                    log::warn!("{name}: {e}; playing the server's {} transcode", t.label);
+                    let t = targets[0].clone();
+                    log::warn!("{name}: {e}; the server transcodes it to {}", t.label);
                     let (p, pick) = transcoded(&t).map_err(failed)?;
                     notice = Some(tr!("transcode-cannot-play", quality = t.label.as_str()));
                     (p, pick, Some(t))
@@ -341,7 +342,7 @@ pub fn open(
     // it is probed; what the opened file says shows in the history at once.
     // A transcode says less than the file (servers drop its VR metadata).
     if let Some(r) = &record
-        && transcode.is_none()
+        && transcoding.is_none()
         && detected.evidence != Evidence::Default
         && let Err(e) = library.set_detected(r.id, detected)
     {
@@ -397,7 +398,7 @@ pub fn open(
             player,
             request: OpenRequest {
                 location,
-                transcode: transcode.as_ref().map(|t| t.id.clone()),
+                transcode: transcoding.as_ref().map(|t| t.id.clone()),
                 notice: None,
                 ..req
             },
@@ -424,17 +425,16 @@ pub fn open(
             notice,
             decode_check: (Instant::now(), 0, 0, 0),
             watch,
-            transcodes,
-            transcode,
+            targets,
+            transcoding,
             stutter_check: (Instant::now(), 0, 0, 0, 0),
         },
         scripts,
     })
 }
 
-/// Opens transcode `t` of `location` from a time (seconds), through
-/// `source`.
-fn restart_at(source: Arc<dyn Source>, location: &str, t: &Transcode) -> fp_media::Restart {
+/// Asks `source` to transcode `location` to `t` from a time (seconds).
+fn restart_at(source: Arc<dyn Source>, location: &str, t: &TranscodeTarget) -> fp_media::Restart {
     let (location, id) = (location.to_string(), t.id.clone());
     Arc::new(move |at| {
         source
@@ -681,14 +681,14 @@ impl Playback {
         }
     }
 
-    /// Every few seconds, under Automatic: the transcode to move to when
-    /// the video stuttered through the last two checks (stalled or dropped
-    /// frames, whether the decoder or the stream fell behind). One check
-    /// alone may be a seek's first seconds.
-    pub fn stutter_step(&mut self) -> Option<Transcode> {
+    /// Every few seconds, under Automatic: what to have the server
+    /// transcode to when the video stuttered through the last two checks
+    /// (stalled or dropped frames, whether the decoder or the stream fell
+    /// behind). One check alone may be a seek's first seconds.
+    pub fn stutter_step(&mut self) -> Option<TranscodeTarget> {
         let (since, stalls, dropped, shown, behind) = self.stutter_check;
         if self.request.quality != Quality::Automatic
-            || self.transcodes.is_empty()
+            || self.targets.is_empty()
             || since.elapsed().as_secs_f64() < STUTTER_CHECK_SECS
         {
             return None;
@@ -712,7 +712,7 @@ impl Playback {
             return None;
         }
         let height = self.player.info().video_stream().map_or(0, |v| v.height);
-        let next = next_down(&self.transcodes, self.transcode.as_ref(), height).cloned();
+        let next = next_down(&self.targets, self.transcoding.as_ref(), height).cloned();
         log::info!(
             "{} stutters ({} stalls, {} of {} frames dropped): {}",
             self.title,
@@ -720,7 +720,7 @@ impl Playback {
             st.frames_dropped - dropped,
             st.frames_shown - shown + st.frames_dropped - dropped,
             next.as_ref()
-                .map_or("no smaller transcode".into(), |t| format!(
+                .map_or("nothing smaller to transcode to".into(), |t| format!(
                     "moving to {}",
                     t.label
                 ))
@@ -968,22 +968,20 @@ const DECODE_CHECK_SECS: f64 = 10.0;
 /// How often Automatic checks for stutter: two checks in a row move it on.
 const STUTTER_CHECK_SECS: f64 = 6.0;
 
-/// The transcode Automatic moves to from `playing` (`None` for the file,
-/// `height` pixels tall): the next one shorter. From a file of unknown
+/// Where Automatic moves to from `playing` (`None` for the file,
+/// `height` pixels tall): the next target shorter. From a file of unknown
 /// height, the tallest.
 fn next_down<'a>(
-    transcodes: &'a [Transcode],
-    playing: Option<&Transcode>,
+    targets: &'a [TranscodeTarget],
+    playing: Option<&TranscodeTarget>,
     height: u32,
-) -> Option<&'a Transcode> {
+) -> Option<&'a TranscodeTarget> {
     let below = match playing {
         Some(t) => t.height.unwrap_or(0),
-        None if height == 0 => return transcodes.first(),
+        None if height == 0 => return targets.first(),
         None => height,
     };
-    transcodes
-        .iter()
-        .find(|t| t.height.is_some_and(|h| h < below))
+    targets.iter().find(|t| t.height.is_some_and(|h| h < below))
 }
 
 /// Over one check period: playback stalled more than once waiting for the
@@ -1077,8 +1075,8 @@ mod tests {
         assert_eq!(title_from_name("My.Video_2024.mkv"), "My Video 2024");
     }
 
-    /// A server whose file this player can't read, with a 1080p and a 720p
-    /// transcode of it (a real clip).
+    /// A server whose file this player can't read, which transcodes it to
+    /// 1080p or 720p (a real clip).
     #[derive(Default)]
     struct Unplayable {
         files: Mutex<u32>,
@@ -1105,9 +1103,9 @@ mod tests {
             *lock(&self.files) += 1;
             Ok(Arc::new(fp_core::source::MemorySource(vec![7; 64 << 10])))
         }
-        fn transcodes(&self, _: &Entry) -> Vec<Transcode> {
+        fn transcode_targets(&self, _: &Entry) -> Vec<TranscodeTarget> {
             [1080, 720]
-                .map(|h| Transcode {
+                .map(|h| TranscodeTarget {
                     id: h.to_string(),
                     label: format!("{h}p"),
                     height: Some(h),
@@ -1160,14 +1158,14 @@ mod tests {
         let pb = open_from(server.clone(), Quality::Automatic, None)
             .unwrap()
             .playback;
-        assert_eq!(pb.transcode.as_ref().map(|t| t.id.as_str()), Some("1080"));
+        assert_eq!(pb.transcoding.as_ref().map(|t| t.id.as_str()), Some("1080"));
         assert_eq!(pb.request.transcode.as_deref(), Some("1080"));
         assert!(pb.notice.as_deref().is_some_and(|n| n.contains("1080p")));
         // From where it was asked, as long as the video, and it seeks.
         assert_eq!(*lock(&server.asked), [("1080".to_string(), 30.0)]);
         assert_eq!(pb.player.duration(), 300.0);
         assert!(pb.player.can_seek());
-        assert_eq!(pb.transcodes.len(), 2);
+        assert_eq!(pb.targets.len(), 2);
     }
 
     #[test]
@@ -1182,21 +1180,21 @@ mod tests {
         let server = Arc::new(Unplayable::default());
         let q = Quality::Transcode("720".into());
         let pb = open_from(server.clone(), q, Some("720")).unwrap().playback;
-        assert_eq!(pb.transcode.map(|t| t.label), Some("720p".to_string()));
+        assert_eq!(pb.transcoding.map(|t| t.label), Some("720p".to_string()));
         assert!(pb.notice.is_none());
         assert_eq!(*lock(&server.files), 0);
     }
 
     #[test]
     fn automatic_steps_down_one_transcode_at_a_time() {
-        let t = |h: Option<u32>| Transcode {
+        let t = |h: Option<u32>| TranscodeTarget {
             id: format!("{h:?}"),
             label: String::new(),
             height: h,
             seekable: true,
         };
         let all = [t(Some(2160)), t(Some(1440)), t(None), t(Some(720))];
-        let next = |playing: Option<&Transcode>, height| next_down(&all, playing, height);
+        let next = |playing: Option<&TranscodeTarget>, height| next_down(&all, playing, height);
         // From the file: the tallest shorter than it, else the tallest.
         assert_eq!(next(None, 3840), Some(&all[0]));
         assert_eq!(next(None, 2160), Some(&all[1]));

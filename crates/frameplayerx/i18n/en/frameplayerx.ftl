@@ -419,20 +419,20 @@ tracks-no-audio = No audio
 tracks-spatial = {" · spatial"}
 # Short: no audio or subtitles.
 tracks-off = Off
-# Short: a column's title: which copy of the video plays, the file or one the server makes smaller.
+# Short: a column's title: whether the file plays as it is or the server transcodes it.
 tracks-quality = Quality
-# The file, or the server's transcode when the file can't play or stutters.
+# The file; the server transcodes it when the file can't play or stutters.
 tracks-quality-automatic = Automatic
-# The file itself.
+# The file as it is.
 tracks-quality-original = Original
-# Under Automatic: it plays the file.
+# Under Automatic: it plays the file as it is.
 tracks-quality-file = The file
-# Under a transcode: the server makes this copy as it plays.
-tracks-quality-transcode = Server transcode
-# Under a transcode the server can't start at a time.
-tracks-quality-no-seek = Server transcode · can't skip
-# Under Automatic: it plays the server's transcode. $quality is like 1440p.
-tracks-quality-playing = Playing { $quality }
+# Under a height: the server transcodes the file to it, live, as it plays.
+tracks-quality-transcode = Transcoded live
+# Under a height the server can't start transcoding at a time.
+tracks-quality-no-seek = Live, can't skip
+# Under Automatic: the server is transcoding the file. $quality is like 1440p.
+tracks-quality-playing = Transcoding { $quality }
 haptics-stroke-bottom = Stroke bottom
 haptics-stroke-top = Stroke top
 haptics-invert = Invert stroke
@@ -1162,9 +1162,9 @@ perf-memory-value = { $used } of { $total } GB
 perf-memory-app = { $used } of { $total } GB · app { $app } GB
 notice-not-in-library = Adjustments apply until you close this video (it is not in the library).
 # $quality is like 1440p.
-transcode-cannot-play = This file can't play here: playing the server's { $quality } transcode
+transcode-cannot-play = This file can't play here: the server is transcoding it to { $quality }
 # $quality is like 1440p.
-transcode-stuttered = The video kept stuttering: playing the server's { $quality } transcode
+transcode-stuttered = The video kept stuttering: the server is transcoding it to { $quality }
 # A bookmark's name, $time where it is.
 bookmark-name = Bookmark { $time }
 # Why a video decodes in software. $stream is like 10-bit 4:2:2 HEVC.

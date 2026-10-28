@@ -2,7 +2,7 @@
 //! feed's listing as cached between visits.
 
 use crate::error::{Error, Result};
-use crate::transcode::Transcode;
+use crate::transcode::TranscodeTarget;
 use fp_core::format::{VideoFormat, detect_from_name};
 use fp_core::source::{Entry, EntryKind, SubtitleFile};
 use serde::{Deserialize, Serialize};
@@ -24,20 +24,20 @@ pub struct MediaSource {
 }
 
 impl MediaSource {
-    /// A copy the server transcodes as it streams (an encoding named
-    /// "transcoding") rather than the file itself.
+    /// An encoding the server transcodes live when asked (one named
+    /// "transcoding"), not the file itself.
     pub fn is_transcode(&self) -> bool {
         self.label.to_ascii_lowercase().contains("transcod")
     }
 
-    /// A transcode the server starts at a time, so it seeks (see
+    /// An encoding the server can start transcoding at a time, so it seeks (see
     /// [`takes_start`]).
     pub fn takes_start(&self) -> bool {
         self.is_transcode() && takes_start(&self.url)
     }
 }
 
-/// A transcode address the server starts at a time given as
+/// A transcoding address the server starts encoding at a time given as
 /// `start=<seconds>`: `…/stream.mp4?resolution=FULL_HD`.
 pub(crate) fn takes_start(url: &str) -> bool {
     let (path, query) = url.split_once('?').unwrap_or((url, ""));
@@ -89,8 +89,8 @@ pub struct SceneInfo {
 impl SceneInfo {
     /// The tallest file not above `max_height`; when every file is taller,
     /// the smallest one. Sources of unknown height rank lowest. The
-    /// server's transcodes only play when it lists no file (the player
-    /// moves to one when the file can't play, or not smoothly).
+    /// server only transcodes when it lists no file (the player asks for a
+    /// transcode when the file can't play, or not smoothly).
     pub fn best_source(&self, max_height: Option<u32>) -> Option<&MediaSource> {
         let h = |s: &MediaSource| s.height.unwrap_or(0);
         let fits = |s: &&MediaSource| max_height.is_none_or(|m| h(s) <= m);
@@ -111,9 +111,10 @@ impl SceneInfo {
         pick(false).or_else(|| pick(true))
     }
 
-    /// The server's transcodes, tallest first, one per height (the first
-    /// listed of an MP4 and a WebM, which takes servers far longer).
-    pub fn transcodes(&self) -> Vec<Transcode> {
+    /// What the server can transcode the scene to, tallest first, one per
+    /// height (the first listed of an MP4 and a WebM, which takes servers
+    /// far longer to encode).
+    pub fn transcode_targets(&self) -> Vec<TranscodeTarget> {
         let mut found: Vec<&MediaSource> =
             self.sources.iter().filter(|s| s.is_transcode()).collect();
         let webm = |s: &MediaSource| s.url.to_ascii_lowercase().contains(".webm");
@@ -121,7 +122,7 @@ impl SceneInfo {
         found.dedup_by(|a, b| a.height == b.height && a.height.is_some() || a.url == b.url);
         found
             .into_iter()
-            .map(|s| Transcode {
+            .map(|s| TranscodeTarget {
                 id: s.url.clone(),
                 label: crate::transcode::height_label(s.height),
                 height: s.height,

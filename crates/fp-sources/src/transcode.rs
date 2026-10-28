@@ -1,10 +1,11 @@
-//! Copies of a video a server makes as it streams them. Jellyfin and Emby
-//! encode one at the size asked; DeoVR feeds and HereSphere APIs list the
-//! ones they offer.
+//! Transcoding: a server encoding a video live as it streams it. Nothing
+//! is there until the player asks: Jellyfin and Emby encode to the size
+//! asked; DeoVR feeds and HereSphere APIs name the addresses their server
+//! encodes from when one is requested.
 //!
-//! A transcode is one stream with no size and no byte ranges. It plays
-//! from the time it was asked for, and a seek asks for it again from
-//! another time when the server takes one ([`Transcode::seekable`]).
+//! What comes back is one stream with no size and no byte ranges. It starts
+//! at the time asked, and a seek asks the server to start encoding again
+//! from another time, when it takes one ([`TranscodeTarget::seekable`]).
 
 use fp_core::source::ByteSource;
 use fp_core::sync::lock;
@@ -12,24 +13,25 @@ use std::collections::VecDeque;
 use std::io::{self, Read};
 use std::sync::{Arc, Mutex};
 
-/// One transcode a server offers of a video.
+/// What a server can transcode a video to when asked: a picture height,
+/// and for a feed the address it encodes from.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Transcode {
+pub struct TranscodeTarget {
     /// What [`crate::Source::open_transcode`] takes back.
     pub id: String,
     /// "1440p".
     pub label: String,
     /// Picture height in pixels, when known.
     pub height: Option<u32>,
-    /// The server can start it at a time, so it seeks.
+    /// The server starts encoding at a time asked, so it seeks.
     pub seekable: bool,
 }
 
 /// Picture heights offered below a video's own.
 const HEIGHTS: [u32; 5] = [2880, 2160, 1440, 1080, 720];
 
-/// The heights a picture `height` pixels tall is transcoded to: its own,
-/// then [`HEIGHTS`] below it.
+/// The heights a picture `height` pixels tall can be transcoded to: its
+/// own, then [`HEIGHTS`] below it.
 pub(crate) fn heights_below(height: u32) -> Vec<u32> {
     std::iter::once(height)
         .chain(HEIGHTS.into_iter().filter(|h| *h < height))
@@ -38,8 +40,8 @@ pub(crate) fn heights_below(height: u32) -> Vec<u32> {
 
 /// Bits a second asked for a `width` x `height` picture at `fps`: about
 /// what an H.264 encode of that size needs to look clean, and no more than
-/// `file` (the file's own bitrate, when known) shrunk with the picture's
-/// area from `of_height`, so each step down also needs a slower network.
+/// `file` (the file's own bitrate and height, when known) shrunk with the
+/// picture's area, so each step down also needs a slower network.
 pub(crate) fn bitrate(width: u32, height: u32, fps: f64, file: Option<(u64, u32)>) -> u64 {
     let fps = if fps > 0.0 { fps.min(60.0) } else { 30.0 };
     let clean = width as f64 * height as f64 * fps * 0.12;
@@ -51,14 +53,17 @@ pub(crate) fn bitrate(width: u32, height: u32, fps: f64, file: Option<(u64, u32)
     (clean.min(scaled) as u64).clamp(2_000_000, 120_000_000)
 }
 
-/// The transcodes not above a source's maximum height (those of unknown
+/// The targets not above a source's maximum height (those of unknown
 /// height too); when every one is taller, the smallest.
-pub(crate) fn within(max_height: Option<u32>, mut all: Vec<Transcode>) -> Vec<Transcode> {
+pub(crate) fn within(
+    max_height: Option<u32>,
+    mut all: Vec<TranscodeTarget>,
+) -> Vec<TranscodeTarget> {
     let Some(max) = max_height else {
         return all;
     };
     let smallest = all.iter().rposition(|t| t.height.is_some());
-    let fitting: Vec<Transcode> = all
+    let fitting: Vec<TranscodeTarget> = all
         .iter()
         .filter(|t| t.height.is_none_or(|h| h <= max))
         .cloned()
@@ -81,8 +86,8 @@ const KEPT: usize = 16 << 20;
 /// How far ahead a read may skip, reading through what lies between.
 const SKIP: u64 = 256 << 20;
 
-/// A transcode as the player reads it: front to back as the server sends
-/// it, a read returning what has come (a server encoding slowly, or a
+/// A server's transcoding stream as the player reads it: front to back as
+/// the server encodes it, a read returning what has come (a slow server, or a
 /// picture that compresses to little, sends a block's worth only after
 /// many seconds), the last [`KEPT`] bytes kept to read again. It has no
 /// size, even when the server sends an estimate: FFmpeg would read the
@@ -251,14 +256,14 @@ mod tests {
 
     #[test]
     fn the_maximum_height_caps_transcodes() {
-        let t = |h: Option<u32>| Transcode {
+        let t = |h: Option<u32>| TranscodeTarget {
             id: format!("{h:?}"),
             label: height_label(h),
             height: h,
             seekable: true,
         };
         let all = vec![t(Some(2160)), t(Some(1080)), t(None), t(Some(720))];
-        let ids = |v: Vec<Transcode>| v.into_iter().map(|t| t.label).collect::<Vec<_>>();
+        let ids = |v: Vec<TranscodeTarget>| v.into_iter().map(|t| t.label).collect::<Vec<_>>();
         assert_eq!(
             ids(within(None, all.clone())),
             ["2160p", "1080p", "Transcode", "720p"]

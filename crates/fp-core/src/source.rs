@@ -16,7 +16,7 @@ pub trait ByteSource: Send + Sync {
     fn read_at(&self, offset: u64, buf: &mut [u8]) -> io::Result<usize>;
     /// Human-readable description for logs and errors.
     fn describe(&self) -> String;
-    /// Read front to back only, as it arrives (a server's live transcode):
+    /// Read front to back only, as it arrives (a server transcoding live):
     /// demuxers must not seek in it. Told it could, FFmpeg's MP4 reader
     /// reads a fragmented stream to its end first, which a live one never
     /// reaches.

@@ -225,8 +225,8 @@ pub enum Action {
     SelectAudio(usize),
     /// Shows these subtitles, and keeps them as this video's pick.
     SelectSubtitles(crate::subtitles::Pick),
-    /// Plays the file or one of the server's transcodes of it from where
-    /// it is.
+    /// Plays the file as it is, or transcoded by the server, from where it
+    /// is.
     SelectQuality(crate::playback::Quality),
     /// Puts a flat screen, the control bar, the adjust panel and the browse
     /// panel back where they start.

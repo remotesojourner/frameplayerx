@@ -15,7 +15,7 @@ use crate::error::{Error, Result};
 use crate::http::{HttpClient, HttpOptions, HttpReply};
 use crate::json::{array, boolean, get, num, text, uint};
 use crate::sidecar::Sidecars;
-use crate::transcode::{self, Streamed, Transcode};
+use crate::transcode::{self, Streamed, TranscodeTarget};
 use crate::urlutil::{encode_form_value, redact};
 use crate::watch::{WatchEvent, WatchKind, WatchSession};
 use fp_core::format::{Projection, StereoLayout, VideoFormat, detect_from_name};
@@ -171,10 +171,10 @@ pub(crate) fn pick_media_source<'a>(
         .or_else(|| best_media_source(media_sources, max_height))
 }
 
-/// The transcodes of media source `ms`: its own size, then the usual
-/// heights below it, the width kept in proportion. Their ids are
+/// The sizes media source `ms` can be transcoded to: its own, then the
+/// usual heights below it, the width kept in proportion. Their ids are
 /// `<media source>/<width>x<height>/<bits a second>`.
-pub(crate) fn transcodes_of(ms: &Value) -> Vec<Transcode> {
+pub(crate) fn targets_of(ms: &Value) -> Vec<TranscodeTarget> {
     let Some(source) = text(ms, "Id") else {
         return Vec::new();
     };
@@ -200,7 +200,7 @@ pub(crate) fn transcodes_of(ms: &Value) -> Vec<Transcode> {
         .into_iter()
         .map(|h| {
             let w = ((width as f64 * h as f64 / height as f64 / 2.0).round() as u32 * 2).max(2);
-            Transcode {
+            TranscodeTarget {
                 id: format!("{source}/{w}x{h}/{}", transcode::bitrate(w, h, fps, file)),
                 label: transcode::height_label(Some(h)),
                 height: Some(h),
@@ -1099,9 +1099,9 @@ impl Source for MediaBrowserSource {
         self.api_post_json(path, &body)
     }
 
-    /// The playing version at its own size and the usual heights below,
-    /// none above the maximum height.
-    fn transcodes(&self, video: &Entry) -> Vec<Transcode> {
+    /// The sizes the playing version can be transcoded to: its own and the
+    /// usual heights below, none above the maximum height.
+    fn transcode_targets(&self, video: &Entry) -> Vec<TranscodeTarget> {
         let found = item_id(&video.location).and_then(|id| {
             let (_, user) = self.client()?;
             self.api_get_json(&format!("/Users/{user}/Items/{id}?Fields=MediaSources"))
@@ -1109,18 +1109,18 @@ impl Source for MediaBrowserSource {
         match found {
             Ok(item) => self
                 .playing_version(&video.location, &item)
-                .map(|ms| transcode::within(self.max_height, transcodes_of(&ms)))
+                .map(|ms| transcode::within(self.max_height, targets_of(&ms)))
                 .unwrap_or_default(),
             Err(e) => {
-                log::warn!("transcodes of {}: {e}", redact(&video.location));
+                log::warn!("transcode targets of {}: {e}", redact(&video.location));
                 Vec::new()
             }
         }
     }
 
-    /// Stops the server's encode for the transcode before, then asks for
-    /// this one. Dropping the stream stops its encode: Emby otherwise
-    /// encodes on to the end, Jellyfin for a while.
+    /// Stops the encode the server is running for us, then asks for this
+    /// one. Dropping the stream stops its encode: Emby otherwise encodes on
+    /// to the end, Jellyfin for a while.
     fn open_transcode(&self, location: &str, id: &str, start: f64) -> Result<Arc<dyn ByteSource>> {
         let item = item_id(location)?;
         let (source, width, height, bitrate) = parse_transcode_id(id)
@@ -1664,7 +1664,7 @@ mod tests {
             {"Type": "Audio"},
             {"Type": "Video", "Width": 7680, "Height": 3840, "RealFrameRate": 59.94, "BitRate": 80000000}
         ]});
-        let t = transcodes_of(&ms);
+        let t = targets_of(&ms);
         let labels: Vec<&str> = t.iter().map(|t| t.label.as_str()).collect();
         assert_eq!(
             labels,
@@ -1676,7 +1676,7 @@ mod tests {
             Some(("ms8k", 4320, 2160, 25_312_500))
         );
         assert_eq!(parse_transcode_id("ms/1x2"), None);
-        assert!(transcodes_of(&json!({"Id": "a", "MediaStreams": []})).is_empty());
+        assert!(targets_of(&json!({"Id": "a", "MediaStreams": []})).is_empty());
 
         let url = transcode_url(
             "http://jf:8096",

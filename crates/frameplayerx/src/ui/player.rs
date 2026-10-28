@@ -494,12 +494,12 @@ fn tracks_label(pb: &crate::playback::Playback, language: &str) -> Option<String
     let info = pb.player.info();
     let audio: Vec<_> = info.audio_streams().collect();
     let subtitles = crate::subtitles::rows(language, info, &pb.subtitle_files);
-    if audio.len() < 2 && subtitles.is_empty() && pb.transcodes.is_empty() {
+    if audio.len() < 2 && subtitles.is_empty() && pb.targets.is_empty() {
         return None;
     }
     let mut label = String::new();
-    if !pb.transcodes.is_empty() {
-        let quality = match (&pb.transcode, &pb.request.quality) {
+    if !pb.targets.is_empty() {
+        let quality = match (&pb.transcoding, &pb.request.quality) {
             (Some(t), _) => t.label.as_str(),
             (None, Quality::Original) => tr!("tracks-quality-original"),
             (None, _) => tr!("tracks-quality-automatic"),
@@ -1526,10 +1526,10 @@ pub fn tracks_panel(ctx: &egui::Context, v: &mut View) {
     let audio: Vec<_> = info.audio_streams().collect();
     let subtitles = crate::subtitles::rows(&v.settings.subtitle_language, info, &pb.subtitle_files);
     let label_h = ctx.fonts(|f| f.row_height(&theme::font(Weight::SemiBold, 13.0)));
-    let quality_rows = if pb.transcodes.is_empty() {
+    let quality_rows = if pb.targets.is_empty() {
         0
     } else {
-        2 + pb.transcodes.len()
+        2 + pb.targets.len()
     };
     let rows = audio
         .len()
@@ -1614,8 +1614,8 @@ pub fn tracks_panel(ctx: &egui::Context, v: &mut View) {
         });
 }
 
-/// The Quality list: Automatic, Original, then the server's transcodes.
-/// Picking one plays it from where the video is.
+/// The Quality list: Automatic, Original, then the heights the server can
+/// transcode to. Picking one plays it from where the video is.
 fn quality_list(
     ui: &mut egui::Ui,
     rect: egui::Rect,
@@ -1634,7 +1634,7 @@ fn quality_list(
                 actions.push(Action::SelectQuality(quality));
             }
         };
-        let automatic = match (&pb.transcode, asked) {
+        let automatic = match (&pb.transcoding, asked) {
             (Some(t), Quality::Automatic) => {
                 tr!("tracks-quality-playing", quality = t.label.as_str())
             }
@@ -1647,7 +1647,7 @@ fn quality_list(
             Quality::Automatic,
         );
         row(ui, tr!("tracks-quality-original"), "", Quality::Original);
-        for t in &pb.transcodes {
+        for t in &pb.targets {
             let detail = if t.seekable {
                 tr!("tracks-quality-transcode")
             } else {

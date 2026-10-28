@@ -73,8 +73,8 @@ pub enum Error {
 impl Error {
     /// The file was read but can't play here: a codec or container this
     /// build has no decoder or demuxer for, no video or audio in it, or a
-    /// picture the hardware decoder has no room for. A server's transcode
-    /// may play where it didn't; a read that failed may not.
+    /// picture the hardware decoder has no room for. The server
+    /// transcoding it may play where it didn't; a read that failed may not.
     pub fn cannot_play_here(&self) -> bool {
         match self {
             Error::NoStream(_) | Error::Unsupported(_) | Error::HardwareBusy(_) => true,

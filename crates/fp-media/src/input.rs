@@ -198,9 +198,9 @@ impl Input {
     }
 
     /// Makes the stream's first picture `start` seconds into the video: a
-    /// server's transcode opened from that time begins its picture there,
-    /// whatever clock it counts in (Jellyfin's and Stash's start at 0,
-    /// Emby's keep the file's own times, audio may begin earlier).
+    /// server asked to transcode from that time begins its picture there,
+    /// whatever clock it counts in (Jellyfin and feed servers start at 0,
+    /// Emby keeps the file's own times, audio may begin earlier).
     pub(crate) fn start_at(&mut self, start: f64) {
         let picture = self.streams().iter().find_map(|&st| {
             // SAFETY: stream pointers and their parameters are valid while

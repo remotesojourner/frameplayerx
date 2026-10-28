@@ -194,7 +194,7 @@ impl App {
         }
         if let Some(t) = step_down {
             let notice = tr!("transcode-stuttered", quality = t.label.as_str());
-            self.play_copy(playback::Quality::Automatic, Some(t.id), Some(notice));
+            self.play_quality(playback::Quality::Automatic, Some(t.id), Some(notice));
         }
         self.publish_status();
         self.publish_details();
