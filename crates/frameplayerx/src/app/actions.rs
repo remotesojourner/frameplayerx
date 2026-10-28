@@ -267,6 +267,11 @@ impl App {
             Action::Recenter => self.recenter(),
             Action::TogglePassthrough => self.settings.passthrough = !self.settings.passthrough,
             Action::ToggleFollow => self.settings.follow = !self.settings.follow,
+            Action::ToggleLoopVideo => self.settings.loop_video = !self.settings.loop_video,
+            Action::ToggleAutoplay => self.settings.autoplay = !self.settings.autoplay,
+            Action::ToggleLoopPlaylist => {
+                self.settings.loop_playlist = !self.settings.loop_playlist;
+            }
             Action::ShowBrowser(show) => {
                 self.show_browser = show;
                 if show {
@@ -357,6 +362,29 @@ impl App {
                 p.toggle_pause();
             }
         }
+    }
+
+    /// Plays the video that ended again from the start, as Loop video does;
+    /// it counts as watched to the end first.
+    pub(super) fn play_again(&mut self) {
+        let req = {
+            let Some(p) = &mut self.playback else {
+                return;
+            };
+            p.save_progress(&self.services.library, true);
+            if p.player.can_seek() {
+                p.player.seek(0.0, false);
+                p.player.play();
+                return;
+            }
+            // A server that can't start transcoding at a time is asked
+            // again from the beginning.
+            OpenRequest {
+                start_at: Some(0.0),
+                ..p.request.clone()
+            }
+        };
+        self.open_request(req);
     }
 
     /// Closes the video, and drops one still opening.

@@ -94,18 +94,27 @@ pub fn page(ui: &mut egui::Ui, v: &mut View) {
         v.state.up_next = Some((q.version, rows));
     }
     let n = q.items.len();
-    let subtitle = match n {
-        0 => tr!("queue-empty").to_string(),
-        _ if q.plays_through => {
-            let at = q.pos + 1;
-            tr!("queue-plays-through", at = at, of = n)
-        }
-        _ => {
-            let at = q.pos + 1;
-            tr!("queue-steps", at = at, of = n)
-        }
+    let loops = v.settings.loop_playlist;
+    let at = q.pos + 1;
+    let subtitle = match (n, q.plays_through || v.settings.autoplay, loops) {
+        (0, ..) => tr!("queue-empty").to_string(),
+        (_, true, false) => tr!("queue-plays-through", at = at, of = n),
+        (_, true, true) => tr!("queue-plays-round", at = at, of = n),
+        (_, false, false) => tr!("queue-steps", at = at, of = n),
+        (_, false, true) => tr!("queue-steps-round", at = at, of = n),
     };
     let back = page::header(ui, tr!("player-up-next"), Some(&subtitle), |ui| {
+        let kind = if loops {
+            Kind::Primary
+        } else {
+            Kind::Secondary
+        };
+        if n > 0
+            && widgets::button_sized(ui, Some(icons::REPEAT), tr!("queue-loop"), kind, 44.0)
+                .clicked()
+        {
+            v.actions.push(Action::ToggleLoopPlaylist);
+        }
         if n > 1
             && widgets::button_sized(
                 ui,

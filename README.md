@@ -24,7 +24,7 @@ A VR video player for the Valve Steam Frame. It plays flat, 180°, 360° and fis
 - **Picture adjustments**: position, zoom, depth, picture settings and fisheye lens calibration, saved for each video, and a screen that follows your head for watching lying down
 - **Videos on the headset**: browse any folder on the headset, a microSD card or a USB drive, including cards formatted on Windows or a Mac, and make libraries of your folders, with thumbnails, filters and sorting
 - **Media servers**: browse and play from Jellyfin, Emby, any server with a DeoVR feed or HereSphere API, network shares (SMB), WebDAV, DLNA servers and web folders. Server transcoding and watch state sync are supported
-- **Watch history, Up next and playlists**: carry on where you left off, queue what plays next, keep playlists of videos from any source, and mark favorites and ratings
+- **Watch history, Up next and playlists**: carry on where you left off, queue what plays next, autoplay it, loop a video or the whole queue, keep playlists of videos from any source, and mark favorites and ratings
 - **PIN locks**: hide a source behind a PIN until you unlock it
 - **Passthrough videos**: see your room around the people in passthrough videos, and behind green or blue screens
 - **Subtitles and spatial audio**: subtitles from a file or inside the video, picked in your language and shown in any script, and 360° audio that follows your head

@@ -293,26 +293,29 @@ impl App {
         self.last_activity = Instant::now();
     }
 
-    /// Next/previous video in the list the current one was opened from.
+    /// Next/previous video in the list the current one was opened from;
+    /// round to the other end when Up next loops.
     pub(super) fn step_queue(&mut self, dir: i32) {
-        if self.queue.items.is_empty() {
+        if self.queue.items.len() < 2 {
             self.ui.toast(tr!("player-no-other-videos"));
             return;
         }
-        let n = self.queue.items.len() as i32;
-        let next = self.queue.pos as i32 + dir;
-        if !(0..n).contains(&next) {
-            self.ui.toast(if dir > 0 {
+        match self.queue.neighbour(dir, self.settings.loop_playlist) {
+            Some(i) => self.play_queued(i),
+            None => self.ui.toast(if dir > 0 {
                 tr!("player-last-video")
             } else {
                 tr!("player-first-video")
-            });
-            return;
+            }),
         }
-        let Some(req) = self.queue.jump(next as usize).cloned() else {
+    }
+
+    /// Plays the video at `i` in Up next, saying where it is in the list.
+    pub(super) fn play_queued(&mut self, i: usize) {
+        let Some(req) = self.queue.jump(i).cloned() else {
             return;
         };
-        let (at, of) = (next + 1, n);
+        let (at, of) = (i + 1, self.queue.items.len());
         self.ui.toast(tr!("toast-queue-position", at = at, of = of));
         self.open_request(req);
     }

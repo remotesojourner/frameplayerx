@@ -347,6 +347,12 @@ pub enum Action {
     TogglePassthrough,
     /// Settings › General › Screen follows you.
     ToggleFollow,
+    /// The video playing starts again when it ends.
+    ToggleLoopVideo,
+    /// The list a video was opened from plays through.
+    ToggleAutoplay,
+    /// Up next starts again from the first video after the last.
+    ToggleLoopPlaylist,
     /// Show the library/browser panel (during playback).
     ShowBrowser(bool),
     /// Hide the player controls (the trigger on empty space brings them
