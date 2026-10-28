@@ -60,7 +60,7 @@ pub struct WatchEvent {
 
 /// 32 hex digits, as Jellyfin's own play session ids, different for every
 /// playback.
-fn session_id() -> String {
+pub(crate) fn session_id() -> String {
     static COUNT: AtomicU64 = AtomicU64::new(0);
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)

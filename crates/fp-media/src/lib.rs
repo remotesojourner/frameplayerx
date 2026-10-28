@@ -37,7 +37,7 @@ pub(crate) mod v4l2;
 pub use decode::{HwDecode, hardware_sessions, hevc_10bit_hardware, set_hevc_10bit_hardware};
 pub use frame::{ColorInfo, PixelLayout, Q10cPicture, VideoFrame};
 pub use info::{MediaInfo, StreamInfo, StreamKind};
-pub use player::{Player, PlayerConfig, PlayerState, Stats, Tracks};
+pub use player::{Player, PlayerConfig, PlayerState, Restart, Stats, Timeline, Tracks};
 pub use subtitle::Cue;
 
 use fp_ffmpeg_sys as ff;
@@ -68,6 +68,24 @@ pub enum Error {
     Io(#[from] std::io::Error),
     #[error("interrupted")]
     Interrupted,
+}
+
+impl Error {
+    /// The file was read but can't play here: a codec or container this
+    /// build has no decoder or demuxer for, no video or audio in it, or a
+    /// picture the hardware decoder has no room for. The server
+    /// transcoding it may play where it didn't; a read that failed may not.
+    pub fn cannot_play_here(&self) -> bool {
+        match self {
+            Error::NoStream(_) | Error::Unsupported(_) | Error::HardwareBusy(_) => true,
+            Error::Ffmpeg { code, .. } => {
+                *code == ff::AVERROR_INVALIDDATA_
+                    || *code == ff::AVERROR_DECODER_NOT_FOUND_
+                    || *code == ff::AVERROR_DEMUXER_NOT_FOUND_
+            }
+            Error::Disc(_) | Error::Audio(_) | Error::Io(_) | Error::Interrupted => false,
+        }
+    }
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

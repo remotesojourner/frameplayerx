@@ -735,6 +735,31 @@ impl App {
         }
     }
 
+    /// Opens the video playing again from where it is, as `quality`, the
+    /// server transcoding it to `transcode` (the file as it is when `None`),
+    /// saying `notice` once it plays.
+    pub(super) fn play_quality(
+        &mut self,
+        quality: playback::Quality,
+        transcode: Option<String>,
+        notice: Option<String>,
+    ) {
+        let Some(p) = &self.playback else {
+            return;
+        };
+        if p.request.quality == quality && p.request.transcode == transcode {
+            return;
+        }
+        let req = OpenRequest {
+            start_at: Some(p.player.position()),
+            quality,
+            transcode,
+            notice,
+            ..p.request.clone()
+        };
+        self.open_request(req);
+    }
+
     pub(super) fn open_request(&mut self, mut req: OpenRequest) {
         // A file on a card goes by the card's ID, as the library has it.
         req.location = fp_core::volume::stable(&req.location).into_owned();

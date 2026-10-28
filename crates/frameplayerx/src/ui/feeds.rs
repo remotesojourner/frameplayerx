@@ -634,6 +634,7 @@ fn request(source: &str, scene: &FeedScene, start_at: Option<f64>) -> OpenReques
         entry: Some(scene.to_entry()),
         title: None,
         start_at,
+        ..Default::default()
     }
 }
 

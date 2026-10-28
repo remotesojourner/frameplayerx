@@ -82,6 +82,7 @@ pub fn page(ui: &mut egui::Ui, v: &mut View, title: &str, root: &str, b: &mut Br
                 entry: Some((*x).clone()),
                 title: None,
                 start_at: None,
+                ..Default::default()
             })
             .collect()
     };

@@ -184,11 +184,17 @@ impl App {
         self.sync_locks();
         self.check_mounts();
         self.remote_events();
+        let mut step_down = None;
         if let Some(p) = &mut self.playback {
             p.save_progress(&self.services.library, false);
             p.sync_watch();
             p.save_key(&self.services.library, false);
             p.watch_decoding(self.settings.hardware_decoding);
+            step_down = p.stutter_step();
+        }
+        if let Some(t) = step_down {
+            let notice = tr!("transcode-stuttered", quality = t.label.as_str());
+            self.play_quality(playback::Quality::Automatic, Some(t.id), Some(notice));
         }
         self.publish_status();
         self.publish_details();

@@ -855,6 +855,7 @@ fn request(source: &str, item: &MbItem, from_start: bool) -> OpenRequest {
         } else {
             (item.position > 1.0).then_some(item.position)
         },
+        ..Default::default()
     }
 }
 

@@ -3,6 +3,7 @@
 use super::theme::Weight;
 use super::widgets::{Kind, Tip};
 use super::{Action, View, depth, fmt_time, icons, premium, theme, widgets};
+use crate::playback::Quality;
 use crate::subtitles::Pick;
 use egui::{Align, Color32, Layout, RichText, Sense, Vec2};
 use fp_core::format::{Projection, StereoLayout, VideoFormat};
@@ -493,17 +494,25 @@ fn tracks_label(pb: &crate::playback::Playback, language: &str) -> Option<String
     let info = pb.player.info();
     let audio: Vec<_> = info.audio_streams().collect();
     let subtitles = crate::subtitles::rows(language, info, &pb.subtitle_files);
-    if audio.len() < 2 && subtitles.is_empty() {
+    if audio.len() < 2 && subtitles.is_empty() && pb.targets.is_empty() {
         return None;
     }
     let mut label = String::new();
+    if !pb.targets.is_empty() {
+        let quality = match (&pb.transcoding, &pb.request.quality) {
+            (Some(t), _) => t.label.as_str(),
+            (None, Quality::Original) => tr!("tracks-quality-original"),
+            (None, _) => tr!("tracks-quality-automatic"),
+        };
+        label = format!("{}  {quality}      ", icons::GAUGE);
+    }
     if audio.len() > 1 {
         let playing = pb.player.audio_stream();
         let name = audio.iter().find(|s| Some(s.index) == playing).map_or_else(
             || tr!("tracks-off").to_string(),
             |s| crate::subtitles::track_name(s),
         );
-        label = format!("{}  {name}      ", icons::SPEAKER_HIGH);
+        label += &format!("{}  {name}      ", icons::SPEAKER_HIGH);
     }
     let shown = subtitles
         .iter()
@@ -1517,7 +1526,16 @@ pub fn tracks_panel(ctx: &egui::Context, v: &mut View) {
     let audio: Vec<_> = info.audio_streams().collect();
     let subtitles = crate::subtitles::rows(&v.settings.subtitle_language, info, &pb.subtitle_files);
     let label_h = ctx.fonts(|f| f.row_height(&theme::font(Weight::SemiBold, 13.0)));
-    let rows = audio.len().max(1).max(subtitles.len() + 1) as f32;
+    let quality_rows = if pb.targets.is_empty() {
+        0
+    } else {
+        2 + pb.targets.len()
+    };
+    let rows = audio
+        .len()
+        .max(1)
+        .max(subtitles.len() + 1)
+        .max(quality_rows) as f32;
     let tall = 2.0 * TRACK_PAD + label_h + LIST_GAP + 8.0 + rows * TRACK_ROW;
     let full = ctx.screen_rect() - widgets::SHADOW_ROOM;
     let body = egui::Rect::from_min_max(
@@ -1535,14 +1553,19 @@ pub fn tracks_panel(ctx: &egui::Context, v: &mut View) {
         .frame(egui::Frame::NONE)
         .show(ctx, |ui| {
             let inner = body.shrink(TRACK_PAD);
-            let w = (inner.width() - TRACK_PAD) / 2.0;
-            let column = |x: f32| {
+            let columns = if quality_rows > 0 { 3.0 } else { 2.0 };
+            let w = (inner.width() - TRACK_PAD * (columns - 1.0)) / columns;
+            let column = |i: f32| {
+                let x = inner.left() + i * (w + TRACK_PAD);
                 egui::Rect::from_min_size(egui::pos2(x, inner.top()), Vec2::new(w, inner.height()))
             };
+            if quality_rows > 0 {
+                quality_list(ui, column(2.0), pb, actions);
+            }
             let playing = pb.player.audio_stream();
             track_list(
                 ui,
-                column(inner.left()),
+                column(0.0),
                 tr!("tracks-audio"),
                 &pb.title,
                 |ui, fresh| {
@@ -1566,10 +1589,9 @@ pub fn tracks_panel(ctx: &egui::Context, v: &mut View) {
                     }
                 },
             );
-            let right = column(inner.right() - w);
             track_list(
                 ui,
-                right,
+                column(1.0),
                 tr!("settings-subtitles"),
                 &pb.title,
                 |ui, fresh| {
@@ -1590,6 +1612,50 @@ pub fn tracks_panel(ctx: &egui::Context, v: &mut View) {
                 },
             );
         });
+}
+
+/// The Quality list: Automatic, Original, then the heights the server can
+/// transcode to. Picking one plays it from where the video is.
+fn quality_list(
+    ui: &mut egui::Ui,
+    rect: egui::Rect,
+    pb: &crate::playback::Playback,
+    actions: &mut Vec<Action>,
+) {
+    let asked = &pb.request.quality;
+    track_list(ui, rect, tr!("tracks-quality"), &pb.title, |ui, fresh| {
+        let mut row = |ui: &mut egui::Ui, title: &str, detail: &str, quality: Quality| {
+            let on = *asked == quality;
+            let r = track_row(ui, title, detail, on);
+            if on && fresh {
+                r.scroll_to_me(Some(Align::Center));
+            }
+            if r.clicked() && !on {
+                actions.push(Action::SelectQuality(quality));
+            }
+        };
+        let automatic = match (&pb.transcoding, asked) {
+            (Some(t), Quality::Automatic) => {
+                tr!("tracks-quality-playing", quality = t.label.as_str())
+            }
+            _ => tr!("tracks-quality-file").to_string(),
+        };
+        row(
+            ui,
+            tr!("tracks-quality-automatic"),
+            &automatic,
+            Quality::Automatic,
+        );
+        row(ui, tr!("tracks-quality-original"), "", Quality::Original);
+        for t in &pb.targets {
+            let detail = if t.seekable {
+                tr!("tracks-quality-transcode")
+            } else {
+                tr!("tracks-quality-no-seek")
+            };
+            row(ui, &t.label, detail, Quality::Transcode(t.id.clone()));
+        }
+    });
 }
 
 /// One of the picker's lists in `rect`, under its label. The first time it

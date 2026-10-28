@@ -23,7 +23,7 @@ A VR video player for the Valve Steam Frame. It plays flat, 180°, 360° and fis
 - **3D Blu-ray**: disc images (`.iso`), MKV rips and the disc's `.ssif` files play in full 3D (H.264 MVC) on the hardware decoder
 - **Picture adjustments**: position, zoom, depth, picture settings and fisheye lens calibration, saved for each video, and a screen that follows your head for watching lying down
 - **Videos on the headset**: browse any folder on the headset, a microSD card or a USB drive, including cards formatted on Windows or a Mac, and make libraries of your folders, with thumbnails, filters and sorting
-- **Media servers**: browse and play from Jellyfin, Emby, any server with a DeoVR feed or HereSphere API, network shares (SMB), WebDAV, DLNA servers and web folders. Jellyfin, Emby and HereSphere APIs hear what you watch, so their resume points, watched marks and play counts stay in step with the headset
+- **Media servers**: browse and play from Jellyfin, Emby, any server with a DeoVR feed or HereSphere API, network shares (SMB), WebDAV, DLNA servers and web folders. Server transcoding and watch state sync are supported
 - **Watch history, Up next and playlists**: carry on where you left off, queue what plays next, keep playlists of videos from any source, and mark favorites and ratings
 - **PIN locks**: hide a source behind a PIN until you unlock it
 - **Passthrough videos**: see your room around the people in passthrough videos, and behind green or blue screens
