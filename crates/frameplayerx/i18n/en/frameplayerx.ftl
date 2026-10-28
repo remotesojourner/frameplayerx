@@ -112,7 +112,7 @@ settings-vr-videos = 180° and 360° videos
 settings-height = Height
 settings-height-desc = Raise or lower yourself in videos without their own.
 settings-background = Background
-settings-background-desc = Around flat videos and the menus, for every video. Your room replaces it while it shows.
+settings-background-desc = Around flat videos and the menus. Your room replaces it while it shows.
 # Short: a chip.
 background-black = Black
 # Short: a chip.

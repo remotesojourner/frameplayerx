@@ -1240,6 +1240,7 @@ fn position_tab(ui: &mut egui::Ui, s: &mut ViewSettings, moved: bool, actions: &
         );
     });
     ui.label(RichText::new(tr!("adjust-position-hint")).color(theme::TEXT_3));
+    super::settings::background(ui, &mut s.background);
 }
 
 fn stereo_tab(ui: &mut egui::Ui, s: &mut ViewSettings) {

@@ -451,23 +451,24 @@ fn video_position(ui: &mut egui::Ui, v: &mut View) {
             2,
         );
     });
-    background(ui, &mut v.settings.background);
+    background(ui, &mut d.background);
 }
 
 /// Background colours offered as one tap.
 fn backgrounds() -> [(&'static str, [f32; 3]); 4] {
     [
         (tr!("background-black"), [0.0, 0.0, 0.0]),
-        (tr!("background-dark-grey"), crate::settings::BACKGROUND),
+        (tr!("background-dark-grey"), fp_core::view::BACKGROUND),
         (tr!("background-grey"), [0.25, 0.25, 0.25]),
         (tr!("background-navy"), [0.04, 0.06, 0.16]),
     ]
 }
 
 /// The colour around flat videos and the menus while the room doesn't
-/// show. One for all videos, unlike the rest of the tab.
-fn background(ui: &mut egui::Ui, c: &mut [f32; 3]) {
-    let d = crate::settings::BACKGROUND;
+/// show: here the one videos start with, in the adjust panel's Position
+/// tab the open video's own.
+pub(super) fn background(ui: &mut egui::Ui, c: &mut [f32; 3]) {
+    let d = fp_core::view::BACKGROUND;
     heading(ui, tr!("settings-background"));
     widgets::rows(ui, |r| {
         r.row(
