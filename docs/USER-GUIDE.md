@@ -232,6 +232,16 @@ nothing playing, either plays it. On the Up next page, pick a video to play
 it, move videos up or down, take them out, *Clear* everything but the video
 playing, or *Save as playlist*.
 
+**Autoplay** (the play sign in a circular arrow, on the control bar) plays
+any list through, one opened from a folder, grid or season too: the next
+video starts when one ends.
+**Loop** on the Up next page plays the first video again after the last,
+and ⏮ and ⏭ step round the list past either end. The repeat key beside Up
+next on the control bar loops the video playing instead: it starts again
+from the beginning each time it ends, before anything in Up next. All
+three stay on, from video to video and after a restart, until you turn
+them off.
+
 **Playlists**, a tab beside Watch history, holds your playlists: make one
 there or with *Add to playlist*, which offers your playlists and a name
 for a new one. A playlist can hold videos from any source. Its page plays
@@ -579,6 +589,9 @@ picture. Play/pause and seeking are under either thumb.
 | Grip + thumbstick press | Subtitles off, or back on: the ones you had, else those in your language | As without the grip |
 | Hold grip + trigger, move | Drag the picture (a flat screen or the dome follows your hand) | The same |
 | Trigger | Click; on empty space, show or hide the controls | The same |
+
+On the control bar, point at the speaker for the volume slider above it;
+press the speaker to mute.
 
 To recenter, hold the Steam button, as in any game (both grips together, or
 the left Menu button, do it too). The picture and the panels come to where

@@ -92,8 +92,10 @@ pub fn control_bar(ctx: &egui::Context, v: &mut View) {
                 .max_rect(row)
                 .layout(Layout::left_to_right(Align::Center)),
         );
-        widgets::well(&mut left, |ui| browse_and_sound(ui, pb, v.state, v.actions));
-        transport(ui, row, pb, v.settings.seek_step, v.queue, v.actions);
+        widgets::well(&mut left, |ui| {
+            browse_and_sound(ui, pb, v.state, v.settings, v.actions);
+        });
+        transport(ui, row, pb, v.settings, v.queue, v.actions);
         let mut right = ui.new_child(
             egui::UiBuilder::new()
                 .max_rect(row)
@@ -234,11 +236,12 @@ fn seek_row(
     });
 }
 
-/// Browse, speed and sound.
+/// Browse, Up next, Loop video, Autoplay, speed and sound.
 fn browse_and_sound(
     ui: &mut egui::Ui,
     pb: &crate::playback::Playback,
     state: &mut super::UiState,
+    settings: &crate::settings::Settings,
     actions: &mut Vec<Action>,
 ) {
     if widgets::key(ui, icons::SQUARES_FOUR, 52.0, false)
@@ -252,6 +255,24 @@ fn browse_and_sound(
         .clicked()
     {
         actions.push(Action::ShowUpNext);
+    }
+    if widgets::key(ui, icons::REPEAT_ONCE, 52.0, settings.loop_video)
+        .tip(tr!("player-loop-video"))
+        .clicked()
+    {
+        actions.push(Action::ToggleLoopVideo);
+    }
+    if widgets::key_nested(
+        ui,
+        icons::ARROW_CLOCKWISE,
+        icons::PLAY,
+        52.0,
+        settings.autoplay,
+    )
+    .tip(tr!("player-autoplay"))
+    .clicked()
+    {
+        actions.push(Action::ToggleAutoplay);
     }
     let speed = pb.player.speed();
     if widgets::pill_key(ui, &fmt_speed(speed), (speed - 1.0).abs() > 1e-3)
@@ -268,14 +289,8 @@ fn browse_and_sound(
     } else {
         icons::SPEAKER_HIGH
     };
-    if widgets::key(ui, speaker, 52.0, false)
-        .tip(if vol <= 0.001 {
-            tr!("player-unmute")
-        } else {
-            tr!("player-mute")
-        })
-        .clicked()
-    {
+    let key = widgets::key(ui, speaker, 52.0, false);
+    if key.clicked() {
         if vol <= 0.001 {
             actions.push(Action::SetVolume(state.unmute_volume.take().unwrap_or(1.0)));
         } else {
@@ -283,11 +298,74 @@ fn browse_and_sound(
             actions.push(Action::SetVolume(0.0));
         }
     }
-    let mut vol_edit = vol;
-    if widgets::slider(ui, &mut vol_edit, 0.0..=1.5, 100.0).changed() {
-        actions.push(Action::SetVolume(vol_edit));
+    volume_slider(ui, &key, vol, actions);
+}
+
+/// Seconds the volume slider stays after the ray leaves it and the
+/// speaker key: time to cross from one to the other.
+const VOLUME_LINGER: f64 = 0.4;
+
+/// The volume slider, over the seek bar above the speaker `key`: shown
+/// while the key or the slider is pointed at, or the slider is held. The
+/// bar isn't redrawn every frame, so where the slider was decides as much
+/// as when it was last pointed at.
+fn volume_slider(ui: &egui::Ui, key: &egui::Response, vol: f32, actions: &mut Vec<Action>) {
+    let ctx = ui.ctx();
+    let id = key.id.with("volume");
+    let (now, pointer, down) = ctx.input(|i| (i.time, i.pointer.hover_pos(), i.pointer.any_down()));
+    let (seen, last, holding) = ctx.data(|d| {
+        (
+            d.get_temp::<f64>(id),
+            d.get_temp::<egui::Rect>(id.with("rect")),
+            d.get_temp::<bool>(id.with("held")).unwrap_or(false),
+        )
+    });
+    let over = |r: egui::Rect| pointer.is_some_and(|p| r.expand(10.0).contains(p));
+    let lingering = seen.is_some_and(|t| now - t <= VOLUME_LINGER);
+    if !(key.hovered() || last.is_some_and(over) || (holding && down) || lingering) {
+        // Closed: where it was no longer opens it.
+        if last.is_some() {
+            ctx.data_mut(|d| d.remove::<egui::Rect>(id.with("rect")));
+        }
+        return;
     }
-    ui.add_space(6.0);
+    let mut held = false;
+    let area = egui::Area::new(id)
+        .order(egui::Order::Foreground)
+        .pivot(egui::Align2::CENTER_BOTTOM)
+        .fixed_pos(key.rect.center_top() - Vec2::new(0.0, 10.0))
+        .constrain(true)
+        .show(ctx, |ui| {
+            egui::Frame::new()
+                .fill(theme::SURFACE_3)
+                .corner_radius(egui::CornerRadius::same(22))
+                .inner_margin(egui::Margin::symmetric(14, 6))
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        let mut v = vol;
+                        let r = widgets::slider(ui, &mut v, 0.0..=1.5, 180.0);
+                        if r.changed() {
+                            actions.push(Action::SetVolume(v));
+                        }
+                        held = r.is_pointer_button_down_on();
+                        ui.label(
+                            RichText::new(format!("{:.0}%", v * 100.0))
+                                .font(theme::font(Weight::SemiBold, 15.0))
+                                .color(theme::TEXT_2),
+                        );
+                    });
+                });
+        });
+    let rect = area.response.rect;
+    held |= holding && down;
+    ctx.data_mut(|d| {
+        d.insert_temp(id.with("rect"), rect);
+        d.insert_temp(id.with("held"), held);
+        if key.hovered() || over(rect) || held {
+            d.insert_temp(id, now);
+        }
+    });
+    ctx.request_repaint_after(std::time::Duration::from_secs_f64(VOLUME_LINGER));
 }
 
 /// Previous, rewind, play, forward and next, centred on the row.
@@ -295,10 +373,11 @@ fn transport(
     ui: &mut egui::Ui,
     row: egui::Rect,
     pb: &crate::playback::Playback,
-    step: f64,
+    settings: &crate::settings::Settings,
     queue: &crate::queue::Queue,
     actions: &mut Vec<Action>,
 ) {
+    let (step, loops) = (settings.seek_step, settings.loop_playlist);
     let paused = pb.player.is_paused() || pb.player.state() == PlayerState::Ended;
     let centre_w = 52.0 + 56.0 + 72.0 + 56.0 + 52.0 + 4.0 * 12.0;
     let centre = egui::Rect::from_center_size(row.center(), Vec2::new(centre_w, row.height()));
@@ -308,7 +387,7 @@ fn transport(
             .layout(Layout::left_to_right(Align::Center)),
     );
     mid.spacing_mut().item_spacing.x = 12.0;
-    queue_key(&mut mid, queue, -1, actions);
+    queue_key(&mut mid, queue, -1, loops, actions);
     if skip_button(&mut mid, -step)
         .tip(tr!("player-rewind"))
         .clicked()
@@ -331,16 +410,20 @@ fn transport(
     {
         actions.push(Action::SeekRelative(step));
     }
-    queue_key(&mut mid, queue, 1, actions);
+    queue_key(&mut mid, queue, 1, loops, actions);
 }
 
 /// The previous (`dir` -1) or next video in Up next, as the controller's
-/// X and Y; dimmed when there is none that way.
-fn queue_key(ui: &mut egui::Ui, queue: &crate::queue::Queue, dir: i32, actions: &mut Vec<Action>) {
-    let to = queue
-        .pos
-        .checked_add_signed(dir as isize)
-        .and_then(|i| queue.items.get(i));
+/// X and Y, round the list when it `loops`; dimmed when there is none that
+/// way.
+fn queue_key(
+    ui: &mut egui::Ui,
+    queue: &crate::queue::Queue,
+    dir: i32,
+    loops: bool,
+    actions: &mut Vec<Action>,
+) {
+    let to = queue.neighbour(dir, loops).and_then(|i| queue.items.get(i));
     let (icon, name) = if dir < 0 {
         (icons::SKIP_BACK, tr!("player-previous"))
     } else {

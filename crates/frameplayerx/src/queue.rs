@@ -37,11 +37,32 @@ impl Queue {
         Some(req)
     }
 
-    /// The one after the current, when it plays through to it.
-    pub fn up_next(&self) -> Option<&OpenRequest> {
-        self.plays_through
-            .then(|| self.items.get(self.pos + 1))
-            .flatten()
+    /// The one `dir` steps from the current; past either end, round to
+    /// the other when the list `loops`.
+    pub fn neighbour(&self, dir: i32, loops: bool) -> Option<usize> {
+        let n = self.items.len() as i32;
+        let i = self.pos as i32 + dir;
+        if (0..n).contains(&i) {
+            Some(i as usize)
+        } else {
+            (loops && n > 1).then(|| i.rem_euclid(n) as usize)
+        }
+    }
+
+    /// The one that starts when the current ends, when the list plays
+    /// through (or `autoplay` makes it): the next, or the first again after
+    /// the last when it `loops` (the current itself when it is the only
+    /// one).
+    pub fn up_next(&self, autoplay: bool, loops: bool) -> Option<usize> {
+        if !(self.plays_through || autoplay) || self.items.is_empty() {
+            return None;
+        }
+        let next = self.pos + 1;
+        if next < self.items.len() {
+            Some(next)
+        } else {
+            loops.then_some(0)
+        }
     }
 
     /// Queues `req` right after the one playing (`next`) or at the end; a
@@ -131,13 +152,37 @@ mod tests {
         let mut q = Queue::default();
         q.set(vec![req("a"), req("b")], 0, false);
         assert!(
-            q.up_next().is_none(),
+            q.up_next(false, false).is_none(),
             "opened from a folder: stops at the end"
         );
+        assert!(
+            q.up_next(false, true).is_none(),
+            "looping doesn't make it play through"
+        );
+        assert_eq!(q.up_next(true, false), Some(1), "autoplay does");
         q.set(vec![req("a"), req("b")], 0, true);
-        assert_eq!(q.up_next().map(|r| r.location.as_str()), Some("/v/b.mp4"));
+        assert_eq!(q.up_next(false, false), Some(1));
         q.pos = 1;
-        assert!(q.up_next().is_none(), "the last one");
+        assert!(q.up_next(false, false).is_none(), "the last one");
+        assert_eq!(q.up_next(false, true), Some(0), "looping: the first again");
+        q.set(vec![req("a")], 0, true);
+        assert_eq!(q.up_next(false, true), Some(0), "the only one, again");
+        q.clear();
+        assert!(q.up_next(true, true).is_none());
+    }
+
+    #[test]
+    fn stepping_goes_round_when_the_list_loops() {
+        let mut q = Queue::default();
+        q.set(vec![req("a"), req("b"), req("c")], 0, false);
+        assert_eq!(q.neighbour(1, false), Some(1));
+        assert_eq!(q.neighbour(-1, false), None);
+        assert_eq!(q.neighbour(-1, true), Some(2));
+        q.pos = 2;
+        assert_eq!(q.neighbour(1, false), None);
+        assert_eq!(q.neighbour(1, true), Some(0));
+        q.set(vec![req("a")], 0, false);
+        assert_eq!(q.neighbour(1, true), None, "no other video to step to");
     }
 
     #[test]

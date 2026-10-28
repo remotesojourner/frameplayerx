@@ -169,14 +169,21 @@ impl App {
     /// Background work, remote commands and saving the open video's state.
     fn update(&mut self) {
         self.poll_jobs();
-        // Play all, a playlist and what was queued play through.
+        // Play all, a playlist and what was queued play through, any list
+        // with Autoplay; Loop video keeps to the one playing.
         if self
             .playback
             .as_ref()
             .is_some_and(|p| p.player.state() == PlayerState::Ended)
-            && self.queue.up_next().is_some()
         {
-            self.step_queue(1);
+            if self.settings.loop_video {
+                self.play_again();
+            } else if let Some(i) = self
+                .queue
+                .up_next(self.settings.autoplay, self.settings.loop_playlist)
+            {
+                self.play_queued(i);
+            }
         }
         self.give_up_slow_open();
         self.services
@@ -725,8 +732,8 @@ mod tests {
     #[test]
     fn the_picker_sits_on_the_bar_without_covering_it() {
         for scale in [1.0, 1.4] {
-            let mut bar = growing_panel([1400, 268], 1.2, 1.25);
-            let mut picker = growing_panel([850, 560], 1.2 * 850.0 / 1400.0, 1.25);
+            let mut bar = growing_panel(BAR_PX, BAR_PX[0] as f32 * BAR_M_PER_PX, 1.25);
+            let mut picker = growing_panel([850, 560], 850.0 * BAR_M_PER_PX, 1.25);
             bar.set_scale(scale);
             picker.set_scale(scale);
             bar.pose = place(Mat4::IDENTITY, 0.0, 1.05, -0.32, 22.0);

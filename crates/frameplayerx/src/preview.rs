@@ -23,6 +23,9 @@
 //! | `close` | close the open video, as its Close button does |
 //! | `seek SECONDS` | play the open video from SECONDS |
 //! | `quality NAME` | play `automatic`, `original` or a transcode by its label (`1440p`) |
+//! | `loop video` / `loop playlist` | turn Loop video or Up next's Loop on or off |
+//! | `autoplay` | turn Autoplay on or off |
+//! | `open-list` | open the library's videos as a grid does, from the first |
 //! | `shot NAME` | save the left eye as OUT_DIR/NAME.png |
 //! | `sbs NAME` | save both eyes side by side |
 //! | `screen NAME [TAB]` | show a browser screen (`home`, `library`, `sources`, `settings` and its tab) |
@@ -333,6 +336,25 @@ impl Sim {
             }
             Some("close") => {
                 self.app.apply(crate::ui::Action::ClosePlayback);
+                self.run_frames(3)?;
+            }
+            // The library's videos as a grid opens them, from the first.
+            Some("open-list") => {
+                let list = self.library_requests();
+                self.app.apply(crate::ui::Action::OpenList(list, 0));
+                self.run_frames(3)?;
+            }
+            Some("autoplay") => {
+                self.app.apply(crate::ui::Action::ToggleAutoplay);
+                self.run_frames(3)?;
+            }
+            Some("loop") => {
+                let action = match parts.get(1).copied() {
+                    Some("video") => crate::ui::Action::ToggleLoopVideo,
+                    Some("playlist") => crate::ui::Action::ToggleLoopPlaylist,
+                    _ => return Err("loop needs video or playlist".into()),
+                };
+                self.app.apply(action);
                 self.run_frames(3)?;
             }
             Some("seek") => {

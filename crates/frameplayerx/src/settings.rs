@@ -97,6 +97,14 @@ pub struct Settings {
     pub resume_frames: bool,
     /// Flat videos and the panels follow the head ([`crate::world::follow`]).
     pub follow: bool,
+    /// The video playing starts again when it ends.
+    pub loop_video: bool,
+    /// The list a video was opened from plays through, the next starting
+    /// when one ends (Play all, a playlist and what was queued always do).
+    pub autoplay: bool,
+    /// Up next starts again from the first video after the last, and X and
+    /// Y step round it.
+    pub loop_playlist: bool,
     /// The performance overlay (Settings › General › Diagnostics).
     pub perf_overlay: bool,
     /// What the controller buttons and thumbsticks do.
@@ -157,6 +165,9 @@ impl Default for Settings {
             make_thumbnails: true,
             resume_frames: true,
             follow: false,
+            loop_video: false,
+            autoplay: false,
+            loop_playlist: false,
             perf_overlay: false,
             controls: crate::bindings::Bindings::default(),
             panel_offsets: PanelOffsets::default(),

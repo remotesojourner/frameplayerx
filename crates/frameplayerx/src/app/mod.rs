@@ -94,6 +94,10 @@ const ADJUST: usize = 2;
 const KEYBOARD: usize = 3;
 /// The audio and subtitles picker, above the control bar.
 const TRACKS: usize = 4;
+/// The control bar's body in pixels.
+const BAR_PX: [u32; 2] = [1400, 268];
+/// Metres per pixel of the control bar and of the picker on it.
+const BAR_M_PER_PX: f32 = 1.2 / 1400.0;
 /// The performance overlay's quad layer (the panels' are their indices).
 const PERF_LAYER: u64 = 8;
 /// Where the performance overlay sits from the eyes: low and to the left.
@@ -234,11 +238,11 @@ impl App {
         let thumbs = ui::thumbs::Thumbs::new(services.opener.clone(), services.images.clone());
         let mut panels = [
             floating_panel([1600, 1000], 1.8, 1.25),
-            growing_panel([1400, 268], 1.2, 1.25),
+            growing_panel(BAR_PX, BAR_PX[0] as f32 * BAR_M_PER_PX, 1.25),
             floating_panel([900, 1020], 0.75, 1.25),
             growing_panel([1200, 456], 1.0, 1.25),
             // As fine as the bar it sits on, and growing with it.
-            growing_panel([850, 560], 1.2 * 850.0 / 1400.0, 1.25),
+            growing_panel([850, 560], 850.0 * BAR_M_PER_PX, 1.25),
         ];
         panels[BAR].refresh = Some(Duration::from_millis(250));
         panels[ADJUST].refresh = Some(Duration::from_millis(1000));

@@ -312,6 +312,10 @@ player-tracks = Audio and subtitles
 player-browse = Browse
 # A tooltip.
 player-up-next = Up next
+# A tooltip on a key that turns on and off: the video playing starts again when it ends.
+player-loop-video = Loop this video
+# A tooltip on a key that turns on and off: when a video ends, the next in the list plays.
+player-autoplay = Autoplay the next video
 # A tooltip.
 player-speed = Speed
 # A tooltip.
@@ -1135,9 +1139,15 @@ toast-playlist-added = { $count ->
    *[other] Added { $count } videos to { $name }
 }
 queue-plays-through = { $at } of { $of } · plays through to the end
+# Up next loops: after the last video comes the first.
+queue-plays-round = { $at } of { $of } · plays through, then from the first again
 # X and Y are the controller buttons: keep them.
 queue-steps = { $at } of { $of } · X and Y step through the list
+# X and Y are the controller buttons: keep them. Up next loops: past the last comes the first.
+queue-steps-round = { $at } of { $of } · X and Y step round the list
 queue-now-playing = Now playing
+# A button that turns on and off: Up next starts again from the first video after the last.
+queue-loop = Loop
 
 ## Libraries, the performance overlay, decoders, About
 

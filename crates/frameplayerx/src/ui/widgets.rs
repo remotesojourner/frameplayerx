@@ -394,6 +394,32 @@ pub fn key(ui: &mut Ui, icon: &str, size: f32, selected: bool) -> Response {
     resp
 }
 
+/// A [`key`] with the filled `inner` icon small inside the outline `icon`:
+/// a play sign in a circular arrow is Autoplay.
+pub fn key_nested(ui: &mut Ui, icon: &str, inner: &str, size: f32, selected: bool) -> Response {
+    let (rect, resp) = ui.allocate_exact_size(Vec2::splat(size), Sense::click());
+    if ui.is_rect_visible(rect) {
+        let (face, fg) = key_face(ui, &resp, size, selected);
+        let p = ui.painter();
+        p.text(
+            face.center(),
+            Align2::CENTER_CENTER,
+            icon,
+            theme::icon(size * 0.46),
+            fg,
+        );
+        // A play sign's middle is left of its box's.
+        p.text(
+            face.center() + Vec2::splat(size * 0.01),
+            Align2::CENTER_CENTER,
+            inner,
+            theme::icon_fill(size * 0.18),
+            fg,
+        );
+    }
+    resp
+}
+
 /// A raised pill key with a short label, for the control bar.
 pub fn pill_key(ui: &mut Ui, label: &str, selected: bool) -> Response {
     let g = ui.painter().layout_no_wrap(
