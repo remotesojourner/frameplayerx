@@ -499,6 +499,36 @@ impl Source for FeedSource {
         Ok(Arc::new(self.client.open(&url)?))
     }
 
+    fn transcodes(&self, video: &Entry) -> Vec<crate::Transcode> {
+        if is_direct_file(&video.location) {
+            return Vec::new();
+        }
+        match self.scene(&video.location, true) {
+            Ok(s) => crate::transcode::within(self.max_height, s.transcodes()),
+            Err(e) => {
+                log::warn!("transcodes of {}: {e}", redact(&video.location));
+                Vec::new()
+            }
+        }
+    }
+
+    /// `id` is the transcode's own address, as the scene listed it. The
+    /// server stops encoding when its stream is closed.
+    fn open_transcode(&self, _location: &str, id: &str, start: f64) -> Result<Arc<dyn ByteSource>> {
+        let url = if start > 0.0 && scene::takes_start(id) {
+            crate::transcode::with_query(id, "start", &format!("{start:.3}"))
+        } else {
+            id.to_string()
+        };
+        log::info!(
+            "{}: transcode {} from {start:.1} s",
+            self.name,
+            redact(&url)
+        );
+        let body = self.client.get_stream(&url)?;
+        Ok(crate::transcode::Streamed::wrap(body, redact(&url), None))
+    }
+
     fn details(&self, entry: &Entry) -> Result<Entry> {
         if entry.kind != EntryKind::Video || is_direct_file(&entry.location) {
             return Ok(entry.clone());
@@ -614,14 +644,9 @@ mod tests {
             s.best_source(None).unwrap().url,
             "https://vr/scene/1/stream"
         );
-        // A limit the file is over: the transcode that fits.
+        // A limit the file is over: still the file, never a transcode.
         assert_eq!(
             s.best_source(Some(1080)).unwrap().url,
-            "https://vr/scene/1/stream.mp4?resolution=FULL_HD"
-        );
-        // Nothing fits: the smallest file, before any transcode.
-        assert_eq!(
-            s.best_source(Some(100)).unwrap().url,
             "https://vr/scene/1/stream"
         );
 
@@ -644,6 +669,31 @@ mod tests {
         ]}]});
         let s = deovr::parse_deovr_scene(&only, "https://vr/deovr/1");
         assert!(s.best_source(None).unwrap().is_transcode());
+    }
+
+    #[test]
+    fn transcodes_are_listed_tallest_first_once_each() {
+        let v = json!({"title": "A", "encodings": [
+            {"name": "direct", "videoSources": [{"resolution": 2880, "url": "https://vr/scene/1/stream"}]},
+            {"name": "transcoding", "videoSources": [
+                {"resolution": 720, "url": "https://vr/scene/1/stream.mp4?resolution=STANDARD_HD"},
+                {"resolution": 2160, "url": "https://vr/scene/1/stream.webm?resolution=FOUR_K"},
+                {"resolution": 2160, "url": "https://vr/scene/1/stream.mp4?resolution=FOUR_K"},
+                {"resolution": 1080, "url": "https://vr/other/1080"}
+            ]}
+        ]});
+        let s = deovr::parse_deovr_scene(&v, "https://vr/");
+        let t = s.transcodes();
+        let labels: Vec<&str> = t.iter().map(|t| t.label.as_str()).collect();
+        assert_eq!(labels, ["2160p", "1080p", "720p"]);
+        // The MP4 of two at one height; a stream.*?resolution= one starts at
+        // a time, an address of another kind doesn't.
+        assert_eq!(t[0].id, "https://vr/scene/1/stream.mp4?resolution=FOUR_K");
+        assert!(t[0].seekable && !t[1].seekable && t[2].seekable);
+        assert_eq!(
+            crate::transcode::with_query(&t[0].id, "start", "61.500"),
+            "https://vr/scene/1/stream.mp4?resolution=FOUR_K&start=61.500"
+        );
     }
 
     #[test]

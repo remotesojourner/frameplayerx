@@ -419,6 +419,20 @@ tracks-no-audio = No audio
 tracks-spatial = {" · spatial"}
 # Short: no audio or subtitles.
 tracks-off = Off
+# Short: a column's title: which copy of the video plays, the file or one the server makes smaller.
+tracks-quality = Quality
+# The file, or the server's transcode when the file can't play or stutters.
+tracks-quality-automatic = Automatic
+# The file itself.
+tracks-quality-original = Original
+# Under Automatic: it plays the file.
+tracks-quality-file = The file
+# Under a transcode: the server makes this copy as it plays.
+tracks-quality-transcode = Server transcode
+# Under a transcode the server can't start at a time.
+tracks-quality-no-seek = Server transcode · can't skip
+# Under Automatic: it plays the server's transcode. $quality is like 1440p.
+tracks-quality-playing = Playing { $quality }
 haptics-stroke-bottom = Stroke bottom
 haptics-stroke-top = Stroke top
 haptics-invert = Invert stroke
@@ -1147,6 +1161,10 @@ perf-memory = Memory
 perf-memory-value = { $used } of { $total } GB
 perf-memory-app = { $used } of { $total } GB · app { $app } GB
 notice-not-in-library = Adjustments apply until you close this video (it is not in the library).
+# $quality is like 1440p.
+transcode-cannot-play = This file can't play here: playing the server's { $quality } transcode
+# $quality is like 1440p.
+transcode-stuttered = The video kept stuttering: playing the server's { $quality } transcode
 # A bookmark's name, $time where it is.
 bookmark-name = Bookmark { $time }
 # Why a video decodes in software. $stream is like 10-bit 4:2:2 HEVC.

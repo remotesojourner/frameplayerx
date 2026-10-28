@@ -21,6 +21,8 @@
 //! | `status` | print what is playing and the view settings |
 //! | `open LOCATION` | open a file or URL |
 //! | `close` | close the open video, as its Close button does |
+//! | `seek SECONDS` | play the open video from SECONDS |
+//! | `quality NAME` | play `automatic`, `original` or a transcode by its label (`1440p`) |
 //! | `shot NAME` | save the left eye as OUT_DIR/NAME.png |
 //! | `sbs NAME` | save both eyes side by side |
 //! | `screen NAME [TAB]` | show a browser screen (`home`, `library`, `sources`, `settings` and its tab) |
@@ -331,6 +333,28 @@ impl Sim {
             }
             Some("close") => {
                 self.app.apply(crate::ui::Action::ClosePlayback);
+                self.run_frames(3)?;
+            }
+            Some("seek") => {
+                let at = num(1)? as f64;
+                if let Some(p) = &self.app.playback {
+                    p.player.seek(at, true);
+                }
+                self.run_frames(2)?;
+            }
+            Some("quality") => {
+                use crate::playback::Quality;
+                let name = parts.get(1).ok_or("quality needs a name")?;
+                let quality = match *name {
+                    "automatic" => Quality::Automatic,
+                    "original" => Quality::Original,
+                    label => {
+                        let p = self.app.playback.as_ref().ok_or("no video open")?;
+                        let t = p.transcodes.iter().find(|t| t.label == label);
+                        Quality::Transcode(t.ok_or(format!("no transcode {label}"))?.id.clone())
+                    }
+                };
+                self.app.apply(crate::ui::Action::SelectQuality(quality));
                 self.run_frames(3)?;
             }
             // Passthrough videos are fully unlocked.

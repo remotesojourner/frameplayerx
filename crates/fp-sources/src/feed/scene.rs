@@ -2,6 +2,7 @@
 //! feed's listing as cached between visits.
 
 use crate::error::{Error, Result};
+use crate::transcode::Transcode;
 use fp_core::format::{VideoFormat, detect_from_name};
 use fp_core::source::{Entry, EntryKind, SubtitleFile};
 use serde::{Deserialize, Serialize};
@@ -24,11 +25,27 @@ pub struct MediaSource {
 
 impl MediaSource {
     /// A copy the server transcodes as it streams (an encoding named
-    /// "transcoding") rather than the file itself: it can't seek, and a
-    /// server transcoding a large file may not send a frame for minutes.
+    /// "transcoding") rather than the file itself.
     pub fn is_transcode(&self) -> bool {
         self.label.to_ascii_lowercase().contains("transcod")
     }
+
+    /// A transcode the server starts at a time, so it seeks (see
+    /// [`takes_start`]).
+    pub fn takes_start(&self) -> bool {
+        self.is_transcode() && takes_start(&self.url)
+    }
+}
+
+/// A transcode address the server starts at a time given as
+/// `start=<seconds>`: `…/stream.mp4?resolution=FULL_HD`.
+pub(crate) fn takes_start(url: &str) -> bool {
+    let (path, query) = url.split_once('?').unwrap_or((url, ""));
+    let file = path.rsplit('/').next().unwrap_or_default();
+    file.starts_with("stream.")
+        && query
+            .split('&')
+            .any(|p| p.to_ascii_lowercase().starts_with("resolution="))
 }
 
 /// Everything a feed says about one scene.
@@ -70,26 +87,47 @@ pub struct SceneInfo {
 }
 
 impl SceneInfo {
-    /// The tallest source not above `max_height`; when every source is
-    /// taller, the smallest one. Sources of unknown height rank lowest. The
-    /// files themselves come before the server's transcodes of them, which
-    /// are only picked when no file fits (or there is none).
+    /// The tallest file not above `max_height`; when every file is taller,
+    /// the smallest one. Sources of unknown height rank lowest. The
+    /// server's transcodes only play when it lists no file (the player
+    /// moves to one when the file can't play, or not smoothly).
     pub fn best_source(&self, max_height: Option<u32>) -> Option<&MediaSource> {
         let h = |s: &MediaSource| s.height.unwrap_or(0);
         let fits = |s: &&MediaSource| max_height.is_none_or(|m| h(s) <= m);
-        // `max_by_key` keeps the last of equal keys; reverse to prefer the
-        // first listed encoding among equals.
-        let tallest = |transcodes: bool| {
-            self.sources
-                .iter()
+        let pick = |transcodes: bool| {
+            let of_kind = || {
+                self.sources
+                    .iter()
+                    .filter(move |s| s.is_transcode() == transcodes)
+            };
+            // `max_by_key` keeps the last of equal keys; reverse to prefer
+            // the first listed encoding among equals.
+            of_kind()
                 .rev()
-                .filter(|s| s.is_transcode() == transcodes)
                 .filter(fits)
                 .max_by_key(|s| h(s))
+                .or_else(|| of_kind().min_by_key(|s| h(s)))
         };
-        tallest(false)
-            .or_else(|| tallest(true))
-            .or_else(|| self.sources.iter().min_by_key(|s| (s.is_transcode(), h(s))))
+        pick(false).or_else(|| pick(true))
+    }
+
+    /// The server's transcodes, tallest first, one per height (the first
+    /// listed of an MP4 and a WebM, which takes servers far longer).
+    pub fn transcodes(&self) -> Vec<Transcode> {
+        let mut found: Vec<&MediaSource> =
+            self.sources.iter().filter(|s| s.is_transcode()).collect();
+        let webm = |s: &MediaSource| s.url.to_ascii_lowercase().contains(".webm");
+        found.sort_by_key(|s| (std::cmp::Reverse(s.height.unwrap_or(0)), webm(s)));
+        found.dedup_by(|a, b| a.height == b.height && a.height.is_some() || a.url == b.url);
+        found
+            .into_iter()
+            .map(|s| Transcode {
+                id: s.url.clone(),
+                label: crate::transcode::height_label(s.height),
+                height: s.height,
+                seekable: s.takes_start(),
+            })
+            .collect()
     }
 
     /// Copies the scene's details into a listing entry (keeping its

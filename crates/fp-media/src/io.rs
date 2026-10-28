@@ -30,6 +30,7 @@ unsafe impl Send for IoContext {}
 
 impl IoContext {
     pub fn new(src: Arc<dyn ByteSource>, interrupt: Arc<AtomicBool>) -> Result<IoContext> {
+        let streamed = src.streamed();
         let state = Box::into_raw(Box::new(State {
             src,
             pos: 0,
@@ -55,6 +56,9 @@ impl IoContext {
                 ff::av_free(buf as *mut c_void);
                 drop(Box::from_raw(state));
                 return Err(Error::Unsupported("avio_alloc_context failed".into()));
+            }
+            if streamed {
+                (*ctx).seekable = 0;
             }
             Ok(IoContext { ctx, state })
         }

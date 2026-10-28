@@ -443,7 +443,8 @@ it for the audio tracks and subtitles side by side, subtitles in your
 language first, each with what tells it apart: forced, SDH, its title or
 file name, and its format. Pick one and it plays at once; a long list
 scrolls. Press the pill again, or point off the lists and press, to close
-it. A video with one audio track and no subtitles has no pill.
+it. A video with one audio track, no subtitles and no
+[server transcodes](#server-transcodes) has no pill.
 
 What you pick there is kept with the video: it opens with the same audio
 track or subtitles next time, while they are still there. Only what you
@@ -517,6 +518,42 @@ VR pictures).
 Keep the format tags in the name (`_180_LR` and so on); conversions drop
 the VR metadata, so a file without tags may need its format set once
 under ⚙ › Format.
+
+From a server, a video that stutters can also play as the server's own
+smaller copy, without converting anything: see below.
+
+### Server transcodes
+
+Jellyfin and Emby can make a smaller copy of a video as it plays, and
+DeoVR feeds and HereSphere APIs may list such copies beside the file. For
+those videos the pill on the control bar starts with the **Quality**
+playing; press it for the Quality list beside the audio tracks and
+subtitles:
+
+- **Automatic** (the default): the file. When the file can't play here (a
+  format FramePlayerX has no decoder for, or a picture the hardware decoder
+  has no room for), or keeps stuttering for about 12 seconds, it moves to
+  the server's next smaller copy and says so on the control bar. It only
+  ever moves down, one step at a time.
+- **Original**: the file, whatever happens.
+- A height (**2160p**, **1440p**, …): the server's copy at most that tall,
+  the width in proportion. It plays on from where you were.
+
+The file always comes first: a copy only plays when you pick one, or when
+Automatic moves to it. The source's maximum height (edit the source) also
+caps the copies offered.
+
+Skipping in a copy asks the server to start it again from there, which
+takes a few seconds. A feed's copy marked "can't skip" plays only from the
+start. A copy carries the server's default audio track and no subtitles of
+its own; subtitle files still show.
+
+The server does the work, so how far it can go depends on it: a server
+without a graphics card may not keep up with an 8K file, whatever the
+size asked. Jellyfin and Emby send H.264, or HEVC when their admin allowed
+it (Dashboard › Playback › Transcoding), and pick their own limits:
+Jellyfin makes copies at most 3840 pixels wide, so an 8K 180° video's
+2880p and 2160p both come as 3840×1920.
 
 ## Controls
 

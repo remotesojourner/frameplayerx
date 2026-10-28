@@ -67,6 +67,10 @@ pub const AVERROR_EOF_: i32 = fferrtag(b'E', b'O', b'F', b' ');
 pub const AVERROR_EXIT_: i32 = fferrtag(b'E', b'X', b'I', b'T');
 /// `AVERROR_INVALIDDATA`.
 pub const AVERROR_INVALIDDATA_: i32 = fferrtag(b'I', b'N', b'D', b'A');
+/// `AVERROR_DECODER_NOT_FOUND`.
+pub const AVERROR_DECODER_NOT_FOUND_: i32 = fferrtag(0xF8, b'D', b'E', b'C');
+/// `AVERROR_DEMUXER_NOT_FOUND`.
+pub const AVERROR_DEMUXER_NOT_FOUND_: i32 = fferrtag(0xF8, b'D', b'E', b'M');
 
 /// Human-readable text for an FFmpeg error code.
 pub fn err_to_string(code: i32) -> String {

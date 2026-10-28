@@ -34,6 +34,7 @@ pub mod mediabrowser;
 pub mod sidecar;
 pub mod smb;
 pub mod timeutil;
+pub mod transcode;
 pub mod urlutil;
 pub mod watch;
 pub mod webdav;
@@ -57,6 +58,7 @@ pub use mediabrowser::{
 };
 pub use sidecar::{ScriptFile, Sidecars, SubtitleFile, match_sidecars};
 pub use smb::SmbSource;
+pub use transcode::Transcode;
 pub use watch::{WatchEvent, WatchKind, WatchSession};
 pub use webdav::WebDavSource;
 
@@ -116,6 +118,21 @@ pub trait Source: Send + Sync {
     /// Tells the server one change in a [`Source::watch_session`].
     fn report_watch(&self, _session: &WatchSession, _event: WatchEvent) -> Result<()> {
         Ok(())
+    }
+
+    /// The server's transcodes of `video`, tallest first: what plays when
+    /// the file itself can't, or not smoothly. May ask the server, so not
+    /// on the frame loop.
+    fn transcodes(&self, _video: &Entry) -> Vec<Transcode> {
+        Vec::new()
+    }
+
+    /// Opens transcode `id` (from [`Source::transcodes`]) of `location`
+    /// from `start` seconds on; one that isn't seekable opens from the
+    /// beginning whatever `start` is. Only one transcode a server makes
+    /// plays at a time: opening another stops the one before.
+    fn open_transcode(&self, location: &str, id: &str, _start: f64) -> Result<Arc<dyn ByteSource>> {
+        Err(Error::NotFound(format!("transcode {id} of {location}")))
     }
 
     /// This source as a DeoVR feed or HereSphere API, when it is one.

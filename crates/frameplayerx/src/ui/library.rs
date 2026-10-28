@@ -364,6 +364,7 @@ pub(crate) fn request(r: &MediaRecord) -> OpenRequest {
         entry: None,
         title: Some(r.title.clone()),
         start_at: None,
+        ..Default::default()
     }
 }
 

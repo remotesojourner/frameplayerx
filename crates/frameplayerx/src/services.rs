@@ -81,6 +81,12 @@ impl Opener {
         read(&self.sources).get(id).cloned()
     }
 
+    /// Adds a source a test made.
+    #[cfg(test)]
+    pub fn insert_source(&self, source: Arc<dyn Source>) {
+        write(&self.sources).insert(source.id().to_string(), source);
+    }
+
     /// Opens `location`, preferring the source `source_id` when given.
     pub fn open_in(
         &self,
