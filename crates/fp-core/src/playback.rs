@@ -74,6 +74,22 @@ pub enum PlayerCommand {
     SelectSubtitles {
         track: Option<SubtitleTrack>,
     },
+    /// Plays the video at `index` in Up next.
+    PlayQueued {
+        index: usize,
+    },
+    /// Loop video: the video playing starts again when it ends.
+    SetLoopVideo {
+        on: bool,
+    },
+    /// Autoplay: any list plays through.
+    SetAutoplay {
+        on: bool,
+    },
+    /// Up next's Loop: the first video plays again after the last.
+    SetLoopPlaylist {
+        on: bool,
+    },
 }
 
 /// Subtitles a video has: an embedded stream (by its index in the file),

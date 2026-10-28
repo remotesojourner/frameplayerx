@@ -1,5 +1,6 @@
 //! What the web remote shows of the open video beyond its playback status:
-//! its picture, format, markers, volume, tracks and Up next.
+//! its picture, format, markers, volume, tracks, Up next and the loop
+//! and Autoplay switches.
 
 use super::App;
 use crate::playback::Playback;
@@ -72,13 +73,7 @@ impl App {
                 })
                 .collect();
         let queue = &self.queue;
-        let has = |dir: isize| {
-            queue
-                .pos
-                .checked_add_signed(dir)
-                .and_then(|i| queue.items.get(i))
-                .is_some()
-        };
+        let has = |dir: i32| queue.neighbour(dir, self.settings.loop_playlist).is_some();
         remote.publish_details(&RemoteDetails {
             format: crate::ui::widgets::format_short(&p.format),
             picture: self.remote_picture.as_ref().and_then(|(_, p)| p.clone()),
@@ -95,6 +90,15 @@ impl App {
             subtitles,
             has_previous: has(-1),
             has_next: has(1),
+            up_next: queue
+                .items
+                .iter()
+                .map(|r| crate::ui::widgets::display_title(&r.shown_title()))
+                .collect(),
+            up_next_at: queue.pos,
+            loop_video: self.settings.loop_video,
+            autoplay: self.settings.autoplay,
+            loop_playlist: self.settings.loop_playlist,
         });
     }
 }

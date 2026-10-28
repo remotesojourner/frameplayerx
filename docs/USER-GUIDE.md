@@ -692,8 +692,10 @@ With **Settings › Remote control › Phone and browser remote** on, your
 phone controls the video playing in the headset: play and pause, skipping,
 seeking (the bar splits at chapters and bookmarks), previous and next in Up
 next, volume and mute, audio and subtitles, speed, Recenter and closing the
-video. The field at the bottom types into the headset, into whichever field
-is open there. To pair a phone,
+video. **Up next** lists what plays in turn (tap one to play it), with its
+**Loop**; **Loop video** and **Autoplay** are the switches beside it, the
+same ones as on the headset. The field at the bottom types into the headset,
+into whichever field is open there. To pair a phone,
 open the address that tab shows (such as `192.168.1.20:8790`) in the phone's
 browser and enter the 6-digit code under it; the phone stays paired. A code
 pairs one phone, and stops working ten minutes after the tab last showed it.

@@ -517,6 +517,21 @@ impl App {
                                 Some(fp_core::SubtitleTrack::File(i)) => Pick::File(i),
                             })
                         }
+                        C::PlayQueued { index } => Action::QueueJump(index),
+                        // Set, not flipped: a tap the phone sends twice
+                        // doesn't undo itself.
+                        C::SetLoopVideo { on } => {
+                            self.settings.loop_video = on;
+                            continue;
+                        }
+                        C::SetAutoplay { on } => {
+                            self.settings.autoplay = on;
+                            continue;
+                        }
+                        C::SetLoopPlaylist { on } => {
+                            self.settings.loop_playlist = on;
+                            continue;
+                        }
                     };
                     self.apply(a);
                 }

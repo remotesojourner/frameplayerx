@@ -24,9 +24,17 @@ pub struct RemoteDetails {
     pub audio: Vec<RemoteAudio>,
     /// Without Off: none selected means off.
     pub subtitles: Vec<RemoteSubtitles>,
-    /// Whether Up next has a video before / after this one.
+    /// Whether Up next has a video before / after this one (round the
+    /// list when it loops).
     pub has_previous: bool,
     pub has_next: bool,
+    /// Up next's titles, and which one plays.
+    pub up_next: Vec<String>,
+    pub up_next_at: usize,
+    /// The switches: Loop video, Autoplay and Up next's Loop.
+    pub loop_video: bool,
+    pub autoplay: bool,
+    pub loop_playlist: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]

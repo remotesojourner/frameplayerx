@@ -232,6 +232,22 @@ fn commands_and_text_reach_the_event_queue() {
             br#"{"cmd":"select_subtitles","track":null}"#,
             PlayerCommand::SelectSubtitles { track: None },
         ),
+        (
+            br#"{"cmd":"play_queued","index":3}"#,
+            PlayerCommand::PlayQueued { index: 3 },
+        ),
+        (
+            br#"{"cmd":"set_loop_video","on":true}"#,
+            PlayerCommand::SetLoopVideo { on: true },
+        ),
+        (
+            br#"{"cmd":"set_autoplay","on":false}"#,
+            PlayerCommand::SetAutoplay { on: false },
+        ),
+        (
+            br#"{"cmd":"set_loop_playlist","on":true}"#,
+            PlayerCommand::SetLoopPlaylist { on: true },
+        ),
     ] {
         let r = http(addr, "POST", "/api/command", &h, body);
         assert_eq!(r.status, 200, "{}", String::from_utf8_lossy(body));
@@ -306,6 +322,11 @@ fn details_and_the_picture_reach_the_page() {
         }],
         has_previous: false,
         has_next: true,
+        up_next: vec!["Into <the> cove".into(), "Lighthouse".into()],
+        up_next_at: 1,
+        loop_video: false,
+        autoplay: true,
+        loop_playlist: true,
     });
     let s = http(addr, "GET", "/api/status", &h, b"").json();
     let d = &s["details"];
@@ -317,6 +338,12 @@ fn details_and_the_picture_reach_the_page() {
     assert_eq!(d["audio"][0]["stream"], 1);
     assert_eq!(d["subtitles"][0]["track"]["file"], 0);
     assert_eq!(d["has_next"], true);
+    assert_eq!(d["up_next"][1], "Lighthouse");
+    assert_eq!(d["up_next_at"], 1);
+    assert_eq!(
+        (&d["loop_video"], &d["autoplay"], &d["loop_playlist"]),
+        (&false.into(), &true.into(), &true.into())
+    );
     assert!(d.get("picture").is_none(), "the headset's path stays on it");
     assert!(s["picture"].is_u64());
 

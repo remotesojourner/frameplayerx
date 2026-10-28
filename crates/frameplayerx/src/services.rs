@@ -595,6 +595,13 @@ fn remote_page_text() -> Vec<(String, String)> {
         ("remote-tracks", tr!("player-tracks")),
         ("remote-speed", tr!("player-speed")),
         ("remote-recenter", tr!("action-recenter")),
+        ("remote-up-next", tr!("player-up-next")),
+        ("remote-nothing-queued", tr!("remote-nothing-queued")),
+        ("remote-loop", tr!("queue-loop")),
+        ("remote-loop-video", tr!("remote-loop-video")),
+        ("remote-autoplay", tr!("remote-autoplay")),
+        ("remote-on", tr!("remote-on")),
+        ("remote-off", tr!("tracks-off")),
         ("remote-type", tr!("remote-type")),
         ("remote-type-label", tr!("remote-type-label")),
         ("remote-send", tr!("remote-send")),
@@ -616,6 +623,10 @@ fn remote_page_text() -> Vec<(String, String)> {
             tr!("remote-command-failed", error = "{error}"),
         ),
         ("remote-not-sent", tr!("remote-not-sent", error = "{error}")),
+        (
+            "remote-queue-position",
+            tr!("toast-queue-position", at = "{at}", of = "{of}"),
+        ),
         (
             "remote-position",
             tr!(

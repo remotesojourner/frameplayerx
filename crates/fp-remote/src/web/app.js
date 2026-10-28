@@ -16,6 +16,9 @@
     audio: $('audio'), audioValue: $('audio-value'),
     subtitles: $('subtitles'), subtitlesValue: $('subtitles-value'),
     speed: $('speed'), speedValue: $('speed-value'), recenter: $('recenter'),
+    upNext: $('up-next'), upNextValue: $('up-next-value'),
+    loopVideo: $('loop-video'), loopVideoValue: $('loop-video-value'),
+    autoplay: $('autoplay'), autoplayValue: $('autoplay-value'),
     backdrop: $('backdrop'), sheet: $('sheet'), sheetTitle: $('sheet-title'), sheetBody: $('sheet-body'),
     sheetClose: $('sheet-close'),
     typeForm: $('type-form'), typeText: $('type-text'), typeStatus: $('type-status'),
@@ -42,7 +45,7 @@
   let changingVolume = false;
   let volumeSentAt = 0;
   let unpaired = false;
-  let sheet = null;         // 'tracks' or 'speed' while one is open
+  let sheet = null;         // 'tracks', 'speed' or 'up-next' while one is open
   let typeTimer = 0;
 
   function setConn(text, state) {
@@ -150,6 +153,34 @@
     el.audioValue.textContent = audio ? String(audio.label) : t('remote-no-audio', 'No audio');
     const subs = (Array.isArray(d.subtitles) ? d.subtitles : []).find((x) => x.selected);
     el.subtitlesValue.textContent = subs ? String(subs.label) : t('remote-subtitles-off', 'Off');
+    const queue = Array.isArray(d.up_next) ? d.up_next : [];
+    el.upNextValue.textContent = queue.length > 0
+      ? t('remote-queue-position', '{at} of {of}', { at: Number(d.up_next_at) + 1, of: queue.length })
+      : t('remote-nothing-queued', 'Nothing queued');
+    showSwitches();
+  }
+
+  function onOff(on) {
+    return on ? t('remote-on', 'On') : t('remote-off', 'Off');
+  }
+
+  function showSwitches() {
+    for (const [button, value, on] of [
+      [el.loopVideo, el.loopVideoValue, !!details.loop_video],
+      [el.autoplay, el.autoplayValue, !!details.autoplay],
+    ]) {
+      button.setAttribute('aria-pressed', on ? 'true' : 'false');
+      value.textContent = onOff(on);
+    }
+  }
+
+  // Turns a switch over at once; the next status confirms it.
+  function flip(key, cmd) {
+    const on = !details[key];
+    details[key] = on;
+    showSwitches();
+    if (sheet) renderSheet();
+    send({ cmd: cmd, on: on });
   }
 
   // The seek bar is split where chapters and bookmarks start.
@@ -219,7 +250,7 @@
     el.mute.setAttribute('aria-label', muted ? t('remote-unmute', 'Unmute') : t('remote-mute', 'Mute'));
   }
 
-  // Sheets: the audio and subtitle choices, and the speeds.
+  // Sheets: the audio and subtitle choices, the speeds, and Up next.
   function openSheet(kind) {
     sheet = kind;
     renderSheet();
@@ -261,6 +292,22 @@
     return b;
   }
 
+  // A switch in a sheet: says On or Off, and the sheet stays open.
+  function switchRow(label, on, flipIt) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'option';
+    b.setAttribute('aria-pressed', on ? 'true' : 'false');
+    const text = document.createElement('span');
+    text.textContent = label;
+    const state = document.createElement('span');
+    state.className = 'detail';
+    state.textContent = onOff(on);
+    b.append(text, state);
+    b.addEventListener('click', flipIt);
+    return b;
+  }
+
   function heading(text) {
     const h = document.createElement('h3');
     h.textContent = text;
@@ -297,6 +344,21 @@
         body.push(option(speedText(v), '', Math.abs(v - now) < 0.001,
           () => send({ cmd: 'set_speed', speed: v })));
       }
+    } else if (sheet === 'up-next') {
+      el.sheetTitle.textContent = t('remote-up-next', 'Up next');
+      body.push(switchRow(t('remote-loop', 'Loop'), !!details.loop_playlist,
+        () => flip('loop_playlist', 'set_loop_playlist')));
+      const queue = Array.isArray(details.up_next) ? details.up_next : [];
+      if (queue.length === 0) {
+        const p = document.createElement('p');
+        p.textContent = t('remote-nothing-queued', 'Nothing queued');
+        body.push(p);
+      }
+      queue.forEach((title, i) => {
+        const playing = i === Number(details.up_next_at);
+        body.push(option(String(title), playing ? t('remote-now-playing', 'Now playing') : '', playing,
+          () => send({ cmd: 'play_queued', index: i })));
+      });
     }
     el.sheetBody.replaceChildren(...body);
   }
@@ -313,6 +375,9 @@
   el.audio.addEventListener('click', () => openSheet('tracks'));
   el.subtitles.addEventListener('click', () => openSheet('tracks'));
   el.speed.addEventListener('click', () => openSheet('speed'));
+  el.upNext.addEventListener('click', () => openSheet('up-next'));
+  el.loopVideo.addEventListener('click', () => flip('loop_video', 'set_loop_video'));
+  el.autoplay.addEventListener('click', () => flip('autoplay', 'set_autoplay'));
   el.backdrop.addEventListener('click', closeSheet);
   el.sheetClose.addEventListener('click', closeSheet);
   el.sheet.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeSheet(); });
