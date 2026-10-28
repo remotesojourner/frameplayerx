@@ -1260,6 +1260,14 @@ remote-nothing-hint = Start a video in the headset to control it here.
 remote-seek = Seek position
 remote-back-10 = Back 10 seconds
 remote-forward-10 = Forward 10 seconds
+# Short: the phone remote's Up next is empty.
+remote-nothing-queued = Nothing queued
+# Short: a switch on the phone remote: the video playing starts again when it ends.
+remote-loop-video = Loop video
+# Short: a switch on the phone remote: when a video ends, the next in the list plays.
+remote-autoplay = Autoplay
+# Short: a switch is on.
+remote-on = On
 remote-type = Type into headset
 remote-type-label = Text to send to the headset
 # Short: a button.
