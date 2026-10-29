@@ -232,6 +232,11 @@ nothing playing, either plays it. On the Up next page, pick a video to play
 it, move videos up or down, take them out, *Clear* everything but the video
 playing, or *Save as playlist*.
 
+**Shuffle** on the Up next page puts the current video first and every
+other entry in a new random order, including entries that came before it.
+The current video keeps playing; press **Shuffle** again for another order.
+To keep this order as a playlist, press **Save as playlist** afterwards.
+
 **Autoplay** (the play sign in a circular arrow, on the control bar) plays
 any list through, one opened from a folder, grid or season too: the next
 video starts when one ends.
