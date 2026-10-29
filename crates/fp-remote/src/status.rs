@@ -145,7 +145,11 @@ pub(crate) fn command_is_valid(c: &PlayerCommand) -> bool {
         | PlayerCommand::Previous
         | PlayerCommand::Next
         | PlayerCommand::SelectAudio { .. }
-        | PlayerCommand::SelectSubtitles { .. } => true,
+        | PlayerCommand::SelectSubtitles { .. }
+        | PlayerCommand::PlayQueued { .. }
+        | PlayerCommand::SetLoopVideo { .. }
+        | PlayerCommand::SetAutoplay { .. }
+        | PlayerCommand::SetLoopPlaylist { .. } => true,
     }
 }
 

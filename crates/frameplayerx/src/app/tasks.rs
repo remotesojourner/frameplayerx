@@ -735,6 +735,27 @@ impl App {
         }
     }
 
+    /// Opens the video playing again from where it is, as `quality`.
+    pub(super) fn play_quality(&mut self, quality: playback::Quality) {
+        let Some(p) = &self.playback else {
+            return;
+        };
+        let transcode = match &quality {
+            playback::Quality::Transcode(id) => Some(id.clone()),
+            _ => None,
+        };
+        if p.request.quality == quality && p.request.transcode == transcode {
+            return;
+        }
+        let req = OpenRequest {
+            start_at: Some(p.player.position()),
+            quality,
+            transcode,
+            ..p.request.clone()
+        };
+        self.open_request(req);
+    }
+
     pub(super) fn open_request(&mut self, mut req: OpenRequest) {
         // A file on a card goes by the card's ID, as the library has it.
         req.location = fp_core::volume::stable(&req.location).into_owned();

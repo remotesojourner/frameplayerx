@@ -507,6 +507,32 @@ impl HttpClient {
     }
 }
 
+impl HttpClient {
+    /// GETs `url` to read its body as it arrives, with no ranges and no
+    /// cache: a server's live transcode, which sends no faster than it
+    /// encodes. A read waits only for the next bytes the server sends.
+    pub fn get_stream(&self, url: &str) -> Result<Box<dyn Read + Send>> {
+        let resp = self.retrying(url, || {
+            let resp = self.send_once("GET", url, &[], None, true)?;
+            let status = resp.status().as_u16();
+            if is_transient_status(status) {
+                return Err(Failure::Retry(
+                    Error::HttpStatus {
+                        status,
+                        url: redact(url),
+                    },
+                    retry_after(&resp),
+                ));
+            }
+            if let Some(e) = status_error(status, url) {
+                return Err(Failure::Fatal(e));
+            }
+            Ok(resp)
+        })?;
+        Ok(Box::new(resp.into_body().into_reader()))
+    }
+}
+
 fn retry_after(resp: &Response) -> Option<Duration> {
     resp.headers()
         .get("retry-after")

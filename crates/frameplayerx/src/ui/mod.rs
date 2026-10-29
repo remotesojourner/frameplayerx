@@ -225,6 +225,9 @@ pub enum Action {
     SelectAudio(usize),
     /// Shows these subtitles, and keeps them as this video's pick.
     SelectSubtitles(crate::subtitles::Pick),
+    /// Plays the file as it is, or transcoded by the server, from where it
+    /// is.
+    SelectQuality(crate::playback::Quality),
     /// Puts a flat screen, the control bar, the adjust panel and the browse
     /// panel back where they start.
     ResetPlacement,
@@ -344,6 +347,12 @@ pub enum Action {
     TogglePassthrough,
     /// Settings › General › Screen follows you.
     ToggleFollow,
+    /// The video playing starts again when it ends.
+    ToggleLoopVideo,
+    /// The list a video was opened from plays through.
+    ToggleAutoplay,
+    /// Up next starts again from the first video after the last.
+    ToggleLoopPlaylist,
     /// Show the library/browser panel (during playback).
     ShowBrowser(bool),
     /// Hide the player controls (the trigger on empty space brings them

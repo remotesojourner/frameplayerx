@@ -81,6 +81,12 @@ impl Opener {
         read(&self.sources).get(id).cloned()
     }
 
+    /// Adds a source a test made.
+    #[cfg(test)]
+    pub fn insert_source(&self, source: Arc<dyn Source>) {
+        write(&self.sources).insert(source.id().to_string(), source);
+    }
+
     /// Opens `location`, preferring the source `source_id` when given.
     pub fn open_in(
         &self,
@@ -589,6 +595,13 @@ fn remote_page_text() -> Vec<(String, String)> {
         ("remote-tracks", tr!("player-tracks")),
         ("remote-speed", tr!("player-speed")),
         ("remote-recenter", tr!("action-recenter")),
+        ("remote-up-next", tr!("player-up-next")),
+        ("remote-nothing-queued", tr!("remote-nothing-queued")),
+        ("remote-loop", tr!("queue-loop")),
+        ("remote-loop-video", tr!("remote-loop-video")),
+        ("remote-autoplay", tr!("remote-autoplay")),
+        ("remote-on", tr!("remote-on")),
+        ("remote-off", tr!("tracks-off")),
         ("remote-type", tr!("remote-type")),
         ("remote-type-label", tr!("remote-type-label")),
         ("remote-send", tr!("remote-send")),
@@ -610,6 +623,10 @@ fn remote_page_text() -> Vec<(String, String)> {
             tr!("remote-command-failed", error = "{error}"),
         ),
         ("remote-not-sent", tr!("remote-not-sent", error = "{error}")),
+        (
+            "remote-queue-position",
+            tr!("toast-queue-position", at = "{at}", of = "{of}"),
+        ),
         (
             "remote-position",
             tr!(

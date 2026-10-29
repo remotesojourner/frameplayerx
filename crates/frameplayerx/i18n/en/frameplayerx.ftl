@@ -312,6 +312,10 @@ player-tracks = Audio and subtitles
 player-browse = Browse
 # A tooltip.
 player-up-next = Up next
+# A tooltip on a key that turns on and off: the video playing starts again when it ends.
+player-loop-video = Loop this video
+# A tooltip on a key that turns on and off: when a video ends, the next in the list plays.
+player-autoplay = Autoplay the next video
 # A tooltip.
 player-speed = Speed
 # A tooltip.
@@ -419,6 +423,20 @@ tracks-no-audio = No audio
 tracks-spatial = {" · spatial"}
 # Short: no audio or subtitles.
 tracks-off = Off
+# Short: a column's title: whether the file plays as it is or the server transcodes it.
+tracks-quality = Quality
+# The file; the server transcodes it when the file can't play.
+tracks-quality-automatic = Automatic
+# The file as it is.
+tracks-quality-original = Original
+# Under Automatic: it plays the file as it is.
+tracks-quality-file = The file
+# Under a height: the server transcodes the file to it, live, as it plays.
+tracks-quality-transcode = Transcoded live
+# Under a height the server can't start transcoding at a time.
+tracks-quality-no-seek = Live, can't skip
+# Under Automatic: the server is transcoding the file. $quality is like 1440p.
+tracks-quality-playing = Transcoding { $quality }
 haptics-stroke-bottom = Stroke bottom
 haptics-stroke-top = Stroke top
 haptics-invert = Invert stroke
@@ -1121,9 +1139,15 @@ toast-playlist-added = { $count ->
    *[other] Added { $count } videos to { $name }
 }
 queue-plays-through = { $at } of { $of } · plays through to the end
+# Up next loops: after the last video comes the first.
+queue-plays-round = { $at } of { $of } · plays through, then from the first again
 # X and Y are the controller buttons: keep them.
 queue-steps = { $at } of { $of } · X and Y step through the list
+# X and Y are the controller buttons: keep them. Up next loops: past the last comes the first.
+queue-steps-round = { $at } of { $of } · X and Y step round the list
 queue-now-playing = Now playing
+# A button that turns on and off: Up next starts again from the first video after the last.
+queue-loop = Loop
 
 ## Libraries, the performance overlay, decoders, About
 
@@ -1147,6 +1171,8 @@ perf-memory = Memory
 perf-memory-value = { $used } of { $total } GB
 perf-memory-app = { $used } of { $total } GB · app { $app } GB
 notice-not-in-library = Adjustments apply until you close this video (it is not in the library).
+# $quality is like 1440p.
+transcode-cannot-play = This file can't play here: the server is transcoding it to { $quality }
 # A bookmark's name, $time where it is.
 bookmark-name = Bookmark { $time }
 # Why a video decodes in software. $stream is like 10-bit 4:2:2 HEVC.
@@ -1232,6 +1258,14 @@ remote-nothing-hint = Start a video in the headset to control it here.
 remote-seek = Seek position
 remote-back-10 = Back 10 seconds
 remote-forward-10 = Forward 10 seconds
+# Short: the phone remote's Up next is empty.
+remote-nothing-queued = Nothing queued
+# Short: a switch on the phone remote: the video playing starts again when it ends.
+remote-loop-video = Loop video
+# Short: a switch on the phone remote: when a video ends, the next in the list plays.
+remote-autoplay = Autoplay
+# Short: a switch is on.
+remote-on = On
 remote-type = Type into headset
 remote-type-label = Text to send to the headset
 # Short: a button.

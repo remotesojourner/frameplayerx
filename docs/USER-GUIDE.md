@@ -232,6 +232,16 @@ nothing playing, either plays it. On the Up next page, pick a video to play
 it, move videos up or down, take them out, *Clear* everything but the video
 playing, or *Save as playlist*.
 
+**Autoplay** (the play sign in a circular arrow, on the control bar) plays
+any list through, one opened from a folder, grid or season too: the next
+video starts when one ends.
+**Loop** on the Up next page plays the first video again after the last,
+and ⏮ and ⏭ step round the list past either end. The repeat key beside Up
+next on the control bar loops the video playing instead: it starts again
+from the beginning each time it ends, before anything in Up next. All
+three stay on, from video to video and after a restart, until you turn
+them off.
+
 **Playlists**, a tab beside Watch history, holds your playlists: make one
 there or with *Add to playlist*, which offers your playlists and a name
 for a new one. A playlist can hold videos from any source. Its page plays
@@ -244,7 +254,7 @@ Videos of a source locked with a PIN are left out until it is unlocked.
 | On this device | The home folder and the inserted microSD card and USB drives, as folders: play any video, or *Play all* in a folder |
 | Library | **Videos**: every video in its folder, with thumbnails, search, format filters and sorting (newest, title, length, rating, shuffle). **Folders**: its folder as folders. **Scan now** looks for new and removed videos |
 | Jellyfin / Emby | Your libraries, *Continue watching*, *Next up* and the latest additions; a search of the whole server by title, as Jellyfin's own search shows it: a row each of movies, shows, collections and other videos, best matches first (episodes are found through their show), a *People* row of the cast and crew whose names match (tap one to see what they are in), and a *Tagged* row of what carries a tag with your words in it; poster grids searched, sorted (title, date added, release date, rating, length, last watched, shuffle) and filtered by the server: unwatched, in progress, favorites, and **Filters** for genres, decades, resolution, studios and tags; series by season and episode; details with the story, cast, genres and tags (tap a tag to see everything that has it), and a *Version* row when the server keeps more than one version of a video (4K and 1080p, a director's cut): *Automatic* plays the tallest that fits the source's maximum height; pick another and the video plays from it wherever you open it (subtitles included) until the app closes. Each version keeps its own format and adjustments, as a separate video in your history. Watched marks, favorites and resume points are the server's (see [Watch sync](#watch-sync-with-jellyfin-emby-and-heresphere)) |
-| DeoVR feed / HereSphere API | The server's scene groups as chips over a grid of scenes; search the chosen group (or *All*) across titles, studios, performers and tags; order by title, date, rating or length, either way, or shuffle; *Favorites* (and *Scripted*, with haptics on), and **Filters** for studio, people, tags, length, format and rating, each with how many scenes have it (a DeoVR feed's studios, tags and performers come with each scene's details, fetched while you search or filter and kept for next time). ⋯ opens a scene's details: description, performers and tags (tap one to see all their scenes), chapters to start from, and ♡ to make it a favourite on a HereSphere API that takes favourites. The page opens with the scenes from last time while the server sends the current list ("updating…" under the title). A HereSphere API can also follow what you watch (see [Watch sync](#watch-sync-with-jellyfin-emby-and-heresphere)) |
+| DeoVR feed / HereSphere API | The server's scene groups as chips over a grid of scenes; search the chosen group (or *All*) across titles, studios, performers and tags; order by title, date, rating or length, either way, or shuffle; *Favorites* (and *Scripted*, with haptics on), and **Filters** for studio, people, tags, length, format and rating, each with how many scenes have it (a DeoVR feed's studios, tags and performers come with each scene's details, fetched while you search or filter and kept for next time). ⋯ opens a scene's details: description, performers and tags (tap one to see all their scenes), chapters to start from, and ♡ to make it a favourite on a HereSphere API that takes favourites. The page opens with the scenes from last time while the server sends the current list ("updating…" under the title). A HereSphere API can also sync watch state (see [Watch sync](#watch-sync-with-jellyfin-emby-and-heresphere)) |
 | SMB, WebDAV, HTTP folders, DLNA, local folders | Folders and files: search the folder you are in, order by name, date or size, *Play all* |
 
 **Filters** opens a drawer on the right: what you pick there applies at
@@ -443,7 +453,8 @@ it for the audio tracks and subtitles side by side, subtitles in your
 language first, each with what tells it apart: forced, SDH, its title or
 file name, and its format. Pick one and it plays at once; a long list
 scrolls. Press the pill again, or point off the lists and press, to close
-it. A video with one audio track and no subtitles has no pill.
+it. A video with one audio track, no subtitles and no
+[server transcoding](#server-transcoding) has no pill.
 
 What you pick there is kept with the video: it opens with the same audio
 track or subtitles next time, while they are still there. Only what you
@@ -518,6 +529,44 @@ Keep the format tags in the name (`_180_LR` and so on); conversions drop
 the VR metadata, so a file without tags may need its format set once
 under ⚙ › Format.
 
+From a server, a video that stutters can also be transcoded by the server
+as it plays, without converting anything: see below.
+
+### Server transcoding
+
+Jellyfin and Emby can transcode a video live, while it plays, and DeoVR
+feeds and HereSphere APIs may offer heights their server transcodes to on
+request. Nothing is made ahead of time: the server starts encoding from
+the file when FramePlayerX asks, and stops when it stops asking. For those
+videos the pill on the control bar starts with the **Quality** playing;
+press it for the Quality list beside the audio tracks and subtitles:
+
+- **Automatic** (the default): the file as it is. When the file can't play
+  here (a format FramePlayerX has no decoder for, or a picture the hardware
+  decoder has no room for), it asks the server to transcode it to the
+  tallest height offered and says so on the control bar. It never changes
+  the quality while a video plays.
+- **Original**: the file as it is, whatever happens.
+- A height (**2160p**, **1440p**, …): the server transcodes the file to at
+  most that height, the width in proportion, from where you were.
+
+The file always comes first: the server only transcodes when you pick a
+height, or under Automatic when the file can't play. The source's maximum
+height (edit the source) also caps the heights offered.
+
+Skipping while the server transcodes asks it to start again from there,
+which takes a few seconds. A feed's height marked "can't skip" is
+transcoded only from the start. Transcoding keeps the server's default
+audio track and none of the file's own subtitles; subtitle files still
+show.
+
+The server does the work, so how far it can go depends on it: a server
+without a graphics card may not keep up with an 8K file, whatever the
+size asked. Jellyfin and Emby send H.264, or HEVC when their admin allowed
+it (Dashboard › Playback › Transcoding), and pick their own limits:
+Jellyfin transcodes to at most 3840 pixels wide, so an 8K 180° video's
+2880p and 2160p both come as 3840×1920.
+
 ## Controls
 
 Each button does one thing: the right hand runs playback, the left hand the
@@ -540,6 +589,9 @@ picture. Play/pause and seeking are under either thumb.
 | Grip + thumbstick press | Subtitles off, or back on: the ones you had, else those in your language | As without the grip |
 | Hold grip + trigger, move | Drag the picture (a flat screen or the dome follows your hand) | The same |
 | Trigger | Click; on empty space, show or hide the controls | The same |
+
+On the control bar, point at the speaker for the volume slider above it;
+press the speaker to mute.
 
 To recenter, hold the Steam button, as in any game (both grips together, or
 the left Menu button, do it too). The picture and the panels come to where
@@ -640,8 +692,10 @@ With **Settings › Remote control › Phone and browser remote** on, your
 phone controls the video playing in the headset: play and pause, skipping,
 seeking (the bar splits at chapters and bookmarks), previous and next in Up
 next, volume and mute, audio and subtitles, speed, Recenter and closing the
-video. The field at the bottom types into the headset, into whichever field
-is open there. To pair a phone,
+video. **Up next** lists what plays in turn (tap one to play it), with its
+**Loop**; **Loop video** and **Autoplay** are the switches beside it, the
+same ones as on the headset. The field at the bottom types into the headset,
+into whichever field is open there. To pair a phone,
 open the address that tab shows (such as `192.168.1.20:8790`) in the phone's
 browser and enter the 6-digit code under it; the phone stays paired. A code
 pairs one phone, and stops working ten minutes after the tab last showed it.

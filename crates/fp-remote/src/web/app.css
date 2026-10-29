@@ -216,22 +216,29 @@ h1 { margin: 0; font-size: 20px; font-weight: 600; letter-spacing: -0.01em; over
 .volume-text { flex: none; width: 44px; text-align: right; font-size: 13px; color: var(--text-2); font-variant-numeric: tabular-nums; }
 
 .chips { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+/* A label that wraps in another language makes its row taller */
 .chip {
-  height: 56px;
+  min-height: 56px;
   border: none;
   border-radius: 14px;
   background: var(--surface-2);
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 0 12px;
+  padding: 8px 12px;
   text-align: left;
   min-width: 0;
 }
 .chip svg { flex: none; width: 22px; height: 22px; }
+.chip.wide { grid-column: 1 / -1; }
+/* A switch that is on */
+.chip[aria-pressed="true"] { background: rgba(26, 159, 255, 0.14); color: var(--accent-light); }
+.chip[aria-pressed="true"] .chip-label { color: var(--accent-light); }
 .chip-text { display: flex; flex-direction: column; min-width: 0; }
 .chip-label { font-size: 12px; color: var(--text-2); }
 .chip-value { font-size: 15px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* A chip with no label (Recenter) has room for its words on two lines */
+.chip > .chip-value { white-space: normal; }
 
 /* Sheets: audio and subtitles, speed */
 .backdrop { position: fixed; inset: 0; z-index: 2; background: rgba(4, 6, 9, 0.62); }

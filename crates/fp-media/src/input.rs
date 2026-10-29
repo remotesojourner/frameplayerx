@@ -197,6 +197,22 @@ impl Input {
         self.origin
     }
 
+    /// Makes the stream's first picture `start` seconds into the video: a
+    /// server asked to transcode from that time begins its picture there,
+    /// whatever clock it counts in (Jellyfin and feed servers start at 0,
+    /// Emby keeps the file's own times, audio may begin earlier).
+    pub(crate) fn start_at(&mut self, start: f64) {
+        let picture = self.streams().iter().find_map(|&st| {
+            // SAFETY: stream pointers and their parameters are valid while
+            // the input is open.
+            let (st, kind) = unsafe { (&*st, (*(*st).codecpar).codec_type) };
+            let attached = st.disposition & ff::AV_DISPOSITION_ATTACHED_PIC as c_int != 0;
+            (kind == ff::AVMEDIA_TYPE_VIDEO && !attached && st.start_time != ff::AV_NOPTS_VALUE)
+                .then(|| st.start_time as f64 * crate::q2d(st.time_base))
+        });
+        self.origin = picture.unwrap_or(self.origin) - start;
+    }
+
     /// The earliest start of an audio or video stream, when it is positive.
     /// Other streams don't count: a subtitle file's starts at its first
     /// cue. A start below 0 is an encoder's priming and is kept.

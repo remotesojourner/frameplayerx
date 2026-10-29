@@ -15,6 +15,7 @@ use crate::error::{Error, Result};
 use crate::http::{HttpClient, HttpOptions, HttpReply};
 use crate::json::{array, boolean, get, num, text, uint};
 use crate::sidecar::Sidecars;
+use crate::transcode::{self, Streamed, TranscodeTarget};
 use crate::urlutil::{encode_form_value, redact};
 use crate::watch::{WatchEvent, WatchKind, WatchSession};
 use fp_core::format::{Projection, StereoLayout, VideoFormat, detect_from_name};
@@ -168,6 +169,89 @@ pub(crate) fn pick_media_source<'a>(
                 .find(|ms| text(ms, "Id").as_deref() == Some(id))
         })
         .or_else(|| best_media_source(media_sources, max_height))
+}
+
+/// The sizes media source `ms` can be transcoded to: its own, then the
+/// usual heights below it, the width kept in proportion. Their ids are
+/// `<media source>/<width>x<height>/<bits a second>`.
+pub(crate) fn targets_of(ms: &Value) -> Vec<TranscodeTarget> {
+    let Some(source) = text(ms, "Id") else {
+        return Vec::new();
+    };
+    let video = array(ms, "MediaStreams")
+        .iter()
+        .find(|s| text(s, "Type").as_deref() == Some("Video"));
+    let (Some(width), Some(height)) = (
+        video.and_then(|v| uint(v, "Width")),
+        video
+            .and_then(|v| uint(v, "Height"))
+            .or_else(|| uint(ms, "Height")),
+    ) else {
+        return Vec::new();
+    };
+    let fps = video
+        .and_then(|v| num(v, "RealFrameRate").or_else(|| num(v, "AverageFrameRate")))
+        .unwrap_or(30.0);
+    let file = video
+        .and_then(|v| num(v, "BitRate"))
+        .or_else(|| num(ms, "Bitrate"))
+        .map(|b| (b as u64, height));
+    transcode::heights_below(height)
+        .into_iter()
+        .map(|h| {
+            let w = ((width as f64 * h as f64 / height as f64 / 2.0).round() as u32 * 2).max(2);
+            TranscodeTarget {
+                id: format!("{source}/{w}x{h}/{}", transcode::bitrate(w, h, fps, file)),
+                label: transcode::height_label(Some(h)),
+                height: Some(h),
+                seekable: true,
+            }
+        })
+        .collect()
+}
+
+/// A transcode id's media source, width, height and bitrate.
+pub(crate) fn parse_transcode_id(id: &str) -> Option<(&str, u32, u32, u64)> {
+    let (rest, bitrate) = id.rsplit_once('/')?;
+    let (source, size) = rest.rsplit_once('/')?;
+    let (w, h) = size.split_once('x')?;
+    Some((
+        source,
+        w.parse().ok()?,
+        h.parse().ok()?,
+        bitrate.parse().ok()?,
+    ))
+}
+
+/// The address of item `item`'s media source `source` encoded at most
+/// `width` x `height` from `start` seconds, as MPEG-TS: HEVC when the
+/// server encodes it (an admin's choice), else H.264, with stereo AAC.
+/// Nothing is copied from the file, so the picture and sound both begin
+/// at `start`.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn transcode_url(
+    base: &str,
+    item: &str,
+    source: &str,
+    (width, height, bitrate): (u32, u32, u64),
+    start: f64,
+    session: &str,
+    token: &str,
+) -> String {
+    let mut url = format!(
+        "{base}/Videos/{}/stream.ts?MediaSourceId={}&DeviceId={}&PlaySessionId={session}\
+         &VideoCodec=hevc,h264&AudioCodec=aac&MaxWidth={width}&MaxHeight={height}\
+         &VideoBitrate={bitrate}&AudioBitrate=192000&TranscodingMaxAudioChannels=2\
+         &AllowVideoStreamCopy=false&AllowAudioStreamCopy=false&StartTimeTicks={}",
+        encode_form_value(item),
+        encode_form_value(source),
+        encode_form_value(device_id()),
+        seconds_to_ticks(start.max(0.0)),
+    );
+    if !token.is_empty() {
+        url.push_str(&format!("&api_key={token}"));
+    }
+    url
 }
 
 /// Parses the access token and user ID from a `/Users/AuthenticateByName` response.
@@ -418,6 +502,8 @@ pub struct MediaBrowserSource {
     /// The version chosen for an item (item id to media source id), kept
     /// while the app runs.
     versions: Mutex<HashMap<String, String>>,
+    /// The play session of the transcode the server is encoding for us.
+    encoding: Arc<Mutex<Option<String>>>,
 }
 
 /// Authentication and session state for an active server connection.
@@ -486,7 +572,36 @@ impl MediaBrowserSource {
             parents: Mutex::new(HashMap::new()),
             tags: Mutex::new(None),
             versions: Mutex::new(HashMap::new()),
+            encoding: Arc::default(),
         })
+    }
+
+    /// The media source of `location` that plays: the version it names,
+    /// the one chosen, else the tallest that fits the maximum height.
+    fn playing_version(&self, location: &str, item: &Value) -> Option<Value> {
+        let id = text(item, "Id").unwrap_or_default();
+        let chosen = location_version(location)
+            .map(str::to_string)
+            .or_else(|| self.chosen_version(&id));
+        pick_media_source(
+            array(item, "MediaSources"),
+            chosen.as_deref(),
+            self.max_height,
+        )
+        .cloned()
+    }
+
+    /// Tells the server to stop the encode of play session `session`.
+    fn stop_encoding(client: &HttpClient, base: &str, session: &str) {
+        let url = format!(
+            "{base}/Videos/ActiveEncodings?DeviceId={}&PlaySessionId={session}",
+            encode_form_value(device_id())
+        );
+        match client.request("DELETE", &url, &[], None, 64 << 10) {
+            Ok(r) if r.status < 300 || r.status == 404 => {}
+            Ok(r) => log::warn!("stopping transcode {session}: HTTP {}", r.status),
+            Err(e) => log::warn!("stopping transcode {session}: {e}"),
+        }
     }
 
     /// Plays the video at `location` from the media source `version` from
@@ -982,6 +1097,66 @@ impl Source for MediaBrowserSource {
             }
         };
         self.api_post_json(path, &body)
+    }
+
+    /// The sizes the playing version can be transcoded to: its own and the
+    /// usual heights below, none above the maximum height.
+    fn transcode_targets(&self, video: &Entry) -> Vec<TranscodeTarget> {
+        let found = item_id(&video.location).and_then(|id| {
+            let (_, user) = self.client()?;
+            self.api_get_json(&format!("/Users/{user}/Items/{id}?Fields=MediaSources"))
+        });
+        match found {
+            Ok(item) => self
+                .playing_version(&video.location, &item)
+                .map(|ms| transcode::within(self.max_height, targets_of(&ms)))
+                .unwrap_or_default(),
+            Err(e) => {
+                log::warn!("transcode targets of {}: {e}", redact(&video.location));
+                Vec::new()
+            }
+        }
+    }
+
+    /// Stops the encode the server is running for us, then asks for this
+    /// one. Dropping the stream stops its encode: Emby otherwise encodes on
+    /// to the end, Jellyfin for a while.
+    fn open_transcode(&self, location: &str, id: &str, start: f64) -> Result<Arc<dyn ByteSource>> {
+        let item = item_id(location)?;
+        let (source, width, height, bitrate) = parse_transcode_id(id)
+            .ok_or_else(|| Error::invalid(location, format!("no transcode {id}")))?;
+        let (client, _) = self.client()?;
+        let session = crate::watch::session_id();
+        if let Some(before) = lock(&self.encoding).replace(session.clone()) {
+            Self::stop_encoding(&client, &self.base_url, &before);
+        }
+        let token = self.auth_credentials().map(|(t, _)| t).unwrap_or_default();
+        let url = transcode_url(
+            &self.base_url,
+            &item,
+            source,
+            (width, height, bitrate),
+            start,
+            &session,
+            &token,
+        );
+        log::info!(
+            "{}: transcode {width}x{height} at {:.1} Mbit/s from {start:.1} s",
+            self.name,
+            bitrate as f64 / 1e6
+        );
+        let body = client.get_stream(&url)?;
+        let (base, encoding) = (self.base_url.clone(), self.encoding.clone());
+        let stop = move || {
+            {
+                let mut playing = lock(&encoding);
+                if playing.as_deref() == Some(session.as_str()) {
+                    *playing = None;
+                }
+            }
+            Self::stop_encoding(&client, &base, &session);
+        };
+        Ok(Streamed::wrap(body, redact(&url), Some(Box::new(stop))))
     }
 
     fn as_media_browser(&self) -> Option<&MediaBrowserSource> {
@@ -1481,6 +1656,47 @@ mod tests {
         assert_eq!(src.chosen_version("m2"), None);
         src.set_version("mb:http://s#item=m1", None);
         assert_eq!(src.chosen_version("m1"), None);
+    }
+
+    #[test]
+    fn transcodes_keep_the_videos_proportions() {
+        let ms = json!({"Id": "ms8k", "MediaStreams": [
+            {"Type": "Audio"},
+            {"Type": "Video", "Width": 7680, "Height": 3840, "RealFrameRate": 59.94, "BitRate": 80000000}
+        ]});
+        let t = targets_of(&ms);
+        let labels: Vec<&str> = t.iter().map(|t| t.label.as_str()).collect();
+        assert_eq!(
+            labels,
+            ["3840p", "2880p", "2160p", "1440p", "1080p", "720p"]
+        );
+        assert!(t.iter().all(|t| t.seekable));
+        assert_eq!(
+            parse_transcode_id(&t[2].id),
+            Some(("ms8k", 4320, 2160, 25_312_500))
+        );
+        assert_eq!(parse_transcode_id("ms/1x2"), None);
+        assert!(targets_of(&json!({"Id": "a", "MediaStreams": []})).is_empty());
+
+        let url = transcode_url(
+            "http://jf:8096",
+            "item 1",
+            "ms8k",
+            (4320, 2160, 25_312_500),
+            61.5,
+            "p1",
+            "tok",
+        );
+        assert!(url.starts_with("http://jf:8096/Videos/item%201/stream.ts?MediaSourceId=ms8k&"));
+        for part in [
+            "&PlaySessionId=p1&",
+            "&MaxWidth=4320&MaxHeight=2160&VideoBitrate=25312500&",
+            "&AllowVideoStreamCopy=false&AllowAudioStreamCopy=false&",
+            "&StartTimeTicks=615000000&",
+        ] {
+            assert!(url.contains(part), "{part} in {url}");
+        }
+        assert!(url.ends_with("&api_key=tok"));
     }
 
     #[test]
