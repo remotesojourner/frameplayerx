@@ -191,6 +191,8 @@ pub enum Action {
     StepQueue(i32),
     QueueRemove(usize),
     QueueMove(usize, usize),
+    /// Shuffles Up next, keeping the current video first.
+    QueueShuffle,
     /// Keeps only the video playing in Up next.
     QueueClear,
     /// Shows Up next in the browse panel over the video.

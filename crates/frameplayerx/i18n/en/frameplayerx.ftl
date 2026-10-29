@@ -680,7 +680,7 @@ sort-feed = Feed order
 sort-title = Title
 # Short: a sort.
 sort-newest = Newest
-# Short: a sort, a random order.
+# Short: a random order in the sorts, and the button that shuffles Up next.
 sort-shuffle = Shuffle
 feed-no-scenes = No scenes
 feed-no-scenes-desc = The server lists no scenes here.

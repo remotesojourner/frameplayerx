@@ -21,6 +21,7 @@ impl App {
             Action::StepQueue(dir) => self.step_queue(dir),
             Action::QueueRemove(i) => self.queue.remove(i),
             Action::QueueMove(from, to) => self.queue.move_item(from, to),
+            Action::QueueShuffle => self.queue.shuffle(crate::shuffle::new_seed()),
             Action::QueueClear => self.queue.clear_rest(),
             Action::ShowUpNext => {
                 self.ui.screen = Screen::UpNext;

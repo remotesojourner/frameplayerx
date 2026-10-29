@@ -26,6 +26,7 @@
 //! | `loop video` / `loop playlist` | turn Loop video or Up next's Loop on or off |
 //! | `autoplay` | turn Autoplay on or off |
 //! | `open-list` | open the library's videos as a grid does, from the first |
+//! | `shuffle` | shuffle Up next, keeping the current video first |
 //! | `shot NAME` | save the left eye as OUT_DIR/NAME.png |
 //! | `sbs NAME` | save both eyes side by side |
 //! | `screen NAME [TAB]` | show a browser screen (`home`, `library`, `sources`, `settings` and its tab) |
@@ -665,6 +666,11 @@ impl Sim {
                     self.app
                         .apply(crate::ui::Action::Queue { req, next: false });
                 }
+                self.app.repaint_all();
+                self.run_frames(3)?;
+            }
+            Some("shuffle") => {
+                self.app.apply(crate::ui::Action::QueueShuffle);
                 self.app.repaint_all();
                 self.run_frames(3)?;
             }

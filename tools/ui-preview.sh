@@ -426,6 +426,9 @@ panel bar player-bar-next
 up-next
 frames 8
 panel main up-next
+shuffle
+frames 8
+panel main up-next-shuffled
 EOF
 
 cargo build -p frameplayerx
