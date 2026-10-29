@@ -132,13 +132,7 @@ impl App {
                     p.save_tracks(&self.services.library);
                 }
             }
-            Action::SelectQuality(q) => {
-                let transcode = match &q {
-                    playback::Quality::Transcode(id) => Some(id.clone()),
-                    _ => None,
-                };
-                self.play_quality(q, transcode, None);
-            }
+            Action::SelectQuality(q) => self.play_quality(q),
             Action::ResetPlacement => self.reset_placement(),
             Action::SetFavorite(id, f) => {
                 let r = self.services.library.set_favorite(id, f);

@@ -34,18 +34,16 @@ pub struct OpenRequest {
     pub quality: Quality,
     /// What to ask the server to transcode the file to
     /// ([`TranscodeTarget::id`]): what [`Quality::Transcode`] names, or
-    /// where Automatic moved to.
+    /// what Automatic fell back to.
     pub transcode: Option<String>,
-    /// Said in the control bar once it plays.
-    pub notice: Option<String>,
 }
 
 /// Whether the file plays as it is or the server transcodes it, as the
 /// Quality list in the audio and subtitles picker offers them.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub enum Quality {
-    /// The file; when it can't play here, or keeps stuttering, the server
-    /// transcodes it, one height down at a time.
+    /// The file; when it can't play here, the server transcodes it to the
+    /// tallest height it offers.
     #[default]
     Automatic,
     /// The file, whatever happens.
@@ -108,9 +106,6 @@ pub struct Playback {
     pub targets: Vec<TranscodeTarget>,
     /// What the server is transcoding it to; `None` for the file as it is.
     pub transcoding: Option<TranscodeTarget>,
-    /// Last stutter check for Automatic: when, the player's stall and
-    /// frame counts, and how many checks in a row found it stuttering.
-    stutter_check: (Instant, u64, u64, u64, u32),
 }
 
 /// The result of opening on a background thread.
@@ -303,7 +298,7 @@ pub fn open(
         .as_ref()
         .and_then(|id| targets.iter().find(|t| &t.id == id))
         .cloned();
-    let mut notice = req.notice.clone();
+    let mut notice = None;
     let (player, pick, transcoding) = match asked {
         Some(t) => {
             let (p, pick) = transcoded(&t).map_err(failed)?;
@@ -399,7 +394,6 @@ pub fn open(
             request: OpenRequest {
                 location,
                 transcode: transcoding.as_ref().map(|t| t.id.clone()),
-                notice: None,
                 ..req
             },
             title,
@@ -427,7 +421,6 @@ pub fn open(
             watch,
             targets,
             transcoding,
-            stutter_check: (Instant::now(), 0, 0, 0, 0),
         },
         scripts,
     })
@@ -681,57 +674,6 @@ impl Playback {
         }
     }
 
-    /// Every few seconds, under Automatic: what to have the server
-    /// transcode to when the video stuttered through the last two checks
-    /// (stalled or dropped frames, whether the decoder or the stream fell
-    /// behind). One check alone may be a seek's first seconds.
-    pub fn stutter_step(&mut self) -> Option<TranscodeTarget> {
-        let (since, stalls, dropped, shown, behind) = self.stutter_check;
-        if self.request.quality != Quality::Automatic
-            || self.targets.is_empty()
-            || since.elapsed().as_secs_f64() < STUTTER_CHECK_SECS
-        {
-            return None;
-        }
-        let st = self.player.stats();
-        let stuttered = !self.player.is_paused()
-            && falling_behind(
-                st.stalls - stalls,
-                st.frames_dropped - dropped,
-                st.frames_shown - shown,
-            );
-        let behind = if stuttered { behind + 1 } else { 0 };
-        self.stutter_check = (
-            Instant::now(),
-            st.stalls,
-            st.frames_dropped,
-            st.frames_shown,
-            behind,
-        );
-        if behind < 2 {
-            return None;
-        }
-        let height = self.player.info().video_stream().map_or(0, |v| v.height);
-        let next = next_down(&self.targets, self.transcoding.as_ref(), height).cloned();
-        log::info!(
-            "{} stutters ({} stalls, {} of {} frames dropped): {}",
-            self.title,
-            st.stalls - stalls,
-            st.frames_dropped - dropped,
-            st.frames_shown - shown + st.frames_dropped - dropped,
-            next.as_ref()
-                .map_or("nothing smaller to transcode to".into(), |t| format!(
-                    "moving to {}",
-                    t.label
-                ))
-        );
-        if next.is_none() {
-            // Said once; the checks go on in case it settles.
-            self.stutter_check.4 = 0;
-        }
-        next
-    }
-
     /// Every few seconds: when software decoding falls behind, says why in
     /// the control bar (the picture stutters with no other explanation).
     /// `hardware_on` is the hardware decoding setting.
@@ -965,25 +907,6 @@ pub fn wait_closed(limit: Duration) -> bool {
 
 const DECODE_CHECK_SECS: f64 = 10.0;
 
-/// How often Automatic checks for stutter: two checks in a row move it on.
-const STUTTER_CHECK_SECS: f64 = 6.0;
-
-/// Where Automatic moves to from `playing` (`None` for the file,
-/// `height` pixels tall): the next target shorter. From a file of unknown
-/// height, the tallest.
-fn next_down<'a>(
-    targets: &'a [TranscodeTarget],
-    playing: Option<&TranscodeTarget>,
-    height: u32,
-) -> Option<&'a TranscodeTarget> {
-    let below = match playing {
-        Some(t) => t.height.unwrap_or(0),
-        None if height == 0 => return targets.first(),
-        None => height,
-    };
-    targets.iter().find(|t| t.height.is_some_and(|h| h < below))
-}
-
 /// Over one check period: playback stalled more than once waiting for the
 /// decoder, or dropped more than 5% of frames.
 fn falling_behind(stalls: u64, dropped: u64, shown: u64) -> bool {
@@ -1183,25 +1106,6 @@ mod tests {
         assert_eq!(pb.transcoding.map(|t| t.label), Some("720p".to_string()));
         assert!(pb.notice.is_none());
         assert_eq!(*lock(&server.files), 0);
-    }
-
-    #[test]
-    fn automatic_steps_down_one_transcode_at_a_time() {
-        let t = |h: Option<u32>| TranscodeTarget {
-            id: format!("{h:?}"),
-            label: String::new(),
-            height: h,
-            seekable: true,
-        };
-        let all = [t(Some(2160)), t(Some(1440)), t(None), t(Some(720))];
-        let next = |playing: Option<&TranscodeTarget>, height| next_down(&all, playing, height);
-        // From the file: the tallest shorter than it, else the tallest.
-        assert_eq!(next(None, 3840), Some(&all[0]));
-        assert_eq!(next(None, 2160), Some(&all[1]));
-        assert_eq!(next(None, 0), Some(&all[0]));
-        assert_eq!(next(Some(&all[1]), 0), Some(&all[3]));
-        assert_eq!(next(Some(&all[3]), 0), None);
-        assert_eq!(next(None, 720), None);
     }
 
     #[test]
