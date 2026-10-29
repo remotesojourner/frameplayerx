@@ -543,16 +543,16 @@ press it for the Quality list beside the audio tracks and subtitles:
 
 - **Automatic** (the default): the file as it is. When the file can't play
   here (a format FramePlayerX has no decoder for, or a picture the hardware
-  decoder has no room for), or keeps stuttering for about 12 seconds, it
-  asks the server to transcode it one height down and says so on the
-  control bar. It only ever moves down, one step at a time.
+  decoder has no room for), it asks the server to transcode it to the
+  tallest height offered and says so on the control bar. It never changes
+  the quality while a video plays.
 - **Original**: the file as it is, whatever happens.
 - A height (**2160p**, **1440p**, …): the server transcodes the file to at
   most that height, the width in proportion, from where you were.
 
 The file always comes first: the server only transcodes when you pick a
-height, or when Automatic moves to one. The source's maximum height (edit
-the source) also caps the heights offered.
+height, or under Automatic when the file can't play. The source's maximum
+height (edit the source) also caps the heights offered.
 
 Skipping while the server transcodes asks it to start again from there,
 which takes a few seconds. A feed's height marked "can't skip" is

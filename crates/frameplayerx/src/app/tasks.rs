@@ -735,17 +735,14 @@ impl App {
         }
     }
 
-    /// Opens the video playing again from where it is, as `quality`, the
-    /// server transcoding it to `transcode` (the file as it is when `None`),
-    /// saying `notice` once it plays.
-    pub(super) fn play_quality(
-        &mut self,
-        quality: playback::Quality,
-        transcode: Option<String>,
-        notice: Option<String>,
-    ) {
+    /// Opens the video playing again from where it is, as `quality`.
+    pub(super) fn play_quality(&mut self, quality: playback::Quality) {
         let Some(p) = &self.playback else {
             return;
+        };
+        let transcode = match &quality {
+            playback::Quality::Transcode(id) => Some(id.clone()),
+            _ => None,
         };
         if p.request.quality == quality && p.request.transcode == transcode {
             return;
@@ -754,7 +751,6 @@ impl App {
             start_at: Some(p.player.position()),
             quality,
             transcode,
-            notice,
             ..p.request.clone()
         };
         self.open_request(req);
