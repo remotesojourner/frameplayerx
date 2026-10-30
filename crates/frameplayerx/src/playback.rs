@@ -59,6 +59,18 @@ pub enum Quality {
 }
 
 impl OpenRequest {
+    /// A persistent resource can only be opened through its embedded owner.
+    pub(crate) fn bound_source_id(&self) -> Result<Option<String>, String> {
+        if !fp_sources::is_source_location(&self.location) {
+            return Ok(self.source_id.clone());
+        }
+        let owner = fp_sources::location_owner(&self.location).ok_or(tr!("open-no-source"))?;
+        if self.source_id.as_deref().is_some_and(|id| id != owner) {
+            return Err(tr!("open-no-source").into());
+        }
+        Ok(Some(owner))
+    }
+
     /// What to call the video while it opens: the entry's or the record's
     /// title, else its file name.
     pub fn shown_title(&self) -> String {
@@ -153,28 +165,37 @@ fn kept_with_video(mut s: ViewSettings, format: VideoFormat) -> ViewSettings {
 
 /// Opens media; blocking (network probing), so run it on a job thread.
 pub fn open(
-    req: OpenRequest,
+    mut req: OpenRequest,
     opener: &Opener,
     library: &Library,
     settings: &Settings,
     reports: &Reports,
 ) -> Result<Opened, String> {
+    req.source_id = req.bound_source_id()?;
+    let legacy_record = (!fp_sources::is_source_location(&req.location))
+        .then(|| library.get_by_location(&req.location).ok().flatten())
+        .flatten()
+        .filter(|record| req.source_id.as_deref() == Some(record.source_id.as_str()));
     let name = last_segment(&req.location);
     let source = req.source_id.as_deref().and_then(|id| opener.source(id));
     // Feeds may need a details call to get the stream URL and metadata.
     let entry = match (&req.entry, &source) {
-        (Some(e), Some(src)) if src.kind() == fp_sources::SourceKind::Plex => {
+        (Some(e), Some(src)) if fp_sources::is_source_location(&e.location) => {
             Some(src.details(e).map_err(|e| crate::ui::errors::source(&e))?)
         }
         (Some(e), Some(src)) => Some(src.details(e).unwrap_or_else(|_| e.clone())),
         // From the library or home: a server's details still carry the
         // video's subtitle files and chapters. Its address only names the
         // server, so it goes by the title the library has until then.
-        (None, Some(src)) if src.as_catalog().is_some() => {
+        (None, Some(src))
+            if fp_sources::is_source_location(&req.location)
+                || src.canonical_location(&req.location).is_some()
+                || src.as_catalog().is_some() =>
+        {
             let title = req.title.clone().unwrap_or_else(|| name.clone());
             let e = Entry::new(title, req.location.clone(), EntryKind::Video);
             let details = src.details(&e);
-            if src.kind() == fp_sources::SourceKind::Plex {
+            if fp_sources::is_source_location(&req.location) {
                 Some(details.map_err(|e| crate::ui::errors::source(&e))?)
             } else {
                 details.ok()
@@ -182,13 +203,23 @@ pub fn open(
         }
         (e, _) => e.clone(),
     };
+    if let Some(entry) = &entry
+        && fp_sources::is_source_location(&entry.location)
+    {
+        let owner = fp_sources::location_owner(&entry.location).ok_or(tr!("open-no-source"))?;
+        if req.source_id.as_deref() != Some(owner.as_str()) {
+            return Err(tr!("open-no-source").into());
+        }
+    }
     let location = entry
         .as_ref()
         .map_or_else(|| req.location.clone(), |e| e.location.clone());
 
     // Library record: existing, or created for remote entries (and deleted
     // again if the video doesn't open, so nothing invisible is left behind).
-    let mut record = library.get_by_location(&location).ok().flatten();
+    // A colliding legacy record is kept during migration rather than losing
+    // its user data. Opening that history row must retain its own record ID.
+    let mut record = legacy_record.or_else(|| library.get_by_location(&location).ok().flatten());
     let mut created = None;
     if let (Some(e), Some(sid)) = (&entry, &req.source_id) {
         match &record {
@@ -487,7 +518,10 @@ pub fn open(
         playback: Playback {
             player,
             request: OpenRequest {
-                location,
+                // A legacy row retained after a migration collision keeps
+                // its own user state across quality changes and reopens.
+                location: record.as_ref().map_or(location, |r| r.location.clone()),
+                entry,
                 transcode: transcoding.as_ref().map(|t| t.id.clone()),
                 ..req
             },
@@ -1097,8 +1131,231 @@ mod tests {
     use super::*;
 
     #[test]
+    fn source_owned_requests_bind_the_owner_without_a_library_record() {
+        let location = fp_sources::location::encode("server", "mb", "item=movie&version=edition");
+        let mut request = OpenRequest {
+            location,
+            ..Default::default()
+        };
+        assert_eq!(
+            request.bound_source_id().unwrap().as_deref(),
+            Some("server")
+        );
+        request.source_id = Some("another-account".into());
+        assert!(request.bound_source_id().is_err());
+        request.source_id = None;
+        request.location = "source://wrong/server/mb/item".into();
+        assert!(request.bound_source_id().is_err());
+        request.location = "http://public.example/movie.mp4".into();
+        assert!(request.bound_source_id().unwrap().is_none());
+    }
+
+    #[test]
+    fn an_entry_cannot_change_another_sources_saved_metadata() {
+        let library = Library::open_in_memory().unwrap();
+        let private = fp_sources::location::encode("private", "http", "clip.mp4");
+        let id = library
+            .upsert_entry(
+                "private",
+                &Entry::new("Private title", &private, EntryKind::Video),
+            )
+            .unwrap()
+            .id;
+        let opener = Opener::new();
+        opener.insert_source(Arc::new(fp_sources::LocalSource::new(
+            &fp_sources::LocalConfig {
+                id: "public".into(),
+                name: "Public".into(),
+                root: "/".into(),
+            },
+        )));
+        let request = OpenRequest {
+            location: "/public/clip.mp4".into(),
+            source_id: Some("public".into()),
+            entry: Some(Entry::new("Changed title", private, EntryKind::Video)),
+            ..Default::default()
+        };
+        assert!(
+            open(
+                request,
+                &opener,
+                &library,
+                &Settings::default(),
+                &Reports::start()
+            )
+            .is_err()
+        );
+        assert_eq!(library.get(id).unwrap().unwrap().title, "Private title");
+        assert!(library.history(10).unwrap().is_empty());
+    }
+
+    #[test]
     fn titles_from_names() {
         assert_eq!(title_from_name("My.Video_2024.mkv"), "My Video 2024");
+    }
+
+    struct RootedClip {
+        root: &'static str,
+        opened: Arc<Mutex<Vec<(String, String)>>>,
+    }
+
+    impl Source for RootedClip {
+        fn id(&self) -> &str {
+            "rooted"
+        }
+        fn name(&self) -> &str {
+            "Rooted clip"
+        }
+        fn kind(&self) -> fp_sources::SourceKind {
+            fp_sources::SourceKind::Http
+        }
+        fn describe(&self) -> String {
+            self.root.into()
+        }
+        fn canonical_location(&self, location: &str) -> Option<String> {
+            let key = if fp_sources::is_source_location(location) {
+                let reference = fp_sources::location::decode(location)?;
+                if reference.source_id != self.id() || reference.kind != "http" {
+                    return None;
+                }
+                reference.key
+            } else {
+                location.strip_prefix(self.root)?.into()
+            };
+            Some(fp_sources::location::encode(self.id(), "http", &key))
+        }
+        fn list(&self, _: Option<&str>) -> fp_sources::Result<Vec<Entry>> {
+            Ok(Vec::new())
+        }
+        fn open(&self, location: &str) -> fp_sources::Result<Arc<dyn fp_core::ByteSource>> {
+            let reference = fp_sources::location::decode(location)
+                .filter(|r| r.source_id == self.id() && r.kind == "http" && r.key == "clip.mp4")
+                .ok_or_else(|| fp_sources::Error::Unsupported("not this source's clip".into()))?;
+            lock(&self.opened).push((self.root.into(), reference.key));
+            let clip = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../fp-media/tests/data/h264_aac_180_LR.mp4");
+            Ok(Arc::new(fp_core::source::FileSource::open(&clip)?))
+        }
+    }
+
+    fn reopen_rooted_clip(legacy_collision: bool) {
+        let library = Library::open_in_memory().unwrap();
+        let stable = fp_sources::location::encode("rooted", "http", "clip.mp4");
+        let original = "http://old.example/videos/clip.mp4";
+        let canonical_id = library
+            .upsert(&fp_library::MediaUpsert::new(&stable, "rooted"))
+            .unwrap()
+            .id;
+        let canonical_view = ViewSettings {
+            zoom: 1.25,
+            brightness: 0.1,
+            ..Default::default()
+        };
+        library
+            .set_view_settings(canonical_id, Some(&canonical_view))
+            .unwrap();
+        let (expected_id, expected_view) = if legacy_collision {
+            let id = library
+                .upsert(&fp_library::MediaUpsert::new(original, "rooted"))
+                .unwrap()
+                .id;
+            let view = ViewSettings {
+                zoom: 1.75,
+                brightness: -0.2,
+                ..Default::default()
+            };
+            library.set_view_settings(id, Some(&view)).unwrap();
+            library.set_favorite(id, true).unwrap();
+            (id, view)
+        } else {
+            (canonical_id, canonical_view)
+        };
+        let playlist = library.create_playlist("Keep this version").unwrap();
+        library.add_to_playlist(playlist, &[expected_id]).unwrap();
+        let opened = Arc::new(Mutex::new(Vec::new()));
+        let opener = Opener::new();
+        opener.insert_source(Arc::new(RootedClip {
+            root: "http://old.example/videos/",
+            opened: opened.clone(),
+        }));
+        let settings = Settings {
+            hardware_decoding: false,
+            resume: false,
+            haptics_enabled: false,
+            ..Default::default()
+        };
+        let reports = Reports::start();
+        let request = OpenRequest {
+            location: original.into(),
+            source_id: Some("rooted".into()),
+            entry: Some(Entry::new("Clip", original, EntryKind::Video)),
+            paused: true,
+            ..Default::default()
+        };
+        let first = open(request, &opener, &library, &settings, &reports)
+            .unwrap()
+            .playback;
+        assert_eq!(first.record_id, Some(expected_id));
+        assert_eq!(first.settings, expected_view);
+        assert_eq!(first.request.entry.as_ref().unwrap().location, stable);
+        let mut reopen = first.request.clone();
+        reopen.quality = Quality::Original;
+        reopen.start_at = Some(0.0);
+        first.close(&library);
+
+        // Quality changes clone Playback.request. The source now has a
+        // different endpoint and must receive the canonical entry, while
+        // a legacy row retained after a collision must keep its own ID.
+        opener.insert_source(Arc::new(RootedClip {
+            root: "https://new.example/moved/",
+            opened: opened.clone(),
+        }));
+        let second = open(reopen, &opener, &library, &settings, &reports)
+            .unwrap()
+            .playback;
+        assert_eq!(second.record_id, Some(expected_id));
+        assert_eq!(second.settings, expected_view);
+        assert_eq!(second.request.entry.as_ref().unwrap().location, stable);
+        assert_eq!(
+            second.request.location,
+            if legacy_collision { original } else { &stable }
+        );
+        assert_eq!(
+            *lock(&opened),
+            [
+                ("http://old.example/videos/".into(), "clip.mp4".into()),
+                ("https://new.example/moved/".into(), "clip.mp4".into()),
+            ]
+        );
+        let history = library.history(10).unwrap();
+        assert_eq!(history.len(), 2);
+        assert!(history.iter().all(|entry| entry.media_id == expected_id));
+        assert_eq!(
+            library.playlist_items(playlist).unwrap()[0].record.id,
+            expected_id
+        );
+        assert_eq!(
+            library.get(canonical_id).unwrap().unwrap().view_settings,
+            Some(canonical_view)
+        );
+        if legacy_collision {
+            assert!(library.get(expected_id).unwrap().unwrap().favorite);
+            assert!(library.get_by_location(original).unwrap().is_some());
+        } else {
+            assert!(library.get_by_location(original).unwrap().is_none());
+        }
+        second.close(&library);
+        assert!(wait_closed(Duration::from_secs(5)));
+    }
+
+    #[test]
+    fn canonical_entries_survive_endpoint_changes_and_quality_reopens() {
+        reopen_rooted_clip(false);
+    }
+
+    #[test]
+    fn colliding_legacy_history_keeps_its_user_data_on_quality_reopen() {
+        reopen_rooted_clip(true);
     }
 
     /// A server whose file this player can't read, which transcodes it to

@@ -9,6 +9,7 @@
 use super::{
     MediaBrowserSource, detect_from_name, encode_location, ticks_to_seconds, video_3d_format,
 };
+use crate::Source;
 use crate::error::{Error, Result};
 use crate::json::{array, boolean, get, num, text};
 use crate::timeutil::parse_iso8601;
@@ -549,6 +550,26 @@ pub(crate) fn video_libraries(items: Vec<MbItem>) -> Vec<MbItem> {
 }
 
 impl MediaBrowserSource {
+    fn stable_item(&self, item: &mut MbItem) {
+        if let Some(location) = self.canonical_location(&item.location) {
+            item.location = location;
+        }
+        for asset in [&mut item.poster, &mut item.landscape, &mut item.backdrop] {
+            if let Some(url) = asset.as_mut()
+                && let Some(stable) = self.stable_asset(url)
+            {
+                *url = stable;
+            }
+        }
+    }
+
+    fn stable_items(&self, mut items: Vec<MbItem>) -> Vec<MbItem> {
+        for item in &mut items {
+            self.stable_item(item);
+        }
+        items
+    }
+
     fn user(&self) -> Result<String> {
         Ok(self.client()?.1)
     }
@@ -557,7 +578,7 @@ impl MediaBrowserSource {
     pub fn libraries(&self) -> Result<Vec<MbItem>> {
         let user = self.user()?;
         let v = self.api_get_json(&format!("/Users/{user}/Views?{IMAGES}"))?;
-        Ok(video_libraries(parse_list(&v, &self.base_url)))
+        Ok(self.stable_items(video_libraries(parse_list(&v, &self.base_url))))
     }
 
     /// One page of a listing; a page of a shuffle (`query.ids`) in the
@@ -569,6 +590,7 @@ impl MediaBrowserSource {
         if !query.ids.is_empty() {
             page.items = in_order(page.items, &query.ids);
         }
+        page.items = self.stable_items(page.items);
         Ok(page)
     }
 
@@ -623,6 +645,7 @@ impl MediaBrowserSource {
         item.version = self
             .chosen_version(id)
             .filter(|c| item.versions.iter().any(|v| &v.id == c));
+        self.stable_item(&mut item);
         Ok(item)
     }
 
@@ -634,14 +657,14 @@ impl MediaBrowserSource {
         let mut found = Vec::new();
         for (section, types) in SEARCH_SECTIONS {
             let v = self.api_get_json(&search_path(&user, text, types, limit))?;
-            let items = parse_list(&v, &self.base_url);
+            let items = self.stable_items(parse_list(&v, &self.base_url));
             if !items.is_empty() {
                 found.push((section, items));
             }
         }
         // The titles still show when this fails.
         if let Ok(v) = self.api_get_json(&people_search_path(&user, text, limit)) {
-            let people = parse_list(&v, &self.base_url);
+            let people = self.stable_items(parse_list(&v, &self.base_url));
             if !people.is_empty() {
                 found.push(("People", people));
             }
@@ -698,7 +721,7 @@ impl MediaBrowserSource {
         let v = self.api_get_json(&format!(
             "/Users/{user}/Items/Resume?Limit={limit}&MediaTypes=Video&Fields={LIST_FIELDS}&{IMAGES}"
         ))?;
-        Ok(parse_list(&v, &self.base_url))
+        Ok(self.stable_items(parse_list(&v, &self.base_url)))
     }
 
     /// The next episode to watch of each series (of one series with
@@ -711,7 +734,7 @@ impl MediaBrowserSource {
             path += &format!("&SeriesId={}", encode_form_value(s));
         }
         let v = self.api_get_json(&path)?;
-        Ok(parse_list(&v, &self.base_url))
+        Ok(self.stable_items(parse_list(&v, &self.base_url)))
     }
 
     /// Newest additions to a library.
@@ -721,7 +744,7 @@ impl MediaBrowserSource {
             "/Users/{user}/Items/Latest?ParentId={}&Limit={limit}&Fields={LIST_FIELDS}&{IMAGES}",
             encode_form_value(library)
         ))?;
-        Ok(parse_list(&v, &self.base_url))
+        Ok(self.stable_items(parse_list(&v, &self.base_url)))
     }
 
     /// The seasons of a series.
@@ -731,7 +754,7 @@ impl MediaBrowserSource {
             "/Shows/{}/Seasons?UserId={user}&Fields={LIST_FIELDS}&{IMAGES}",
             encode_form_value(series)
         ))?;
-        Ok(parse_list(&v, &self.base_url))
+        Ok(self.stable_items(parse_list(&v, &self.base_url)))
     }
 
     /// The episodes of a series, of one season with `season`.
@@ -745,7 +768,7 @@ impl MediaBrowserSource {
             path += &format!("&SeasonId={}", encode_form_value(s));
         }
         let v = self.api_get_json(&path)?;
-        Ok(parse_list(&v, &self.base_url))
+        Ok(self.stable_items(parse_list(&v, &self.base_url)))
     }
 
     /// The front page: libraries, then rows that are left out when the

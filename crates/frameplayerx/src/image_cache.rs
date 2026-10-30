@@ -221,7 +221,7 @@ impl ImageCache {
         plain: &str,
         old: Option<&Meta>,
     ) -> Result<Option<Vec<u8>>, String> {
-        if url.starts_with("plex://") {
+        if fp_sources::is_source_location(url) {
             let bytes = self
                 .opener
                 .as_ref()
@@ -478,6 +478,38 @@ mod tests {
         let mut m = cache.read_meta(&k).unwrap();
         m.checked -= RECHECK.as_secs() + 60;
         cache.write_meta(&k, &m).unwrap();
+    }
+
+    #[test]
+    fn persistent_artwork_uses_its_owning_source_and_keeps_a_stable_cache_key() {
+        let server = server();
+        let opener = Arc::new(crate::services::Opener::new());
+        assert!(
+            opener
+                .set_sources(&[fp_sources::SourceConfig::Http(fp_sources::HttpConfig {
+                    id: "pictures".into(),
+                    name: "Pictures".into(),
+                    url: server.base.clone(),
+                    credentials: None,
+                    insecure_tls: false,
+                })])
+                .is_empty()
+        );
+        let dir = temp_dir("owned");
+        let cache = ImageCache::new(dir.clone(), 500).with_opener(opener);
+        let location = fp_sources::location::encode("pictures", "http", "a");
+        assert_eq!(cache.get(&location).unwrap().0, b"0123456789");
+        let hits = server.hits.load(Ordering::SeqCst);
+        assert_eq!(cache.get(&location).unwrap().0, b"0123456789");
+        assert_eq!(server.hits.load(Ordering::SeqCst), hits);
+        assert!(
+            cache
+                .read_meta(&key(&location).0)
+                .unwrap()
+                .url
+                .starts_with("source://")
+        );
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

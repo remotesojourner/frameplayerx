@@ -501,6 +501,7 @@ impl App {
 /// The library's video for `req`, given a row from its entry when it has
 /// none yet, as opening it does.
 fn media_of(lib: &Library, req: &OpenRequest) -> Option<fp_library::MediaId> {
+    let source_id = req.bound_source_id().ok()?;
     let location = fp_core::volume::stable(&req.location).into_owned();
     if let Ok(Some(r)) = lib.get_by_location(&location) {
         return Some(r.id);
@@ -509,7 +510,7 @@ fn media_of(lib: &Library, req: &OpenRequest) -> Option<fp_library::MediaId> {
         fp_core::Entry::new(req.shown_title(), &location, fp_core::EntryKind::Video)
     });
     e.location = location;
-    lib.upsert_entry(req.source_id.as_deref().unwrap_or(""), &e)
+    lib.upsert_entry(source_id.as_deref().unwrap_or(""), &e)
         .inspect_err(|err| log::warn!("adding {} to the library: {err}", e.location))
         .ok()
         .map(|o| o.id)

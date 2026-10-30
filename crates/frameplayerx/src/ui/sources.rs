@@ -594,8 +594,8 @@ fn add_form(ui: &mut egui::Ui, v: &mut View) {
     };
     let save = if f.kind == SourceKind::Plex {
         super::plex::form(ui, f, id, v.actions)
-    } else if let Some(SourceConfig::Dlna(old)) = &editing {
-        dlna_name_form(ui, f, old)
+    } else if let Some(SourceConfig::Dlna(_)) = &editing {
+        dlna_edit_form(ui, f, id)
     } else if f.kind == SourceKind::Dlna {
         dlna_search(ui, v.actions, &dlna_found, searching, &id)
     } else if f.kind == SourceKind::Library {
@@ -762,36 +762,36 @@ fn library_form(
     save
 }
 
-/// A server found on the network: only its name is the user's.
-fn dlna_name_form(
-    ui: &mut egui::Ui,
-    f: &mut SourceForm,
-    old: &fp_sources::DlnaConfig,
-) -> Option<SourceConfig> {
+/// The name and description address of an existing discovered server.
+fn dlna_edit_form(ui: &mut egui::Ui, f: &mut SourceForm, id: String) -> Option<SourceConfig> {
     let mut save = None;
     widgets::rows(ui, |r| {
-        r.row(tr!("source-name"), Some(old.location.as_str()), |ui| {
-            ui.add(
-                egui::TextEdit::singleline(&mut f.name)
-                    .margin(egui::Margin::symmetric(12, 9))
-                    .font(theme::font(Weight::Regular, 17.0))
-                    .desired_width(460.0),
-            );
+        r.row(
+            tr!("source-name"),
+            Some(tr!("source-name-desc-server")),
+            |ui| text_field(ui, &mut f.name, name_hint(f.kind), false),
+        );
+        r.row(tr!("source-address"), None, |ui| {
+            text_field(ui, &mut f.address, address_hint(f.kind), false);
         });
     });
     ui.add_space(12.0);
-    let name = f.name.trim();
-    if ui
-        .add_enabled_ui(!name.is_empty(), |ui| {
-            widgets::button(ui, Some(icons::CHECK), tr!("common-save"), Kind::Primary)
-        })
-        .inner
-        .clicked()
-    {
-        let mut c = old.clone();
-        c.name = name.to_string();
-        save = Some(SourceConfig::Dlna(c));
-    }
+    ui.horizontal(|ui| match build_config(f, id) {
+        Ok(cfg) => {
+            if widgets::button(ui, Some(icons::CHECK), tr!("common-save"), Kind::Primary).clicked()
+            {
+                save = Some(cfg);
+            }
+        }
+        Err(e) => {
+            ui.add_enabled_ui(false, |ui| {
+                widgets::button(ui, Some(icons::CHECK), tr!("common-save"), Kind::Primary)
+            });
+            if !f.address.is_empty() {
+                ui.label(RichText::new(e).color(theme::WARN));
+            }
+        }
+    });
     save
 }
 
@@ -1147,7 +1147,7 @@ pub fn edit_form(cfg: &SourceConfig) -> SourceForm {
             f.address = c.url.clone();
             f.insecure_tls = c.insecure_tls;
         }
-        SourceConfig::Dlna(_) => {}
+        SourceConfig::Dlna(c) => f.address = c.location.clone(),
         SourceConfig::Plex(c) => {
             f.address = c.url.clone();
             f.insecure_tls = c.insecure_tls;
@@ -1354,13 +1354,74 @@ pub fn build_config(f: &SourceForm, id: String) -> Result<SourceConfig, String> 
             })
         }
         SourceKind::Plex => return Err(tr!("plex-test-required").into()),
-        SourceKind::Dlna => return Err(tr!("source-error-pick-server").into()),
+        SourceKind::Dlna => {
+            let Some(SourceConfig::Dlna(old)) = &f.editing else {
+                return Err(tr!("source-error-pick-server").into());
+            };
+            // A device description is a resource URL, not a server root;
+            // keep its trailing slash and query exactly as entered.
+            let location = urlutil::with_http_scheme(&address);
+            if !urlutil::is_http_url(&location) || urlutil::split_credentials(&location).is_err() {
+                return Err(tr!("source-error-http").into());
+            }
+            let mut config = old.clone();
+            config.name = name;
+            if location != old.location {
+                config.location = location;
+                config.control_url = None;
+                config.service_type = None;
+            }
+            SourceConfig::Dlna(config)
+        }
     })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn editing_dlna_keeps_identity_and_refreshes_control_after_an_address_change() {
+        let saved = fp_sources::DlnaConfig {
+            id: "living-room".into(),
+            name: "Living room".into(),
+            location: "http://old.example:8200/description/".into(),
+            control_url: Some("http://old.example:8200/control/content".into()),
+            service_type: Some("urn:schemas-upnp-org:service:ContentDirectory:1".into()),
+        };
+        let mut form = edit_form(&SourceConfig::Dlna(saved.clone()));
+        assert_eq!(form.address, saved.location);
+        form.name = "  Media server  ".into();
+        let renamed = build_config(&form, "unused-new-id".into()).unwrap();
+        assert_eq!(
+            renamed,
+            SourceConfig::Dlna(fp_sources::DlnaConfig {
+                name: "Media server".into(),
+                ..saved.clone()
+            })
+        );
+
+        form.address = " https://new.example:8443/device.xml?instance=2 ".into();
+        assert_eq!(
+            build_config(&form, "unused-new-id".into()).unwrap(),
+            SourceConfig::Dlna(fp_sources::DlnaConfig {
+                id: saved.id.clone(),
+                name: "Media server".into(),
+                location: "https://new.example:8443/device.xml?instance=2".into(),
+                control_url: None,
+                service_type: None,
+            })
+        );
+        for address in ["", "ftp://new.example/device.xml", "http://"] {
+            form.address = address.into();
+            assert!(build_config(&form, saved.id.clone()).is_err(), "{address}");
+        }
+
+        // Adding still goes through discovery rather than this edit form.
+        form.address = "http://new.example/device.xml".into();
+        form.editing = None;
+        assert!(build_config(&form, "new-server".into()).is_err());
+    }
 
     #[test]
     fn editing_a_linked_plex_source_keeps_code_sign_in_without_a_device_key() {

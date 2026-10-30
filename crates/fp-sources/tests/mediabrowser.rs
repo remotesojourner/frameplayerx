@@ -141,9 +141,10 @@ fn mediabrowser_full_lifecycle_browse_stream_and_progress() {
     assert_eq!(detailed.markers[1], (30.0, "Drop".to_string()));
     assert_eq!(detailed.subtitles.len(), 1);
     assert!(
-        detailed.subtitles[0]
-            .location
-            .contains("/Videos/item_rollercoaster/ms_1/Subtitles/2/Stream.srt")
+        fp_sources::location::decode(&detailed.subtitles[0].location)
+            .unwrap()
+            .key
+            .contains("Videos/item_rollercoaster/ms_1/Subtitles/2/Stream.srt")
     );
 
     // 4. Sidecars
@@ -450,10 +451,18 @@ fn a_version_location_streams_that_version() {
     // The details name the version that plays: the tallest, else the one chosen.
     let entry = Entry::new("Beach", plain.clone(), EntryKind::Video);
     let tallest = src.details(&entry).unwrap();
-    assert_eq!(tallest.location, format!("{plain}&version=ms_8k"));
+    assert_eq!(
+        tallest.location,
+        src.canonical_location(&format!("{plain}&version=ms_8k"))
+            .unwrap()
+    );
     mb.set_version(&plain, Some("ms_4k"));
     let chosen = src.details(&entry).unwrap();
-    assert_eq!(chosen.location, format!("{plain}&version=ms_4k"));
+    assert_eq!(
+        chosen.location,
+        src.canonical_location(&format!("{plain}&version=ms_4k"))
+            .unwrap()
+    );
 
     // A version's location plays it, whatever is chosen now.
     mb.set_version(&plain, None);

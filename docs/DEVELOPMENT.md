@@ -146,8 +146,41 @@ it into P010 planes in a compute pass.
 **Sources and browsing.** Every source implements one `Source` trait
 (`list`, `open`, `details`). Each kind gets its own browser in `ui/`:
 `local.rs`, `folders.rs`, `catalog.rs` and `feeds.rs`, built from the
-shared pieces in `ui/page.rs`. Browsing a network source writes nothing to
-the database; a video gets a row when it's opened.
+shared pieces in `ui/page.rs`. Network browsing does not index new videos
+in the database; a video gets a row when it's opened. Browsing can migrate
+existing rows after learning their stable identities.
+
+Persistent source references use
+`source://source/<encoded-source-id>/<kind>/<encoded-key>`
+(`fp-sources/src/location.rs`). Each component is encoded separately; the
+key is one opaque segment, including any encoded path separators. HTTP(S),
+WebDAV and SMB keys are relative to the configured root; Jellyfin and Emby
+keys retain item and version IDs, and DLNA uses object IDs rather than
+resource URLs. Feeds use published stable scene IDs where available;
+otherwise scene, media and asset URLs remain exactly as published,
+including external and signed URLs. Changing the configured feed address
+does not rebase those URLs. Plex keeps its existing format described below.
+Sources resolve these references against their current configuration at
+open time. The configured source ID is the namespace: editing its endpoint
+preserves identity, while removing and adding it again creates a new one.
+Local paths and removable-volume identities keep their existing formats.
+
+`Source::canonical_location` performs no I/O: it recognizes owned legacy
+locations from configuration or aliases learned while browsing. External
+or signed URLs are not guessed; a published feed ID can identify a signed
+scene URL, while an unknown old DLNA URL cannot be mapped from its address
+alone. The opener dispatches every source-qualified location to its exact
+owner, including artwork, scripts and subtitles; missing or mismatched
+owners fail without trying another source or plain HTTP.
+
+`Services` migrates legacy references before starting the metadata worker
+and before replacing source configurations, while the old endpoint/root
+is still known. Browsing retries migration after learning aliases.
+`Library::rewrite_source_locations` updates only locator columns, including
+sidecars, artwork and selected subtitle files, in one source-scoped
+transaction. Media primary keys, user settings and history/playlist
+foreign keys stay intact. A location collision rolls back the whole
+transaction and is logged; rows are never merged or replaced.
 
 Jellyfin, Emby and Plex implement `fp_sources::Catalog`, the shared catalog
 query, item and capability contract. `ui/catalog.rs` owns their page stack;

@@ -32,6 +32,7 @@ pub mod http;
 pub mod httpdir;
 mod json;
 pub mod local;
+pub mod location;
 pub mod mediabrowser;
 pub mod plex;
 pub mod sidecar;
@@ -90,6 +91,12 @@ pub trait Source: Send + Sync {
     /// One-line description for logs and the UI, without secrets.
     fn describe(&self) -> String;
 
+    /// Converts a location owned by this source to its persistent identity.
+    /// This performs no I/O. Unknown or external locations are left unchanged.
+    fn canonical_location(&self, _location: &str) -> Option<String> {
+        None
+    }
+
     /// Lists a folder. `None` lists the root of the source.
     fn list(&self, location: Option<&str>) -> Result<Vec<Entry>>;
 
@@ -116,10 +123,28 @@ pub trait Source: Send + Sync {
     }
 
     /// Completes an entry with details that are too expensive to fetch for a
-    /// whole listing (feeds: format, scripts, subtitles, markers). Other
-    /// sources return the entry unchanged.
+    /// whole listing (feeds: format, scripts, subtitles, markers). The default
+    /// converts recognized locations to this source's persistent identities.
     fn details(&self, entry: &Entry) -> Result<Entry> {
-        Ok(entry.clone())
+        let mut entry = entry.clone();
+        if let Some(location) = self.canonical_location(&entry.location) {
+            entry.location = location;
+        }
+        if let Some(url) = entry.thumbnail_url.as_mut()
+            && let Some(location) = self.canonical_location(url)
+        {
+            *url = location;
+        }
+        for location in entry
+            .scripts
+            .iter_mut()
+            .chain(entry.subtitles.iter_mut().map(|s| &mut s.location))
+        {
+            if let Some(stable) = self.canonical_location(location) {
+                *location = stable;
+            }
+        }
+        Ok(entry)
     }
 
     /// Finds the haptic scripts (`stem.funscript`, `stem.<axis>.funscript`)
@@ -187,6 +212,18 @@ pub trait Source: Send + Sync {
     fn as_catalog(&self) -> Option<&dyn Catalog> {
         None
     }
+}
+
+/// Whether a location binds its resource to one configured source.
+pub fn is_source_location(location: &str) -> bool {
+    location.split_once(':').is_some_and(|(scheme, _)| {
+        scheme.eq_ignore_ascii_case("source") || scheme.eq_ignore_ascii_case("plex")
+    })
+}
+
+/// The exact owner of a persistent source location, including Plex items.
+pub fn location_owner(location: &str) -> Option<String> {
+    location::owner(location).or_else(|| plex::owner(location))
 }
 
 /// Default [`Source::sidecars`]: the entry's own scripts and subtitles plus

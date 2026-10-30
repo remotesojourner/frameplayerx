@@ -104,7 +104,38 @@ fn split_url(location: &str) -> (&str, &str, &str) {
 /// Decoded last non-empty path segment of a URL or path: the file or folder
 /// name. Empty for a bare host.
 pub fn last_segment(location: &str) -> String {
+    if let Some(reference) = crate::location::decode(location) {
+        // DLNA resource URLs are opaque. The durable reference carries
+        // the server's filename separately from the object ID so subtitle
+        // decoders and haptic axis detection retain its extension/suffix.
+        match reference.kind.as_str() {
+            "dlna-file" => {
+                if let Ok((_id, name)) = serde_json::from_str::<(String, String)>(&reference.key) {
+                    return name;
+                }
+            }
+            "dlna-asset" => {
+                if let Ok((_id, _role, _index, name)) =
+                    serde_json::from_str::<(String, String, usize, String)>(&reference.key)
+                {
+                    return name;
+                }
+            }
+            _ => {}
+        }
+        let key = match reference.kind.as_str() {
+            "http" | "webdav" | "smb" | "mb-asset" => Some(reference.key.as_str()),
+            _ => None,
+        };
+        if let Some(key) = key {
+            return path_last_segment(key.split(['?', '#']).next().unwrap_or(key));
+        }
+    }
     let (_, path, _) = split_url(location);
+    path_last_segment(path)
+}
+
+fn path_last_segment(path: &str) -> String {
     let seg = path
         .trim_end_matches(['/', '\\'])
         .rsplit(['/', '\\'])
@@ -420,6 +451,36 @@ mod tests {
         assert_eq!(parent_url("http://h/a").as_deref(), Some("http://h/"));
         assert_eq!(parent_url("http://h/"), None);
         assert_eq!(parent_url("http://h"), None);
+    }
+
+    #[test]
+    fn owned_path_names_keep_escaping_and_exclude_folders_and_queries() {
+        for kind in ["http", "webdav", "smb", "mb-asset"] {
+            let uri = crate::location::encode(
+                "source/id",
+                kind,
+                "folder_180_LR/Movie%20%C3%BC%2520.roll.funscript?name=other.srt",
+            );
+            assert_eq!(last_segment(&uri), "Movie ü%20.roll.funscript", "{kind}");
+        }
+    }
+
+    #[test]
+    fn dlna_filename_hints_are_independent_of_opaque_object_ids() {
+        let file_key =
+            serde_json::to_string(&("object:7/../subtitle.srt", "Movie ü%20.roll.funscript"))
+                .unwrap();
+        let file = crate::location::encode("nas/id", "dlna-file", &file_key);
+        assert_eq!(last_segment(&file), "Movie ü%20.roll.funscript");
+        let asset_key = serde_json::to_string(&(
+            "object:7/../Movie.roll.funscript",
+            "subtitle",
+            0,
+            "Movie ü%20.en.srt",
+        ))
+        .unwrap();
+        let asset = crate::location::encode("nas/id", "dlna-asset", &asset_key);
+        assert_eq!(last_segment(&asset), "Movie ü%20.en.srt");
     }
 
     #[test]

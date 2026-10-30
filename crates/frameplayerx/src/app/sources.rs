@@ -2,6 +2,18 @@
 
 use super::*;
 
+fn request_source(library: &Library, req: &OpenRequest) -> Option<String> {
+    fp_sources::location_owner(&req.location)
+        .or_else(|| req.source_id.clone())
+        .or_else(|| {
+            library
+                .get_by_location(&req.location)
+                .ok()
+                .flatten()
+                .map(|r| r.source_id)
+        })
+}
+
 impl App {
     /// Whether source `id` has a PIN and is not unlocked.
     pub(super) fn source_locked(&self, id: &str) -> bool {
@@ -43,14 +55,7 @@ impl App {
         if self.settings.source_pins.is_empty() {
             return None;
         }
-        let source = req.source_id.clone().or_else(|| {
-            self.services
-                .library
-                .get_by_location(&req.location)
-                .ok()
-                .flatten()
-                .map(|r| r.source_id)
-        })?;
+        let source = request_source(&self.services.library, req)?;
         self.source_locked(&source).then_some(source)
     }
 
@@ -112,6 +117,18 @@ impl App {
         let lib = self.services.library.clone();
         self.jobs.spawn("list", move || {
             let result = src.list(location.as_deref()).map(|mut e| {
+                // Browsing can teach feeds and DLNA the stable IDs behind
+                // legacy media URLs. Convert those rows before looking them up.
+                if matches!(
+                    src.kind(),
+                    fp_sources::SourceKind::Dlna
+                        | fp_sources::SourceKind::DeoVr
+                        | fp_sources::SourceKind::HereSphere
+                ) && let Err(error) = lib
+                    .rewrite_source_locations(&source, |location| src.canonical_location(location))
+                {
+                    log::warn!("cannot update saved media locations for source {source}: {error}");
+                }
                 // The library's pictures for these videos: where one was
                 // left off, or a thumbnail made for one the server has none
                 // for.
@@ -641,4 +658,25 @@ fn scene_details(
 ) -> Result<fp_sources::SceneInfo, String> {
     let feed = src.as_scene_feed().ok_or(tr!("source-not-scene-feed"))?;
     feed.scene(url, full).map_err(|e| ui::errors::source(&e))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_unindexed_owned_resource_keeps_its_source_pin() {
+        let library = Library::open_in_memory().unwrap();
+        let mut req = OpenRequest {
+            location: fp_sources::location::encode("private", "http", "movie.mp4"),
+            ..Default::default()
+        };
+        let pins = std::collections::BTreeMap::from([("private".into(), "a stored hash".into())]);
+        let unlocked = std::collections::HashSet::new();
+        let source = request_source(&library, &req).unwrap();
+        assert_eq!(source, "private");
+        assert!(crate::pin::locked(&pins, &unlocked, &source));
+        req.source_id = Some("public".into());
+        assert_eq!(request_source(&library, &req).as_deref(), Some("private"));
+    }
 }

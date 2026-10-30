@@ -11,8 +11,9 @@
 //! Parsing is tolerant: numbers may arrive as strings, unknown fields are
 //! ignored and missing ones fall back to sensible defaults.
 //!
-//! Locations: group folders are `<feed url>#group=<encoded name>`, scenes
-//! are their scene/API URL, scripts and subtitles their direct URL.
+//! Source-owned locations retain published scene IDs. Scene and asset URLs
+//! otherwise remain unchanged: their addresses need not follow the feed's
+//! endpoint, even when they share an origin.
 
 mod deovr;
 mod heresphere;
@@ -203,6 +204,14 @@ pub struct FeedSource {
     max_height: Option<u32>,
     /// Each scene's event server, as its details named it.
     event_servers: Mutex<HashMap<String, String>>,
+    scene_links: Mutex<SceneLinks>,
+}
+
+#[derive(Default)]
+struct SceneLinks {
+    by_url: HashMap<String, String>,
+    by_reference: HashMap<String, String>,
+    entries: HashMap<String, Entry>,
 }
 
 impl std::fmt::Debug for FeedSource {
@@ -249,7 +258,47 @@ impl FeedSource {
             creds,
             max_height: config.max_height,
             event_servers: Mutex::new(HashMap::new()),
+            scene_links: Mutex::new(SceneLinks::default()),
         })
+    }
+
+    fn location_kind(&self) -> &'static str {
+        match self.protocol {
+            Protocol::DeoVr => "deovr",
+            Protocol::HereSphere => "heresphere",
+        }
+    }
+
+    fn resolved_location(&self, location: &str) -> Result<String> {
+        if !crate::is_source_location(location) {
+            return Ok(location.into());
+        }
+        let reference = crate::location::decode(location)
+            .filter(|reference| reference.source_id == self.id)
+            .ok_or_else(|| Error::invalid(location, "not a location of this scene source"))?;
+        if reference.kind == format!("{}-id", self.location_kind()) {
+            // Resolve the published ID afresh: the media/API URL may be signed
+            // or have changed since the listing was saved.
+            self.groups(&self.url)?;
+            return lock(&self.scene_links)
+                .by_reference
+                .get(location)
+                .cloned()
+                .ok_or_else(|| Error::NotFound("scene is no longer in the feed".into()));
+        }
+        if reference.kind == format!("{}-group", self.location_kind()) {
+            return Ok(group_location(&self.url, &reference.key));
+        }
+        Err(Error::invalid(
+            location,
+            "not a location of this scene source",
+        ))
+    }
+
+    fn stable_entry(&self, entry: &mut Entry) {
+        if let Some(stable) = self.canonical_location(&entry.location) {
+            entry.location = stable;
+        }
     }
 
     /// Fetches a document; `Ok(None)` when the server answered with
@@ -335,10 +384,56 @@ impl FeedSource {
 
     fn groups(&self, feed_url: &str) -> Result<Vec<SceneGroup>> {
         let v = self.fetch_required(feed_url, None)?;
-        match self.protocol {
-            Protocol::DeoVr => Ok(deovr::parse_deovr_root(&v, feed_url)),
-            Protocol::HereSphere => heresphere::parse_heresphere_library(&v, feed_url),
+        let mut groups = match self.protocol {
+            Protocol::DeoVr => deovr::parse_deovr_root(&v, feed_url),
+            Protocol::HereSphere => heresphere::parse_heresphere_library(&v, feed_url)?,
+        };
+        let mut published = HashMap::<String, Option<String>>::new();
+        if self.protocol == Protocol::DeoVr {
+            for scene in array(&v, "scenes")
+                .iter()
+                .flat_map(|group| array(group, "list"))
+            {
+                let id = scene.get("id").and_then(|id| {
+                    id.as_str()
+                        .map(str::to_string)
+                        .or_else(|| id.as_u64().map(|id| id.to_string()))
+                });
+                let address = url_field(scene, "video_url", feed_url)
+                    .or_else(|| url_field(scene, "videoUrl", feed_url));
+                if let Some((id, address)) = id.filter(|id| !id.is_empty()).zip(address) {
+                    published
+                        .entry(id)
+                        .and_modify(|old| {
+                            if old.as_ref() != Some(&address) {
+                                *old = None;
+                            }
+                        })
+                        .or_insert(Some(address));
+                }
+            }
         }
+        let ids: HashMap<_, _> = published
+            .into_iter()
+            .filter_map(|(id, address)| address.map(|address| (address, id)))
+            .collect();
+        let mut links = SceneLinks::default();
+        for group in &mut groups {
+            for entry in &mut group.scenes {
+                let address = entry.location.clone();
+                let stable = ids.get(&address).map(|id| {
+                    crate::location::encode(&self.id, &format!("{}-id", self.location_kind()), id)
+                });
+                if let Some(stable) = stable {
+                    links.by_url.insert(address.clone(), stable.clone());
+                    links.by_reference.insert(stable.clone(), address);
+                    entry.location = stable;
+                }
+                links.entries.insert(entry.location.clone(), entry.clone());
+            }
+        }
+        *lock(&self.scene_links) = links;
+        Ok(groups)
     }
 
     fn parse_scene(&self, v: &Value, base: &str) -> SceneInfo {
@@ -352,7 +447,15 @@ impl FeedSource {
         groups
             .iter()
             .map(|g| {
-                let mut e = dir_entry(g.name.clone(), group_location(&self.url, &g.name), None);
+                let mut e = dir_entry(
+                    g.name.clone(),
+                    crate::location::encode(
+                        &self.id,
+                        &format!("{}-group", self.location_kind()),
+                        &g.name,
+                    ),
+                    None,
+                );
                 e.thumbnail_url = g.scenes.iter().find_map(|s| s.thumbnail_url.clone());
                 e
             })
@@ -410,8 +513,31 @@ impl SceneFeed for FeedSource {
     }
 
     fn scene(&self, url: &str, with_media: bool) -> Result<SceneInfo> {
-        let v = self.fetch_required(url, Some(with_media))?;
-        let info = self.parse_scene(&v, url);
+        let resolved = self.resolved_location(url)?;
+        let document = if is_direct_file(&resolved) {
+            None
+        } else {
+            self.fetch(&resolved, Some(with_media))?
+        };
+        let info = match document {
+            Some(v) => self.parse_scene(&v, &resolved),
+            None => {
+                let entry = lock(&self.scene_links).entries.get(url).cloned();
+                SceneInfo {
+                    title: entry
+                        .as_ref()
+                        .map(|entry| entry.name.clone())
+                        .unwrap_or_default(),
+                    duration: entry.as_ref().and_then(|entry| entry.duration),
+                    thumbnail_url: entry.as_ref().and_then(|entry| entry.thumbnail_url.clone()),
+                    sources: vec![MediaSource {
+                        url: resolved.clone(),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                }
+            }
+        };
         if let Some(events) = &info.event_server {
             lock(&self.event_servers).insert(url.to_string(), events.clone());
         }
@@ -421,6 +547,8 @@ impl SceneFeed for FeedSource {
     /// HereSphere posts the change to the video's own URL, as it does
     /// when the favourite is toggled in the player.
     fn set_favorite(&self, url: &str, favorite: bool) -> Result<()> {
+        let resolved = self.resolved_location(url)?;
+        let url = resolved.as_str();
         if self.protocol != Protocol::HereSphere {
             return Err(Error::Unsupported(
                 "a DeoVR feed takes no favourites".into(),
@@ -450,6 +578,31 @@ impl SceneFeed for FeedSource {
 }
 
 impl Source for FeedSource {
+    fn canonical_location(&self, location: &str) -> Option<String> {
+        if crate::is_source_location(location) {
+            let reference = crate::location::decode(location)?;
+            return (reference.source_id == self.id
+                && [
+                    format!("{}-id", self.location_kind()),
+                    format!("{}-group", self.location_kind()),
+                ]
+                .contains(&reference.kind))
+            .then(|| crate::location::encode(&self.id, &reference.kind, &reference.key));
+        }
+        if let Some((feed, name)) = split_group(location)
+            && same_origin(feed, &self.url)
+        {
+            return Some(crate::location::encode(
+                &self.id,
+                &format!("{}-group", self.location_kind()),
+                &name,
+            ));
+        }
+        if let Some(stable) = lock(&self.scene_links).by_url.get(location).cloned() {
+            return Some(stable);
+        }
+        None
+    }
     fn id(&self) -> &str {
         &self.id
     }
@@ -470,7 +623,10 @@ impl Source for FeedSource {
     }
 
     fn list(&self, location: Option<&str>) -> Result<Vec<Entry>> {
-        let feed_url = location.unwrap_or(&self.url);
+        let resolved = location
+            .map(|location| self.resolved_location(location))
+            .transpose()?;
+        let feed_url = resolved.as_deref().unwrap_or(&self.url);
         let Some((feed, name)) = split_group(feed_url) else {
             return Ok(self.group_entries(&self.groups(feed_url)?));
         };
@@ -482,6 +638,8 @@ impl Source for FeedSource {
     }
 
     fn open(&self, location: &str) -> Result<Arc<dyn ByteSource>> {
+        let resolved = self.resolved_location(location)?;
+        let location = resolved.as_str();
         let url = if is_direct_file(location) {
             location.to_string()
         } else {
@@ -500,7 +658,10 @@ impl Source for FeedSource {
     }
 
     fn transcode_targets(&self, video: &Entry) -> Vec<crate::TranscodeTarget> {
-        if is_direct_file(&video.location) {
+        let Ok(resolved) = self.resolved_location(&video.location) else {
+            return Vec::new();
+        };
+        if is_direct_file(&resolved) {
             return Vec::new();
         }
         match self.scene(&video.location, true) {
@@ -515,6 +676,8 @@ impl Source for FeedSource {
     /// `id` is the address the scene names for that encoding; the server
     /// encodes from it when asked and stops when the stream is closed.
     fn open_transcode(&self, _location: &str, id: &str, start: f64) -> Result<Arc<dyn ByteSource>> {
+        let resolved = self.resolved_location(id)?;
+        let id = resolved.as_str();
         let url = if start > 0.0 && scene::takes_start(id) {
             crate::transcode::with_query(id, "start", &format!("{start:.3}"))
         } else {
@@ -530,11 +693,19 @@ impl Source for FeedSource {
     }
 
     fn details(&self, entry: &Entry) -> Result<Entry> {
-        if entry.kind != EntryKind::Video || is_direct_file(&entry.location) {
-            return Ok(entry.clone());
+        let resolved = self.resolved_location(&entry.location)?;
+        if entry.kind != EntryKind::Video || is_direct_file(&resolved) {
+            let mut entry = lock(&self.scene_links)
+                .entries
+                .get(&entry.location)
+                .cloned()
+                .unwrap_or_else(|| entry.clone());
+            self.stable_entry(&mut entry);
+            return Ok(entry);
         }
         let mut e = entry.clone();
         self.scene(&entry.location, true)?.apply_to(&mut e);
+        self.stable_entry(&mut e);
         Ok(e)
     }
 
@@ -575,6 +746,7 @@ impl Source for FeedSource {
         let Some(endpoint) = &session.endpoint else {
             return Ok(());
         };
+        let item = self.resolved_location(&session.item)?;
         let codes: &[u8] = match event.kind {
             WatchKind::Start if event.paused => &[OPEN],
             WatchKind::Start => &[OPEN, PLAY],
@@ -587,7 +759,7 @@ impl Source for FeedSource {
         for &code in codes {
             let body = serde_json::to_vec(&serde_json::json!({
                 "username": self.creds.as_ref().map_or("", |c| c.username.as_str()),
-                "id": session.item,
+                "id": item,
                 "title": session.title,
                 "event": code,
                 "time": event.position * 1000.0,

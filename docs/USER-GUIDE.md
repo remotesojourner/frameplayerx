@@ -352,6 +352,22 @@ change its address, user name and password, or its PIN. Its type stays; a
 Jellyfin server signed in with Quick Connect keeps that sign-in
 unless you clear it.
 
+When a network server's URL, IP address or root folder changes, edit the
+existing source. History, resume points, playlists and adjustments follow
+the same relative paths or server item IDs. Removing and adding the source
+again creates a different identity.
+
+HTTP(S), WebDAV and SMB use paths relative to the configured root.
+Jellyfin and Emby use item and version IDs; DLNA uses object IDs, and Plex
+keeps its server and item IDs. Feeds keep scene, media and artwork URLs
+exactly as published, unless a stable scene ID allows a fresh lookup.
+Changing a feed's address alone cannot identify changed video URLs.
+
+Older saved URLs are converted in place when their identity is known.
+Browsing the source can identify more old links. Unknown external or
+signed URLs, and unidentified old DLNA links, cannot be recovered just
+from a new server address.
+
 ### Watch sync with Jellyfin, Emby, Plex and HereSphere
 
 These servers keep track of what you watch, and FramePlayerX keeps them in
