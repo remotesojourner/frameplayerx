@@ -1068,6 +1068,7 @@ mod tests {
         let mut j = catalog::CatalogView::new(1);
         j.pages.push(catalog::Page {
             seq: 2,
+            request_seq: None,
             loading: false,
             error: None,
             body: catalog::Body::Item {

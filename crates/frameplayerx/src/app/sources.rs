@@ -297,6 +297,14 @@ impl App {
         let Some(src) = self.services.opener.source(&source) else {
             return;
         };
+        let request_seq = self.ui.next_seq();
+        let Some(seq) = self
+            .ui
+            .catalog_page(&source)
+            .and_then(|page| page.begin_request(seq, request_seq, &load))
+        else {
+            return;
+        };
         self.jobs.spawn("catalog", move || {
             std::thread::sleep(delay);
             let result = match src.as_catalog() {
