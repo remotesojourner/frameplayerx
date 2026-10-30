@@ -451,6 +451,8 @@ fn video_position(ui: &mut egui::Ui, v: &mut View) {
             2,
         );
     });
+    heading(ui, tr!("settings-background"));
+    super::player::background_controls(ui, &mut d.background);
 }
 
 fn sound(ui: &mut egui::Ui, v: &mut View) {
