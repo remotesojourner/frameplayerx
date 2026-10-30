@@ -902,6 +902,7 @@ version = "0.1.0"
 dependencies = [
  "fp-core",
  "jpeg-encoder",
+ "percent-encoding",
  "rusqlite",
  "serde",
  "serde_json",
@@ -963,6 +964,8 @@ dependencies = [
  "log",
  "percent-encoding",
  "quick-xml",
+ "ring",
+ "rustls",
  "serde",
  "serde_json",
  "smb2",

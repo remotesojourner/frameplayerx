@@ -1626,6 +1626,7 @@ pub fn tracks_panel(ctx: &egui::Context, v: &mut View) {
         return;
     };
     let info = pb.player.info();
+    let server_tracks = pb.transcoding.is_some() && !pb.source_tracks.is_empty();
     let audio: Vec<_> = info.audio_streams().collect();
     let subtitles = crate::subtitles::rows(&v.settings.subtitle_language, info, &pb.subtitle_files);
     let label_h = ctx.fonts(|f| f.row_height(&theme::font(Weight::SemiBold, 13.0)));
@@ -1636,6 +1637,11 @@ pub fn tracks_panel(ctx: &egui::Context, v: &mut View) {
     };
     let rows = audio
         .len()
+        .max(if server_tracks {
+            pb.source_tracks.len()
+        } else {
+            0
+        })
         .max(1)
         .max(subtitles.len() + 1)
         .max(quality_rows) as f32;
@@ -1672,6 +1678,23 @@ pub fn tracks_panel(ctx: &egui::Context, v: &mut View) {
                 tr!("tracks-audio"),
                 &pb.title,
                 |ui, fresh| {
+                    if server_tracks {
+                        for s in pb.source_tracks.iter().filter(|s| !s.subtitle) {
+                            let on = pb
+                                .request
+                                .source_audio
+                                .as_deref()
+                                .map_or(s.selected, |id| id == s.id);
+                            let row = track_row(ui, &s.title, &s.codec, on);
+                            if on && fresh {
+                                row.scroll_to_me(Some(Align::Center));
+                            }
+                            if row.clicked() && !on {
+                                actions.push(Action::SelectSourceAudio(s.id.clone()));
+                            }
+                        }
+                        return;
+                    }
                     if audio.is_empty() {
                         ui.label(RichText::new(tr!("tracks-no-audio")).color(theme::TEXT_3));
                     }
@@ -1698,6 +1721,27 @@ pub fn tracks_panel(ctx: &egui::Context, v: &mut View) {
                 tr!("settings-subtitles"),
                 &pb.title,
                 |ui, fresh| {
+                    if server_tracks {
+                        let off = pb
+                            .request
+                            .source_subtitle
+                            .as_deref()
+                            .is_none_or(|id| id == "0");
+                        if track_row(ui, tr!("tracks-off"), "", off).clicked() && !off {
+                            actions.push(Action::SelectSourceSubtitles(None));
+                        }
+                        for s in pb.source_tracks.iter().filter(|s| s.subtitle) {
+                            let on = pb.request.source_subtitle.as_deref() == Some(s.id.as_str());
+                            let row = track_row(ui, &s.title, &s.codec, on);
+                            if on && fresh {
+                                row.scroll_to_me(Some(Align::Center));
+                            }
+                            if row.clicked() && !on {
+                                actions.push(Action::SelectSourceSubtitles(Some(s.id.clone())));
+                            }
+                        }
+                        return;
+                    }
                     let mut pick = |ui: &mut egui::Ui, title: &str, detail: &str, pick: Pick| {
                         let on = showing(pb, pick);
                         let row = track_row(ui, title, detail, on);

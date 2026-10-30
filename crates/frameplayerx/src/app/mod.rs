@@ -4,6 +4,7 @@
 mod actions;
 mod frame;
 mod input;
+mod plex;
 mod remote;
 mod sources;
 mod tasks;
