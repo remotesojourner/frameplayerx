@@ -514,15 +514,16 @@ impl App {
         input: &FrameInput,
         anchor: Mat4,
     ) -> (Option<Arc<VideoFrame>>, VideoParams, bool) {
-        // The open video's colour, else the one videos start with. It is
-        // sRGB; the eyes are cleared in linear light.
         let shown = self
             .playback
             .as_ref()
-            .map_or(self.settings.default_view, |p| {
-                p.shown_settings(&self.settings.default_view)
-            });
-        let [r, g, b] = shown.background.map(egui::ecolor::linear_from_gamma);
+            .map(|p| p.shown_settings(&self.settings.default_view));
+        // The open video's colour, else the one videos start with. It is
+        // sRGB; the eyes are cleared in linear light.
+        let [r, g, b] = shown
+            .unwrap_or(self.settings.default_view)
+            .background
+            .map(|c| egui::ecolor::linear_from_gamma(c.clamp(0.0, 1.0)));
         let mut video = VideoParams {
             background: [r, g, b, 1.0],
             ..VideoParams::default()
@@ -535,10 +536,11 @@ impl App {
         // A chroma-keyed or alpha-packed video shows the room where its
         // background was, whatever its projection and whether or not
         // passthrough is on.
-        let keyed = self.playback.as_ref().is_some_and(|p| {
-            p.shown_settings(&self.settings.default_view).chroma_key
-                || p.format.alpha_pack_scale().is_some()
-        });
+        let keyed = shown.is_some_and(|s| s.chroma_key)
+            || self
+                .playback
+                .as_ref()
+                .is_some_and(|p| p.format.alpha_pack_scale().is_some());
         let passthrough =
             input.passthrough_available && ((self.settings.passthrough && flat_or_none) || keyed);
         if passthrough {
@@ -546,9 +548,8 @@ impl App {
         }
         let anchor_rot = anchor.to_scale_rotation_translation().1;
         let player = self.picture_anchor(anchor);
-        if let Some(p) = &self.playback {
+        if let (Some(p), Some(s)) = (&self.playback, shown) {
             frame = p.player.current_frame();
-            let s = p.shown_settings(&self.settings.default_view);
             video.format = p.format;
             video.screen_pose = place(player, 0.0, s.screen_distance, 0.0, 0.0);
             video.anchor = anchor_rot;
