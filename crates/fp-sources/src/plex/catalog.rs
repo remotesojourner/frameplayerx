@@ -305,16 +305,27 @@ impl PlexSource {
                     let section = section.ok_or_else(|| {
                         Error::Unsupported("Plex facets require a library".into())
                     })?;
-                    let ids: Vec<_> = values
+                    let values: Vec<_> = values
                         .iter()
                         .map(|name| {
-                            lock(&self.facets)
-                                .get(&format!("{section}/{key}/{name}"))
-                                .cloned()
-                                .unwrap_or_else(|| name.clone())
+                            if key == "studio" {
+                                // Studios are strings, not genre IDs. PMS's
+                                // choice key may already be URL-encoded.
+                                name.clone()
+                            } else {
+                                lock(&self.facets)
+                                    .get(&format!("{section}/{key}/{name}"))
+                                    .cloned()
+                                    .unwrap_or_else(|| name.clone())
+                            }
                         })
                         .collect();
-                    p.append_pair(key, &ids.join(","));
+                    // String equality is `studio==...`; plain `studio=...`
+                    // performs a substring match instead.
+                    p.append_pair(
+                        if key == "studio" { "studio=" } else { key },
+                        &values.join(","),
+                    );
                 }
             }
             if !query.years.is_empty() {

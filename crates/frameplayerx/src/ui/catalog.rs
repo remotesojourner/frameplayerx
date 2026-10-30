@@ -33,8 +33,10 @@ pub struct CatalogView {
 }
 
 pub struct Page {
-    /// Answers to this page's requests carry this number.
+    /// The page's identity; its facets use it independently of data loads.
     pub seq: u64,
+    /// Only the latest listing/search/details request can update the page.
+    pub(super) request_seq: Option<u64>,
     pub loading: bool,
     pub error: Option<String>,
     pub body: Body,
@@ -176,6 +178,23 @@ impl Grid {
         q.min_width = None;
         q.studios.clear();
         q.tags.retain(|t| self.base_tags.contains(t));
+    }
+
+    /// A changed filter/search/sort starts a new listing, including a new
+    /// shuffle snapshot; old page IDs must not leak into a later refresh.
+    fn restart(&mut self) -> CatalogQuery {
+        self.query.start = 0;
+        self.query.limit = PAGE;
+        self.query.ids.clear();
+        self.order = None;
+        self.to_top = true;
+        self.query.clone()
+    }
+
+    /// Choosing another action this frame must leave an unsent facets
+    /// request eligible for the next frame.
+    fn unasked_facets(&self) -> Option<CatalogQuery> {
+        matches!(self.facets, Facets::Unasked).then(|| self.query.clone())
     }
 
     /// The next page: of a shuffle, its next items by id.
@@ -363,6 +382,7 @@ impl CatalogView {
         CatalogView {
             pages: vec![Page {
                 seq,
+                request_seq: None,
                 loading: true,
                 error: None,
                 body: Body::Home {
@@ -374,13 +394,35 @@ impl CatalogView {
         }
     }
 
-    /// Gives an answer to the page that asked.
+    /// Starts a request without changing the page's identity. Facet loads
+    /// remain independent, so changing a filter cannot strand the drawer.
+    pub fn begin_request(&mut self, seq: u64, request_seq: u64, load: &Load) -> Option<u64> {
+        let page = self.pages.iter_mut().find(|page| page.seq == seq)?;
+        if matches!(load, Load::Facets(_)) {
+            if let Body::Grid(grid) = &mut page.body {
+                grid.facets = Facets::Asked;
+            }
+            return Some(page.seq);
+        }
+        page.request_seq = Some(request_seq);
+        page.loading = true;
+        Some(request_seq)
+    }
+
+    /// Gives an answer to its page, discarding superseded data loads.
     pub fn loaded(&mut self, seq: u64, result: Result<Loaded, String>) {
-        let Some(p) = self.pages.iter_mut().find(|p| p.seq == seq) else {
+        let facets = matches!(&result, Ok(Loaded::Facets(_)));
+        let Some(p) = self.pages.iter_mut().find(|p| {
+            if facets {
+                p.seq == seq
+            } else {
+                p.request_seq.unwrap_or(p.seq) == seq
+            }
+        }) else {
             return;
         };
         // The drawer's choices come beside the page's own answers.
-        if !matches!(result, Ok(Loaded::Facets(_))) {
+        if !facets {
             p.loading = false;
         }
         let loaded = match result {
@@ -390,7 +432,9 @@ impl CatalogView {
                 return;
             }
         };
-        p.error = None;
+        if !facets {
+            p.error = None;
+        }
         match (&mut p.body, loaded) {
             (Body::Home { home, .. }, Loaded::Home(h)) => *home = Some(h),
             (Body::Search { asked, results, .. }, Loaded::Search { text, results: r }) => {
@@ -460,6 +504,7 @@ impl CatalogView {
     fn open(&mut self, seq: u64, body: Body) {
         self.pages.push(Page {
             seq,
+            request_seq: None,
             loading: true,
             error: None,
             body,
@@ -1148,9 +1193,8 @@ fn grid(
     }
     let mut go = None;
     if g.filters_open {
-        if matches!(g.facets, Facets::Unasked) {
-            g.facets = Facets::Asked;
-            go = Some(Go::Facets(g.query.clone()));
+        if let Some(query) = g.unasked_facets() {
+            go = Some(Go::Facets(query));
         }
         let mut open = true;
         let count = tr!("count-items", count = g.total);
@@ -1162,11 +1206,7 @@ fn grid(
         }
     }
     if changed {
-        g.query.start = 0;
-        g.query.limit = PAGE;
-        g.query.ids.clear();
-        g.to_top = true;
-        return Some(Go::Reload(Load::Grid(g.query.clone())));
+        return Some(Go::Reload(Load::Grid(g.restart())));
     }
     if g.items.is_empty() {
         return go;
@@ -1786,6 +1826,7 @@ mod tests {
         let mut j = CatalogView::new(1);
         j.pages.push(Page {
             seq: 2,
+            request_seq: None,
             loading: true,
             error: None,
             body: Body::Grid(Box::new(Grid::new(
@@ -1831,6 +1872,156 @@ mod tests {
         assert_eq!(seq, 2);
         let Load::Grid(q) = load else { panic!() };
         assert_eq!((q.start, q.limit), (0, 100));
+    }
+
+    #[test]
+    fn late_unfiltered_answers_cannot_replace_a_studio_filtered_listing() {
+        let mut view = CatalogView::new(1);
+        let query = CatalogQuery::default();
+        view.pages[0].body = Body::Grid(Box::new(Grid::new("Movies".into(), query.clone())));
+        let old = view.begin_request(1, 2, &Load::Grid(query)).unwrap();
+        let Body::Grid(grid) = &mut view.pages[0].body else {
+            panic!()
+        };
+        grid.query.studios = vec!["Selected studio".into()];
+        let query = grid.restart();
+        let current = view
+            .begin_request(1, 3, &Load::Grid(query.clone()))
+            .unwrap();
+        let facets = view.begin_request(1, 4, &Load::Facets(query)).unwrap();
+        assert_eq!(facets, 1, "facets retain the page's independent identity");
+
+        view.loaded(old, Err("an obsolete request failed".into()));
+        assert!(view.pages[0].loading);
+        assert!(view.pages[0].error.is_none());
+        view.loaded(
+            facets,
+            Ok(Loaded::Facets(Ok(CatalogFacets {
+                studios: vec!["Selected studio".into()],
+                ..Default::default()
+            }))),
+        );
+        assert!(view.pages[0].loading, "facets do not finish the listing");
+        let reply = |id: &str| Loaded::Grid {
+            page: CatalogPage {
+                items: vec![item(id, CatalogKind::Movie)],
+                total: 1,
+            },
+            append: false,
+            order: None,
+            by_id: false,
+        };
+        view.loaded(current, Ok(reply("filtered")));
+        view.loaded(old, Ok(reply("unfiltered")));
+        view.loaded(old, Err("another stale failure".into()));
+        let page = &view.pages[0];
+        assert_eq!(page.seq, 1);
+        assert!(!page.loading);
+        assert!(page.error.is_none());
+        let Body::Grid(grid) = &page.body else {
+            panic!()
+        };
+        assert_eq!(grid.items[0].id, "filtered");
+        assert_eq!(grid.query.studios, ["Selected studio"]);
+        assert!(matches!(&grid.facets, Facets::Got(f) if f.studios == ["Selected studio"]));
+
+        view.loaded(current, Err("the current listing failed".into()));
+        view.loaded(facets, Ok(Loaded::Facets(Ok(CatalogFacets::default()))));
+        assert_eq!(
+            view.pages[0].error.as_deref(),
+            Some("the current listing failed")
+        );
+    }
+
+    #[test]
+    fn changing_filters_discards_old_shuffle_ids_and_in_flight_pages() {
+        let mut view = CatalogView::new(1);
+        let mut grid = Grid::new(
+            "Movies".into(),
+            CatalogQuery {
+                sort: CatalogSort::Random,
+                ..Default::default()
+            },
+        );
+        grid.items = vec![item("old-first", CatalogKind::Movie)];
+        grid.order = Some(vec!["old-first".into(), "old-next".into()]);
+        grid.total = 2;
+        let next = grid.next_page();
+        assert_eq!(next.ids, ["old-next"]);
+        view.pages[0].body = Body::Grid(Box::new(grid));
+        let old_page = view.begin_request(1, 2, &Load::Grid(next)).unwrap();
+        let Body::Grid(grid) = &mut view.pages[0].body else {
+            panic!()
+        };
+        grid.query.studios = vec!["New studio".into()];
+        let changed = grid.restart();
+        assert!(changed.ids.is_empty());
+        assert!(grid.order.is_none());
+        let first_filter = view.begin_request(1, 3, &Load::Grid(changed)).unwrap();
+
+        // Refreshing before the filtered response arrives must not reuse
+        // IDs from the old shuffle, even though its cards are still visible.
+        let (page, reload) = view.reload().unwrap();
+        let Load::Grid(query) = &reload else { panic!() };
+        assert_eq!(query.studios, ["New studio"]);
+        assert!(query.ids.is_empty());
+        let refreshed = view.begin_request(page, 4, &reload).unwrap();
+        let reply = |id: &str, append: bool| Loaded::Grid {
+            page: CatalogPage {
+                items: vec![item(id, CatalogKind::Movie)],
+                total: 1,
+            },
+            append,
+            order: (!append).then(|| vec![id.into()]),
+            by_id: true,
+        };
+        view.loaded(old_page, Ok(reply("old-next", true)));
+        view.loaded(first_filter, Ok(reply("earlier-filter", false)));
+        assert!(view.pages[0].loading);
+        view.loaded(refreshed, Ok(reply("new-studio", false)));
+        view.loaded(old_page, Ok(reply("old-next", true)));
+        let Body::Grid(grid) = &view.pages[0].body else {
+            panic!()
+        };
+        assert_eq!(grid.items.len(), 1);
+        assert_eq!(grid.items[0].id, "new-studio");
+        assert_eq!(grid.order.as_deref().unwrap(), ["new-studio"]);
+    }
+
+    #[test]
+    fn a_reload_that_supersedes_a_facet_action_does_not_strand_the_drawer() {
+        let mut view = CatalogView::new(1);
+        let mut grid = Grid::new("Movies".into(), CatalogQuery::default());
+        grid.filters_open = true;
+        let first_facets = grid.unasked_facets().unwrap();
+
+        // The drawer offers a facets action, but the search debounce
+        // expires in the same frame and its reload takes precedence.
+        grid.query.search = "film".into();
+        let query = grid.restart();
+        view.pages[0].body = Body::Grid(Box::new(grid));
+        view.begin_request(1, 2, &Load::Grid(query)).unwrap();
+        let Body::Grid(grid) = &view.pages[0].body else {
+            panic!()
+        };
+        assert!(grid.unasked_facets().is_some());
+        assert!(matches!(grid.facets, Facets::Unasked));
+
+        // On the next frame a dispatched facets request is marked Asked
+        // and can finish independently of the pending search response.
+        let seq = view
+            .begin_request(1, 3, &Load::Facets(first_facets))
+            .unwrap();
+        let Body::Grid(grid) = &view.pages[0].body else {
+            panic!()
+        };
+        assert!(grid.unasked_facets().is_none());
+        assert!(matches!(grid.facets, Facets::Asked));
+        view.loaded(seq, Ok(Loaded::Facets(Ok(CatalogFacets::default()))));
+        assert!(view.pages[0].loading);
+        assert!(
+            matches!(&view.pages[0].body, Body::Grid(grid) if matches!(grid.facets, Facets::Got(_)))
+        );
     }
 
     #[test]
@@ -1931,6 +2122,7 @@ mod tests {
         );
         j.pages.push(Page {
             seq: 2,
+            request_seq: None,
             loading: false,
             error: None,
             body: Body::Item {
@@ -1954,6 +2146,7 @@ mod tests {
         let mut j = CatalogView::new(1);
         j.pages.push(Page {
             seq: 2,
+            request_seq: None,
             loading: true,
             error: None,
             body: Body::Search {

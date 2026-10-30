@@ -689,7 +689,7 @@ fn tv_collections_facets_and_reset_resume_use_plex_metadata() {
         } else if r.path().starts_with("/library/sections/1/") && !r.path().ends_with("/all") {
             let (title, key) = match r.path().rsplit('/').next().unwrap() {
                 "genre" => ("Drama", "42"),
-                "studio" => ("Studio", "43"),
+                "studio" => ("Studio", "Studio"),
                 "year" => ("2024", "2024"),
                 _ => return resp(404, Vec::new(), &[]),
             };
@@ -757,6 +757,99 @@ fn tv_collections_facets_and_reset_resume_use_plex_metadata() {
         "a reset server resume must override local history"
     );
     assert!(!source.capabilities().favorites);
+}
+
+#[test]
+fn studio_filters_use_exact_names_once_encoded_and_keep_server_pagination() {
+    let studio_names = [
+        "North & South Pictures",
+        "North & South Pictures Classics",
+        "Cinéma 100%",
+    ];
+    let server = TestServer::start(move |r| {
+        let value = match r.path() {
+            "/library/sections/1/studio" => {
+                json!({"MediaContainer":{"Directory":studio_names.iter().map(|name| {
+                // PMS studio choice keys are escaped strings, unlike genre IDs.
+                json!({"title":name,"key":fp_sources::urlutil::encode_form_value(name)})
+            }).collect::<Vec<_>>()}})
+            }
+            "/library/sections/1/genre" => {
+                json!({"MediaContainer":{"Directory":[{"title":"Drama","key":"42"}]}})
+            }
+            "/library/sections/1/year" => json!({"MediaContainer":{"Directory":[]}}),
+            "/library/sections/1/all" => {
+                let url = url::Url::parse(&format!("http://test{}", r.url)).unwrap();
+                let params: std::collections::HashMap<_, _> =
+                    url.query_pairs().into_owned().collect();
+                let mut items: Vec<_> = studio_names
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(i, name)| {
+                        let studio_matches = if let Some(exact) = params.get("studio=") {
+                            exact.split(',').any(|selected| selected == *name)
+                        } else if let Some(contains) = params.get("studio") {
+                            contains.split(',').any(|selected| name.contains(selected))
+                        } else {
+                            true
+                        };
+                        if !studio_matches || params.get("genre").is_some_and(|genre| genre != "42")
+                        {
+                            return None;
+                        }
+                        let mut item = movie(&(100 + i).to_string());
+                        item["studio"] = (*name).into();
+                        Some(item)
+                    })
+                    .collect();
+                let total = items.len();
+                let start = params["X-Plex-Container-Start"].parse::<usize>().unwrap();
+                let limit = params["X-Plex-Container-Size"].parse::<usize>().unwrap();
+                items = items.into_iter().skip(start).take(limit).collect();
+                json!({"MediaContainer":{"offset":start,"totalSize":total,"Metadata":items}})
+            }
+            _ => return reply(r),
+        };
+        assert_eq!(r.header("X-Plex-Token"), Some("server-secret"));
+        resp(
+            200,
+            serde_json::to_vec(&value).unwrap(),
+            &[("Content-Type", "application/json")],
+        )
+    });
+    let source = PlexSource::new(&config(&server)).unwrap();
+    let mut query = CatalogQuery {
+        parent: Some("section:1".into()),
+        ..Default::default()
+    };
+    assert_eq!(source.items(&query).unwrap().total, 3);
+    let facets = source.facets(&query).unwrap();
+    assert_eq!(facets.studios, studio_names);
+    query.genres = facets.genres;
+    query.studios = vec![studio_names[0].into()];
+    let page = source.items(&query).unwrap();
+    assert_eq!(page.total, 1);
+    assert_eq!(page.items[0].studios, [studio_names[0]]);
+
+    query.studios.push(studio_names[2].into());
+    query.limit = 1;
+    let first = source.items(&query).unwrap();
+    assert_eq!((first.total, first.items[0].id.as_str()), (2, "100"));
+    query.start = 1;
+    let second = source.items(&query).unwrap();
+    assert_eq!((second.total, second.items[0].id.as_str()), (2, "102"));
+    assert_eq!(second.items[0].studios, [studio_names[2]]);
+
+    query.start = 0;
+    query.studios.clear();
+    assert_eq!(source.items(&query).unwrap().total, 3);
+
+    // Rebuilding a source must not require warming its facet cache again.
+    let rebuilt = PlexSource::new(&config(&server)).unwrap();
+    query.genres.clear();
+    query.studios = vec![studio_names[2].into()];
+    let page = rebuilt.items(&query).unwrap();
+    assert_eq!((page.total, page.items[0].id.as_str()), (1, "102"));
 }
 
 #[test]

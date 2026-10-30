@@ -188,6 +188,10 @@ wire parsing stays in `mediabrowser/` and `plex/`. Capability flags hide
 unsupported server favorites and filters. The old `Mb*` names remain
 aliases for callers of the MediaBrowser API.
 
+Plex genre filters use facet IDs. Studio filters use studio names with the
+string equality operator (`studio==...`), encoded once; PMS may already
+URL-encode studio choice keys.
+
 Plex linking (`ui/plex.rs`, `app/plex.rs`) uses the existing action/job
 flow. Its default **Link with code** method displays a code to enter at
 `plex.tv/link` on a phone or computer, then polls for approval; it reuses
