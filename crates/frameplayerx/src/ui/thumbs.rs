@@ -54,7 +54,7 @@ impl Thumbs {
                 .name(format!("fp-thumbs-{i}"))
                 .spawn(move || {
                     for (key, url, width) in rx.iter() {
-                        if !fp_sources::urlutil::is_http_url(&url) {
+                        if !fp_sources::urlutil::is_http_url(&url) && !url.starts_with("plex://") {
                             let img = opener
                                 .fetch(&url, 16 << 20)
                                 .ok()

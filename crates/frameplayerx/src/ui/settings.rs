@@ -1027,7 +1027,7 @@ fn about(ui: &mut egui::Ui, v: &mut View) {
                             .color(theme::ACCENT_HOVER),
                     );
                     if ui.add(link).clicked() {
-                        v.actions.push(Action::OpenWebPage(address));
+                        v.actions.push(Action::OpenWebPage(address.into()));
                     }
                 },
                 |_| {},

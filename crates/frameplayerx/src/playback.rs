@@ -36,6 +36,12 @@ pub struct OpenRequest {
     /// ([`TranscodeTarget::id`]): what [`Quality::Transcode`] names, or
     /// what Automatic fell back to.
     pub transcode: Option<String>,
+    /// Stable original server track IDs, rather than transcoded stream indexes.
+    pub source_audio: Option<String>,
+    /// "0" explicitly disables server subtitles.
+    pub source_subtitle: Option<String>,
+    /// Keep the current pause state while changing quality or server tracks.
+    pub paused: bool,
 }
 
 /// Whether the file plays as it is or the server transcodes it, as the
@@ -106,6 +112,7 @@ pub struct Playback {
     pub targets: Vec<TranscodeTarget>,
     /// What the server is transcoding it to; `None` for the file as it is.
     pub transcoding: Option<TranscodeTarget>,
+    pub source_tracks: Vec<fp_sources::PlaybackTrack>,
 }
 
 /// The result of opening on a background thread.
@@ -156,14 +163,22 @@ pub fn open(
     let source = req.source_id.as_deref().and_then(|id| opener.source(id));
     // Feeds may need a details call to get the stream URL and metadata.
     let entry = match (&req.entry, &source) {
+        (Some(e), Some(src)) if src.kind() == fp_sources::SourceKind::Plex => {
+            Some(src.details(e).map_err(|e| crate::ui::errors::source(&e))?)
+        }
         (Some(e), Some(src)) => Some(src.details(e).unwrap_or_else(|_| e.clone())),
         // From the library or home: a server's details still carry the
         // video's subtitle files and chapters. Its address only names the
         // server, so it goes by the title the library has until then.
-        (None, Some(src)) if src.as_media_browser().is_some() => {
+        (None, Some(src)) if src.as_catalog().is_some() => {
             let title = req.title.clone().unwrap_or_else(|| name.clone());
             let e = Entry::new(title, req.location.clone(), EntryKind::Video);
-            src.details(&e).ok()
+            let details = src.details(&e);
+            if src.kind() == fp_sources::SourceKind::Plex {
+                Some(details.map_err(|e| crate::ui::errors::source(&e))?)
+            } else {
+                details.ok()
+            }
         }
         (e, _) => e.clone(),
     };
@@ -242,25 +257,77 @@ pub fn open(
         .as_ref()
         .map(|r| r.tracks.clone())
         .unwrap_or_default();
+    let source_tracks = source
+        .as_ref()
+        .filter(|s| s.kind() == fp_sources::SourceKind::Plex)
+        .map(|src| {
+            let video = entry
+                .clone()
+                .unwrap_or_else(|| Entry::new(name.clone(), location.clone(), EntryKind::Video));
+            src.playback_tracks(&video).unwrap_or_default()
+        })
+        .unwrap_or_default();
     let open_player = |src: Arc<dyn fp_core::ByteSource>, config: PlayerConfig| {
+        let direct = config.timeline.is_none();
+        let server_tracks = !direct && !source_tracks.is_empty();
         let mut pick = Pick::Off;
         Player::open(src, &name, config, |info| {
+            let audio = if server_tracks {
+                None
+            } else {
+                req.source_audio
+                    .as_ref()
+                    .and_then(|id| source_tracks.iter().find(|t| !t.subtitle && t.id == *id))
+                    .and_then(|t| t.index)
+                    .or(picked.audio)
+            };
             pick = subtitles::starting(
                 picked.subtitles.as_ref(),
-                picked.audio,
+                audio,
                 settings.subtitles,
                 &settings.subtitle_language,
                 info,
                 &subs,
                 &name,
             );
+            if let Some(id) = req.source_subtitle.as_deref() {
+                let track = source_tracks.iter().find(|t| t.subtitle && t.id == id);
+                pick = track
+                    .and_then(|t| {
+                        t.location
+                            .as_ref()
+                            .and_then(|location| subs.iter().position(|s| &s.location == location))
+                            .map(Pick::File)
+                            .or_else(|| t.index.map(Pick::Stream))
+                    })
+                    .unwrap_or(Pick::Off);
+            }
+            if server_tracks {
+                pick = Pick::Off;
+            }
             fp_media::Tracks {
-                audio: picked.audio,
+                audio,
                 subtitle: pick.stream(),
             }
         })
         .map(|p| (p, pick))
     };
+    let mut source_session = source.as_ref().and_then(|src| {
+        let video = entry
+            .clone()
+            .unwrap_or_else(|| Entry::new(name.clone(), location.clone(), EntryKind::Video));
+        src.watch_session(&video)
+    });
+    if source
+        .as_ref()
+        .is_some_and(|s| s.kind() == fp_sources::SourceKind::Plex)
+        && let Some(session) = source_session.as_mut()
+    {
+        if req.source_audio.is_some() {
+            session.audio_stream = req.source_audio.clone();
+        }
+        session.subtitle_stream = Some(req.source_subtitle.clone().unwrap_or_else(|| "0".into()));
+    }
     let targets = source
         .as_ref()
         .map(|src| {
@@ -280,7 +347,7 @@ pub fn open(
     let transcoded = |t: &TranscodeTarget| {
         let fail = |e: String| format!("{name} ({}): {e}", t.label);
         let src = source.clone().ok_or_else(|| fail("no server".into()))?;
-        let restart = restart_at(src, &location, t);
+        let restart = restart_at(src, &location, t, source_session.clone());
         let first = if t.seekable { start_at } else { 0.0 };
         let stream = restart(first).map_err(fail)?;
         let config = PlayerConfig {
@@ -305,12 +372,28 @@ pub fn open(
             (p, pick, Some(t))
         }
         None => {
-            let src = opener
-                .open_in(req.source_id.as_deref(), &location)
-                .map_err(failed)?;
-            match open_player(src, player_config(settings, start_at)) {
-                Ok((p, pick)) => (p, pick, None),
-                Err(e)
+            let src = match (&source, &source_session) {
+                (Some(src), Some(session)) => match src.open_playback(&location, session) {
+                    Ok(bytes) => Ok(Some(bytes)),
+                    Err(e)
+                        if src.kind() == fp_sources::SourceKind::Plex
+                            && req.quality == Quality::Automatic
+                            && !targets.is_empty()
+                            && matches!(e, fp_sources::Error::Unsupported(_)) =>
+                    {
+                        log::info!("{name}: {e}; asking Plex to transcode");
+                        Ok(None)
+                    }
+                    Err(e) => Err(crate::ui::errors::source(&e)),
+                },
+                _ => opener
+                    .open_in(req.source_id.as_deref(), &location)
+                    .map(Some),
+            }
+            .map_err(failed)?;
+            match src.map(|src| open_player(src, player_config(settings, start_at))) {
+                Some(Ok((p, pick))) => (p, pick, None),
+                Some(Err(e))
                     if e.cannot_play_here()
                         && req.quality == Quality::Automatic
                         && !targets.is_empty() =>
@@ -321,12 +404,21 @@ pub fn open(
                     notice = Some(tr!("transcode-cannot-play", quality = t.label.as_str()));
                     (p, pick, Some(t))
                 }
-                Err(e) => {
+                Some(Err(e)) => {
                     return Err(failed(format!("{name}: {}", crate::ui::errors::media(&e))));
+                }
+                None => {
+                    let t = targets[0].clone();
+                    let (p, pick) = transcoded(&t).map_err(failed)?;
+                    notice = Some(tr!("transcode-cannot-play", quality = t.label.as_str()));
+                    (p, pick, Some(t))
                 }
             }
         }
     };
+    if req.paused {
+        player.pause();
+    }
     let info = player.info().clone();
     if settings.hardware_decoding {
         warn_if_software(&name, &info, &player.stats());
@@ -386,7 +478,10 @@ pub fn open(
         let video = entry
             .clone()
             .unwrap_or_else(|| Entry::new(title.clone(), location.clone(), EntryKind::Video));
-        Watch::start(reports, src, &video, start_at)
+        match source_session {
+            Some(session) => Some(Watch::start_session(reports, src, session, start_at)),
+            None => Watch::start(reports, src, &video, start_at),
+        }
     });
     Ok(Opened {
         playback: Playback {
@@ -421,18 +516,26 @@ pub fn open(
             watch,
             targets,
             transcoding,
+            source_tracks,
         },
         scripts,
     })
 }
 
 /// Asks `source` to transcode `location` to `t` from a time (seconds).
-fn restart_at(source: Arc<dyn Source>, location: &str, t: &TranscodeTarget) -> fp_media::Restart {
+fn restart_at(
+    source: Arc<dyn Source>,
+    location: &str,
+    t: &TranscodeTarget,
+    session: Option<fp_sources::WatchSession>,
+) -> fp_media::Restart {
     let (location, id) = (location.to_string(), t.id.clone());
     Arc::new(move |at| {
-        source
-            .open_transcode(&location, &id, at)
-            .map_err(|e| e.to_string())
+        match &session {
+            Some(session) => source.open_transcode_session(&location, &id, at, session),
+            None => source.open_transcode(&location, &id, at),
+        }
+        .map_err(|e| e.to_string())
     })
 }
 
@@ -1004,6 +1107,7 @@ mod tests {
     struct Unplayable {
         files: Mutex<u32>,
         asked: Mutex<Vec<(String, f64)>>,
+        plex: bool,
     }
 
     impl Source for Unplayable {
@@ -1014,7 +1118,11 @@ mod tests {
             "Server"
         }
         fn kind(&self) -> fp_sources::SourceKind {
-            fp_sources::SourceKind::MediaBrowser
+            if self.plex {
+                fp_sources::SourceKind::Plex
+            } else {
+                fp_sources::SourceKind::MediaBrowser
+            }
         }
         fn describe(&self) -> String {
             String::new()
@@ -1024,7 +1132,24 @@ mod tests {
         }
         fn open(&self, _: &str) -> fp_sources::Result<Arc<dyn fp_core::ByteSource>> {
             *lock(&self.files) += 1;
+            if self.plex {
+                return Err(fp_sources::Error::Unsupported(
+                    "Plex requires conversion".into(),
+                ));
+            }
             Ok(Arc::new(fp_core::source::MemorySource(vec![7; 64 << 10])))
+        }
+        fn watch_session(&self, _: &Entry) -> Option<fp_sources::WatchSession> {
+            self.plex.then(|| fp_sources::WatchSession {
+                item: "1".into(),
+                title: "Film".into(),
+                endpoint: None,
+                id: "session".into(),
+                duration_ms: Some(300000),
+                media_id: Some("10".into()),
+                audio_stream: None,
+                subtitle_stream: None,
+            })
         }
         fn transcode_targets(&self, _: &Entry) -> Vec<TranscodeTarget> {
             [1080, 720]
@@ -1089,6 +1214,23 @@ mod tests {
         assert_eq!(pb.player.duration(), 300.0);
         assert!(pb.player.can_seek());
         assert_eq!(pb.targets.len(), 2);
+    }
+
+    #[test]
+    fn plex_conversion_required_falls_back_only_under_automatic() {
+        let server = Arc::new(Unplayable {
+            plex: true,
+            ..Default::default()
+        });
+        let pb = open_from(server.clone(), Quality::Automatic, None)
+            .unwrap()
+            .playback;
+        assert_eq!(pb.transcoding.as_ref().map(|t| t.id.as_str()), Some("1080"));
+        assert_eq!(*lock(&server.asked), [("1080".into(), 30.0)]);
+        drop(pb);
+        lock(&server.asked).clear();
+        assert!(open_from(server.clone(), Quality::Original, None).is_err());
+        assert!(lock(&server.asked).is_empty());
     }
 
     #[test]

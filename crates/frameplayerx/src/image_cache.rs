@@ -24,6 +24,7 @@ const TOUCH_EVERY: Duration = Duration::from_secs(3600);
 
 pub struct ImageCache {
     dir: PathBuf,
+    opener: Option<std::sync::Arc<crate::services::Opener>>,
     http: HttpClient,
     state: Mutex<State>,
     /// Signalled when a download ends, for threads waiting on the same
@@ -89,6 +90,7 @@ impl ImageCache {
     fn with_limit(dir: PathBuf, limit: u64) -> ImageCache {
         ImageCache {
             dir,
+            opener: None,
             http: HttpClient::new(Default::default(), None),
             state: Mutex::new(State {
                 limit,
@@ -96,6 +98,11 @@ impl ImageCache {
             }),
             fetched: Condvar::new(),
         }
+    }
+
+    pub fn with_opener(mut self, opener: std::sync::Arc<crate::services::Opener>) -> Self {
+        self.opener = Some(opener);
+        self
     }
 
     pub fn set_limit(&self, limit_mb: u32) {
@@ -214,6 +221,22 @@ impl ImageCache {
         plain: &str,
         old: Option<&Meta>,
     ) -> Result<Option<Vec<u8>>, String> {
+        if url.starts_with("plex://") {
+            let bytes = self
+                .opener
+                .as_ref()
+                .ok_or_else(|| "source unavailable".to_string())?
+                .fetch(url, MAX_BYTES)?;
+            let meta = Meta {
+                url: plain.to_string(),
+                checked: unix_now(),
+                ..Default::default()
+            };
+            if let Err(e) = self.store(key, &bytes, &meta) {
+                log::debug!("image cache {plain}: {e}");
+            }
+            return Ok(Some(bytes));
+        }
         let mut headers = Vec::new();
         if let Some(m) = old {
             if let Some(e) = &m.etag {

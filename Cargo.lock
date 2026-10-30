@@ -963,6 +963,8 @@ dependencies = [
  "log",
  "percent-encoding",
  "quick-xml",
+ "ring",
+ "rustls",
  "serde",
  "serde_json",
  "smb2",

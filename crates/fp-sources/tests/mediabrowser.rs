@@ -259,7 +259,9 @@ fn mediabrowser_search_finds_titles_by_kind_not_episodes() {
         Some(Credentials::new("alice", "secret123")),
     ))
     .unwrap();
-    let found = mb.search(" alien ", 50).unwrap();
+    let catalog = fp_sources::Source::as_catalog(&mb).expect("a rich server catalog");
+    assert!(catalog.capabilities().favorites);
+    let found = catalog.search(" alien ", 50).unwrap();
     let sections: Vec<(&str, Vec<&str>)> = found
         .iter()
         .map(|(s, items)| (*s, items.iter().map(|i| i.name.as_str()).collect()))
@@ -368,7 +370,7 @@ fn emby_tags_and_no_quick_connect() {
 /// A Quick Connect sign-in the server revoked (the password changed, or the
 /// device was signed out) can't be renewed: no password is kept.
 #[test]
-fn revoked_quick_connect_sign_in_says_pair_again() {
+fn revoked_quick_connect_sign_in_says_sign_in_again() {
     let server = TestServer::start(|_| resp(401, "", &[]));
     let mut config = mediabrowser_config(server.url(""), None);
     config.access_token = Some("revoked".into());
@@ -377,7 +379,7 @@ fn revoked_quick_connect_sign_in_says_pair_again() {
     for _ in 0..2 {
         let err = src.list(None).unwrap_err();
         assert!(matches!(err, fp_sources::Error::SignedOut(_)), "{err}");
-        assert!(err.to_string().contains("Quick Connect"), "{err}");
+        assert!(err.to_string().contains("sign in again"), "{err}");
     }
 }
 

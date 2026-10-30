@@ -93,6 +93,17 @@ impl Opener {
         source_id: Option<&str>,
         location: &str,
     ) -> Result<Arc<dyn ByteSource>, String> {
+        if location.starts_with("plex://") {
+            let owner = fp_sources::plex::owner(location).ok_or(tr!("open-no-source"))?;
+            if source_id.is_some_and(|s| s != owner) {
+                return Err(tr!("open-no-source").into());
+            }
+            return self
+                .source(&owner)
+                .ok_or(tr!("open-no-source"))?
+                .open(location)
+                .map_err(|e| crate::ui::errors::source(&e));
+        }
         if location.starts_with(volume::SCHEME) {
             let path = volume::resolve(location).ok_or(not_inserted())?;
             return self.open_in(None, &path);
@@ -165,6 +176,9 @@ impl Opener {
 
     /// Small downloads (thumbnails, scripts) from any http(s) URL.
     pub fn fetch(&self, url: &str, limit: u64) -> Result<Vec<u8>, String> {
+        if url.starts_with("plex://") {
+            return self.open(url).and_then(|f| read_whole(&*f, limit));
+        }
         if url.starts_with(volume::SCHEME) {
             let path = volume::resolve(url).ok_or(not_inserted())?;
             return self.fetch(&path, limit);
@@ -229,6 +243,8 @@ pub const REMOVABLE_SOURCE: &str = "device-removable";
 pub const LOCAL_HUB: &str = "on-device";
 
 pub struct Services {
+    device_identifier: String,
+    source_save_retry: Option<std::time::Instant>,
     pub library: Library,
     pub opener: Arc<Opener>,
     pub images: Arc<ImageCache>,
@@ -298,10 +314,42 @@ fn device_id(path: &Path) -> String {
 }
 
 impl Services {
+    pub fn device_identifier(&self) -> &str {
+        &self.device_identifier
+    }
+
+    /// Persists refreshed source credentials without rebuilding active sources.
+    pub fn poll_source_updates(&mut self) {
+        let mut changed = false;
+        for current in &mut self.source_configs {
+            if let Some(updated) = self
+                .opener
+                .source(current.id())
+                .and_then(|s| s.updated_config())
+                && updated.id() == current.id()
+                && updated.kind() == current.kind()
+            {
+                *current = updated;
+                changed = true;
+            }
+        }
+        let retry = self
+            .source_save_retry
+            .is_some_and(|at| at.elapsed() >= std::time::Duration::from_secs(10));
+        if changed || retry {
+            match fp_sources::save_configs(&Settings::sources_path(), &self.source_configs) {
+                Ok(()) => self.source_save_retry = None,
+                Err(e) => {
+                    log::warn!("saving refreshed source credentials: {e}");
+                    self.source_save_retry = Some(std::time::Instant::now());
+                }
+            }
+        }
+    }
+
     pub fn new(settings: &Settings, library: Library) -> Services {
-        fp_sources::mediabrowser::set_device_id(device_id(
-            &fp_core::dirs::config_dir().join("device-id"),
-        ));
+        let device_identifier = device_id(&fp_core::dirs::config_dir().join("device-id"));
+        fp_sources::mediabrowser::set_device_id(device_identifier.clone());
         let opener = Arc::new(Opener::new());
         let source_configs = match fp_sources::load_configs(&Settings::sources_path()) {
             Ok(c) => c,
@@ -316,12 +364,17 @@ impl Services {
             log::warn!("source unavailable: {e}");
         }
         let mut s = Services {
+            device_identifier,
+            source_save_retry: None,
             library,
-            opener,
-            images: Arc::new(ImageCache::new(
-                fp_core::dirs::cache_dir().join("images"),
-                settings.image_cache_mb,
-            )),
+            opener: opener.clone(),
+            images: Arc::new(
+                ImageCache::new(
+                    fp_core::dirs::cache_dir().join("images"),
+                    settings.image_cache_mb,
+                )
+                .with_opener(opener.clone()),
+            ),
             source_configs,
             worker: None,
             worker_events: None,

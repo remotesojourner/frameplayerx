@@ -1,4 +1,4 @@
-//! Browsing sources: folders, scene feeds, Jellyfin/Emby, and PIN locks.
+//! Browsing sources: folders, scene feeds, server catalogs, and PIN locks.
 
 use super::*;
 
@@ -183,14 +183,14 @@ impl App {
             page,
         };
         match kind {
-            fp_sources::SourceKind::MediaBrowser => {
+            fp_sources::SourceKind::MediaBrowser | fp_sources::SourceKind::Plex => {
                 let seq = self.ui.next_seq();
-                let j = ui::jellyfin::JellyfinView::new(seq);
-                self.ui.source = Some(view(SourcePage::Jellyfin(j)));
-                self.apply(Action::Jellyfin {
+                let j = ui::catalog::CatalogView::new(seq);
+                self.ui.source = Some(view(SourcePage::Catalog(j)));
+                self.apply(Action::Catalog {
                     source,
                     seq,
-                    load: ui::jellyfin::Load::Home,
+                    load: ui::catalog::Load::Home,
                 });
             }
             fp_sources::SourceKind::DeoVr | fp_sources::SourceKind::HereSphere => {
@@ -251,12 +251,12 @@ impl App {
         }
     }
 
-    /// Brings a Jellyfin page up to date after watching (marks, resume
+    /// Brings a catalog page up to date after watching (marks, resume
     /// points and "next up" changed on the server).
     pub(super) fn refresh_source(&mut self) {
         let Some(SourceView {
             source,
-            page: SourcePage::Jellyfin(j),
+            page: SourcePage::Catalog(j),
             ..
         }) = self.ui.source.as_mut()
         else {
@@ -265,28 +265,28 @@ impl App {
         let source = source.clone();
         if let Some((seq, load)) = j.reload() {
             // After the server has heard that playback stopped.
-            self.jellyfin_job(source, seq, load, Duration::from_millis(800));
+            self.catalog_job(source, seq, load, Duration::from_millis(800));
         }
     }
 
-    /// Asks a Jellyfin/Emby server for a page, after `delay`.
-    pub(super) fn jellyfin_job(
+    /// Asks a media server for a catalog page, after `delay`.
+    pub(super) fn catalog_job(
         &mut self,
         source: String,
         seq: u64,
-        load: ui::jellyfin::Load,
+        load: ui::catalog::Load,
         delay: Duration,
     ) {
         let Some(src) = self.services.opener.source(&source) else {
             return;
         };
-        self.jobs.spawn("jellyfin", move || {
+        self.jobs.spawn("catalog", move || {
             std::thread::sleep(delay);
-            let result = match src.as_media_browser() {
-                Some(mb) => ui::jellyfin::run(mb, &load).map_err(|e| ui::errors::source(&e)),
-                None => Err(tr!("source-not-jellyfin").to_string()),
+            let result = match src.as_catalog() {
+                Some(mb) => ui::catalog::run(mb, &load).map_err(|e| ui::errors::source(&e)),
+                None => Err(tr!("source-not-available").to_string()),
             };
-            Job::Jellyfin {
+            Job::Catalog {
                 source,
                 seq,
                 result: Box::new(result),
@@ -473,27 +473,27 @@ impl App {
         }
     }
 
-    // ---- Jellyfin, feeds, DLNA ----
+    // ---- Catalogs, feeds, DLNA ----
 
-    /// Marks a Jellyfin/Emby item as a favorite, or as watched, on the
+    /// Marks a catalog item as a favorite, or as watched, on the
     /// server.
-    pub(super) fn mark_jellyfin(
+    pub(super) fn mark_catalog(
         &mut self,
         source: &str,
         id: String,
-        mark: ui::jellyfin::Mark,
+        mark: ui::catalog::Mark,
         on: bool,
     ) {
         let Some(src) = self.services.opener.source(source) else {
             return;
         };
-        self.jobs.spawn("jellyfin-mark", move || {
-            let Some(mb) = src.as_media_browser() else {
-                return Job::Toast(tr!("source-not-jellyfin-toast").into());
+        self.jobs.spawn("catalog-mark", move || {
+            let Some(mb) = src.as_catalog() else {
+                return Job::Toast(tr!("source-not-available").into());
             };
             let r = match mark {
-                ui::jellyfin::Mark::Favorite => mb.set_favorite(&id, on),
-                ui::jellyfin::Mark::Played => mb.set_played(&id, on),
+                ui::catalog::Mark::Favorite => mb.set_favorite(&id, on),
+                ui::catalog::Mark::Played => mb.set_played(&id, on),
             };
             match r {
                 Ok(()) => Job::Done,

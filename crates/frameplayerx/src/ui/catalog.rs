@@ -1,4 +1,4 @@
-//! A Jellyfin/Emby client: the server's libraries and rows of what to watch
+//! A media-server catalog: the server's libraries and rows of what to watch
 //! next, poster grids the server searches, sorts, shuffles and filters
 //! (genres, decades, resolution, studios, tags), series with their seasons
 //! and episodes, and details pages. Watched marks, resume points and
@@ -11,7 +11,8 @@ use super::{Action, View, fmt_time, icons};
 use crate::playback::OpenRequest;
 use egui::{Align2, Color32, RichText, Sense, Vec2};
 use fp_sources::{
-    MbFacets, MbFilter, MbHome, MbItem, MbKind, MbPage, MbQuery, MbSort, MediaBrowserSource,
+    Catalog, CatalogCapabilities, CatalogFacets, CatalogFilter, CatalogHome, CatalogItem,
+    CatalogKind, CatalogPage, CatalogQuery, CatalogSort,
 };
 use std::time::{Duration, Instant};
 
@@ -27,7 +28,7 @@ const SEARCH_LIMIT: usize = 50;
 const BANNER: f32 = 320.0;
 
 /// The pages open on a server, the one shown last.
-pub struct JellyfinView {
+pub struct CatalogView {
     pub pages: Vec<Page>,
 }
 
@@ -42,7 +43,7 @@ pub struct Page {
 pub enum Body {
     /// Libraries and rows of what to watch.
     Home {
-        home: Option<MbHome>,
+        home: Option<CatalogHome>,
         search: String,
         /// When the search text last changed.
         typed: Option<Instant>,
@@ -55,26 +56,26 @@ pub enum Body {
         typed: Option<Instant>,
         /// What the results are for.
         asked: String,
-        results: Vec<(&'static str, Vec<MbItem>)>,
+        results: Vec<(&'static str, Vec<CatalogItem>)>,
     },
     /// A library, collection or folder, a page at a time.
     Grid(Box<Grid>),
     Series {
-        series: Box<MbItem>,
-        seasons: Vec<MbItem>,
+        series: Box<CatalogItem>,
+        seasons: Vec<CatalogItem>,
         season: Option<String>,
-        episodes: Vec<MbItem>,
-        next_up: Option<Box<MbItem>>,
+        episodes: Vec<CatalogItem>,
+        next_up: Option<Box<CatalogItem>>,
     },
     /// A film, episode or video.
-    Item { item: Box<MbItem> },
+    Item { item: Box<CatalogItem> },
 }
 
 /// A library, collection or folder, a page at a time.
 pub struct Grid {
     pub title: String,
-    pub query: MbQuery,
-    pub items: Vec<MbItem>,
+    pub query: CatalogQuery,
+    pub items: Vec<CatalogItem>,
     pub total: usize,
     pub typed: Option<Instant>,
     /// Every item of a shuffle, in its order, which its pages follow.
@@ -94,7 +95,7 @@ pub struct Grid {
 pub enum Facets {
     Unasked,
     Asked,
-    Got(MbFacets),
+    Got(CatalogFacets),
     Failed(String),
 }
 
@@ -108,7 +109,7 @@ enum On {
 }
 
 impl Grid {
-    fn new(title: String, query: MbQuery) -> Grid {
+    fn new(title: String, query: CatalogQuery) -> Grid {
         Grid {
             title,
             base_tags: query.tags.clone(),
@@ -178,14 +179,14 @@ impl Grid {
     }
 
     /// The next page: of a shuffle, its next items by id.
-    fn next_page(&self) -> MbQuery {
+    fn next_page(&self) -> CatalogQuery {
         let start = self.items.len();
         let ids = self
             .order
             .as_ref()
             .map(|o| o.iter().skip(start).take(PAGE).cloned().collect())
             .unwrap_or_default();
-        MbQuery {
+        CatalogQuery {
             start,
             limit: PAGE,
             ids,
@@ -226,9 +227,9 @@ pub enum Load {
     Search(String),
     /// A page of a listing; past the first it adds to what is shown. A
     /// shuffle's first asks for its order too.
-    Grid(MbQuery),
+    Grid(CatalogQuery),
     /// What a listing's library can be filtered by.
-    Facets(MbQuery),
+    Facets(CatalogQuery),
     /// A series with its seasons and one season's episodes (`season`, else
     /// the one to watch next).
     Series {
@@ -253,13 +254,13 @@ pub enum Mark {
 
 /// A server's answer to a [`Load`].
 pub enum Loaded {
-    Home(MbHome),
+    Home(CatalogHome),
     Search {
         text: String,
-        results: Vec<(&'static str, Vec<MbItem>)>,
+        results: Vec<(&'static str, Vec<CatalogItem>)>,
     },
     Grid {
-        page: MbPage,
+        page: CatalogPage,
         append: bool,
         /// A new shuffle's order.
         order: Option<Vec<String>>,
@@ -267,20 +268,20 @@ pub enum Loaded {
         by_id: bool,
     },
     /// Failing quietly: the drawer says so, the page goes on.
-    Facets(Result<MbFacets, String>),
+    Facets(Result<CatalogFacets, String>),
     Series {
-        series: Box<MbItem>,
-        seasons: Vec<MbItem>,
+        series: Box<CatalogItem>,
+        seasons: Vec<CatalogItem>,
         season: Option<String>,
-        episodes: Vec<MbItem>,
-        next_up: Option<Box<MbItem>>,
+        episodes: Vec<CatalogItem>,
+        next_up: Option<Box<CatalogItem>>,
     },
-    Episodes(Vec<MbItem>),
-    Item(Box<MbItem>),
+    Episodes(Vec<CatalogItem>),
+    Item(Box<CatalogItem>),
 }
 
 /// Asks the server (blocking: run it on a job thread).
-pub fn run(src: &MediaBrowserSource, load: &Load) -> fp_sources::Result<Loaded> {
+pub fn run(src: &dyn Catalog, load: &Load) -> fp_sources::Result<Loaded> {
     Ok(match load {
         Load::Home => Loaded::Home(src.home()?),
         Load::Search(text) => Loaded::Search {
@@ -289,7 +290,7 @@ pub fn run(src: &MediaBrowserSource, load: &Load) -> fp_sources::Result<Loaded> 
         },
         // A page of a shuffle: those items, wherever the listing starts.
         Load::Grid(q) if !q.ids.is_empty() => Loaded::Grid {
-            page: src.items(&MbQuery {
+            page: src.items(&CatalogQuery {
                 start: 0,
                 limit: q.ids.len(),
                 ..q.clone()
@@ -299,13 +300,13 @@ pub fn run(src: &MediaBrowserSource, load: &Load) -> fp_sources::Result<Loaded> 
             by_id: true,
         },
         // Server shuffles differ page to page: its order is asked for once.
-        Load::Grid(q) if q.sort == MbSort::Random => {
+        Load::Grid(q) if q.sort == CatalogSort::Random => {
             let order = src.shuffled(q)?;
             let first: Vec<String> = order.iter().take(q.limit).cloned().collect();
             let items = if first.is_empty() {
                 Vec::new()
             } else {
-                src.items(&MbQuery {
+                src.items(&CatalogQuery {
                     start: 0,
                     limit: first.len(),
                     ids: first,
@@ -314,7 +315,7 @@ pub fn run(src: &MediaBrowserSource, load: &Load) -> fp_sources::Result<Loaded> 
                 .items
             };
             Loaded::Grid {
-                page: MbPage {
+                page: CatalogPage {
                     total: order.len(),
                     items,
                 },
@@ -356,10 +357,10 @@ pub fn run(src: &MediaBrowserSource, load: &Load) -> fp_sources::Result<Loaded> 
     })
 }
 
-impl JellyfinView {
+impl CatalogView {
     /// The server's front page, loading under `seq`.
-    pub fn new(seq: u64) -> JellyfinView {
-        JellyfinView {
+    pub fn new(seq: u64) -> CatalogView {
+        CatalogView {
             pages: vec![Page {
                 seq,
                 loading: true,
@@ -473,12 +474,12 @@ impl JellyfinView {
             Body::Search { asked, .. } => Load::Search(asked.clone()),
             Body::Grid(g) => Load::Grid(match &g.order {
                 // The same shuffle, brought up to date.
-                Some(o) => MbQuery {
+                Some(o) => CatalogQuery {
                     start: 0,
                     ids: o.iter().take(g.items.len().max(PAGE)).cloned().collect(),
                     ..g.query.clone()
                 },
-                None => MbQuery {
+                None => CatalogQuery {
                     start: 0,
                     limit: g.items.len().max(PAGE),
                     ..g.query.clone()
@@ -510,7 +511,7 @@ impl JellyfinView {
     /// Shows a mark at once wherever the item appears; the server is told
     /// separately.
     fn mark(&mut self, id: &str, mark: Mark, on: bool) {
-        let set = |i: &mut MbItem| {
+        let set = |i: &mut CatalogItem| {
             if i.id != id {
                 return;
             }
@@ -561,19 +562,19 @@ impl JellyfinView {
 /// What the page asked for while it was drawn.
 enum Go {
     /// Into a library, collection, folder, series or season.
-    Open(MbItem),
+    Open(CatalogItem),
     /// Item `.1` of a list, the rest queued; `.2` from the start.
-    Play(Vec<MbItem>, usize, bool),
+    Play(Vec<CatalogItem>, usize, bool),
     /// Play next (`true`) or Add to queue.
-    Queue(MbItem, bool),
-    AddToPlaylist(MbItem),
+    Queue(CatalogItem, bool),
+    AddToPlaylist(CatalogItem),
     /// Everything on the server with this tag.
     Tag(String),
-    Details(MbItem),
+    Details(CatalogItem),
     /// Load again what the page shows (`Load` with the page's number).
     Reload(Load),
     /// The Filters drawer's choices, beside what the page shows.
-    Facets(MbQuery),
+    Facets(CatalogQuery),
     Mark(String, Mark, bool),
     /// Play the item at this location from this version (`None`: the
     /// tallest that fits).
@@ -587,8 +588,14 @@ pub fn page(
     v: &mut View,
     source: &str,
     name: &str,
-    j: &mut JellyfinView,
+    j: &mut CatalogView,
 ) -> bool {
+    let caps = v
+        .services
+        .opener
+        .source(source)
+        .and_then(|src| src.as_catalog().map(Catalog::capabilities))
+        .unwrap_or_default();
     let subtitle = trail(&j.pages);
     let Some(p) = j.pages.last_mut() else {
         return true;
@@ -606,7 +613,7 @@ pub fn page(
     });
     if refresh {
         if let Some((seq, load)) = j.reload() {
-            v.actions.push(Action::Jellyfin {
+            v.actions.push(Action::Catalog {
                 source: source.to_string(),
                 seq,
                 load,
@@ -649,15 +656,24 @@ pub fn page(
                 asked,
                 results,
             } => search_results(ui, v, search, typed, asked, results, loading),
-            Body::Grid(g) => grid(ui, v, g, loading),
+            Body::Grid(g) => grid(ui, v, g, loading, caps),
             Body::Series {
                 series,
                 seasons,
                 season,
                 episodes,
                 next_up,
-            } => series_page(ui, v, series, seasons, season, episodes, next_up.as_deref()),
-            Body::Item { item } => details(ui, v, item),
+            } => series_page(
+                ui,
+                v,
+                series,
+                seasons,
+                season,
+                episodes,
+                next_up.as_deref(),
+                caps,
+            ),
+            Body::Item { item } => details(ui, v, item, caps),
         };
     });
     if let Some(go) = go {
@@ -667,9 +683,9 @@ pub fn page(
 }
 
 /// Carries out what the page asked for.
-fn follow(v: &mut View, source: &str, j: &mut JellyfinView, go: Go) {
+fn follow(v: &mut View, source: &str, j: &mut CatalogView, go: Go) {
     let ask = |v: &mut View, seq: u64, load: Load| {
-        v.actions.push(Action::Jellyfin {
+        v.actions.push(Action::Catalog {
             source: source.to_string(),
             seq,
             load,
@@ -707,14 +723,14 @@ fn follow(v: &mut View, source: &str, j: &mut JellyfinView, go: Go) {
         }
         Go::Mark(id, mark, on) => {
             j.mark(&id, mark, on);
-            v.actions.push(Action::JellyfinMark {
+            v.actions.push(Action::CatalogMark {
                 source: source.to_string(),
                 id,
                 mark,
                 on,
             });
         }
-        Go::Version(location, version) => v.actions.push(Action::JellyfinVersion {
+        Go::Version(location, version) => v.actions.push(Action::CatalogVersion {
             source: source.to_string(),
             location,
             version,
@@ -757,9 +773,9 @@ fn follow(v: &mut View, source: &str, j: &mut JellyfinView, go: Go) {
         }
         Go::Tag(tag) => {
             let seq = v.state.next_seq();
-            let query = MbQuery {
+            let query = CatalogQuery {
                 limit: PAGE,
-                ..MbQuery::tagged(&tag)
+                ..CatalogQuery::tagged(&tag)
             };
             let title = tr!("jf-tagged", tag = tag.as_str());
             let body = Body::Grid(Box::new(Grid::new(title, query.clone())));
@@ -771,10 +787,10 @@ fn follow(v: &mut View, source: &str, j: &mut JellyfinView, go: Go) {
 
 /// What opening a library, collection, folder, series or season loads,
 /// and the page that shows it.
-fn page_for(item: MbItem) -> (Load, Body) {
+fn page_for(item: CatalogItem) -> (Load, Body) {
     match item.kind {
-        MbKind::Series | MbKind::Season => {
-            let (id, season) = if item.kind == MbKind::Season {
+        CatalogKind::Series | CatalogKind::Season => {
+            let (id, season) = if item.kind == CatalogKind::Season {
                 (
                     item.series_id.clone().unwrap_or_default(),
                     Some(item.id.clone()),
@@ -786,10 +802,10 @@ fn page_for(item: MbItem) -> (Load, Body) {
                 id: id.clone(),
                 season: season.clone(),
             };
-            let series = MbItem {
+            let series = CatalogItem {
                 id,
                 name: item.series_name.clone().unwrap_or(item.name.clone()),
-                kind: MbKind::Series,
+                kind: CatalogKind::Series,
                 ..item
             };
             let body = Body::Series {
@@ -802,9 +818,9 @@ fn page_for(item: MbItem) -> (Load, Body) {
             (load, body)
         }
         _ => {
-            let query = MbQuery {
+            let query = CatalogQuery {
                 limit: PAGE,
-                ..MbQuery::children(&item)
+                ..CatalogQuery::children(&item)
             };
             let body = Body::Grid(Box::new(Grid::new(item.name.clone(), query.clone())));
             (Load::Grid(query), body)
@@ -827,7 +843,7 @@ fn trail(pages: &[Page]) -> String {
         })
         .collect();
     if parts.is_empty() {
-        return "Jellyfin / Emby".into();
+        return String::new();
     }
     parts[parts.len().saturating_sub(3)..].join(&format!("  {}  ", icons::CARET_RIGHT))
 }
@@ -844,7 +860,7 @@ fn has_content(body: &Body) -> bool {
 }
 
 /// Opens `item`, starting from the server's resume point.
-fn request(source: &str, item: &MbItem, from_start: bool) -> OpenRequest {
+fn request(source: &str, item: &CatalogItem, from_start: bool) -> OpenRequest {
     OpenRequest {
         location: item.location.clone(),
         source_id: Some(source.to_string()),
@@ -860,10 +876,10 @@ fn request(source: &str, item: &MbItem, from_start: bool) -> OpenRequest {
 }
 
 /// "1982 · 1:57:00", "S1:E3 · Westworld", "4 seasons".
-fn card_facts(item: &MbItem) -> String {
+fn card_facts(item: &CatalogItem) -> String {
     let mut f = Vec::new();
     match item.kind {
-        MbKind::Episode => {
+        CatalogKind::Episode => {
             if let Some(e) = item.episode_label() {
                 f.push(e);
             }
@@ -871,7 +887,7 @@ fn card_facts(item: &MbItem) -> String {
                 f.push(s.clone());
             }
         }
-        MbKind::Series => {
+        CatalogKind::Series => {
             if let Some(y) = item.year {
                 f.push(y.to_string());
             }
@@ -880,7 +896,7 @@ fn card_facts(item: &MbItem) -> String {
                 _ => {}
             }
         }
-        MbKind::BoxSet | MbKind::Folder | MbKind::Library => {
+        CatalogKind::BoxSet | CatalogKind::Folder | CatalogKind::Library => {
             if let Some(n) = item.child_count {
                 f.push(tr!("count-items", count = (n as usize)));
             }
@@ -900,7 +916,7 @@ fn card_facts(item: &MbItem) -> String {
 }
 
 /// A VR format worth a badge (flat films get none).
-fn vr_badge(item: &MbItem) -> Option<String> {
+fn vr_badge(item: &CatalogItem) -> Option<String> {
     format_badge(item.format)
 }
 
@@ -913,7 +929,12 @@ fn format_badge(format: Option<fp_core::format::VideoFormat>) -> Option<String> 
 }
 
 /// An item's card, a poster or 16:9 art.
-fn item_card(ui: &mut egui::Ui, v: &mut View, item: &MbItem, portrait: bool) -> page::CardResponse {
+fn item_card(
+    ui: &mut egui::Ui,
+    v: &mut View,
+    item: &CatalogItem,
+    portrait: bool,
+) -> page::CardResponse {
     let thumb = if portrait {
         item.poster.clone()
     } else {
@@ -922,9 +943,9 @@ fn item_card(ui: &mut egui::Ui, v: &mut View, item: &MbItem, portrait: bool) -> 
     let facts = card_facts(item);
     let badge = vr_badge(item);
     let placeholder = match item.kind {
-        MbKind::Series | MbKind::Season => icons::MONITOR_PLAY,
-        MbKind::Library | MbKind::Folder | MbKind::BoxSet => icons::FOLDERS,
-        MbKind::Person => icons::USER,
+        CatalogKind::Series | CatalogKind::Season => icons::MONITOR_PLAY,
+        CatalogKind::Library | CatalogKind::Folder | CatalogKind::BoxSet => icons::FOLDERS,
+        CatalogKind::Person => icons::USER,
         _ => icons::FILM_STRIP,
     };
     page::card(
@@ -952,7 +973,7 @@ fn item_card(ui: &mut egui::Ui, v: &mut View, item: &MbItem, portrait: bool) -> 
 }
 
 /// What clicking a card in `list` does.
-fn card_go(c: page::CardResponse, list: &[MbItem], i: usize) -> Option<Go> {
+fn card_go(c: page::CardResponse, list: &[CatalogItem], i: usize) -> Option<Go> {
     let item = &list[i];
     if c.more {
         Some(Go::Details(item.clone()))
@@ -970,7 +991,7 @@ fn item_row(
     ui: &mut egui::Ui,
     v: &mut View,
     title: &str,
-    items: &[MbItem],
+    items: &[CatalogItem],
     landscape: bool,
 ) -> Option<Go> {
     let mut go = None;
@@ -982,7 +1003,7 @@ fn item_row(
     go
 }
 
-fn home_rows(ui: &mut egui::Ui, v: &mut View, h: &MbHome) -> Option<Go> {
+fn home_rows(ui: &mut egui::Ui, v: &mut View, h: &CatalogHome) -> Option<Go> {
     ui.add_space(6.0);
     let mut go = item_row(ui, v, tr!("jf-my-media"), &h.libraries, true);
     go = go.or(item_row(ui, v, tr!("jf-continue"), &h.resume, true));
@@ -1011,7 +1032,7 @@ fn search_results(
     search: &str,
     typed: &mut Option<Instant>,
     asked: &str,
-    results: &[(&'static str, Vec<MbItem>)],
+    results: &[(&'static str, Vec<CatalogItem>)],
     loading: bool,
 ) -> Option<Go> {
     if let Some(t) = *typed {
@@ -1044,7 +1065,13 @@ fn search_results(
 
 /// A searchable, sortable, filterable listing, loading more as its end
 /// shows.
-fn grid(ui: &mut egui::Ui, v: &mut View, g: &mut Grid, loading: bool) -> Option<Go> {
+fn grid(
+    ui: &mut egui::Ui,
+    v: &mut View,
+    g: &mut Grid,
+    loading: bool,
+    caps: CatalogCapabilities,
+) -> Option<Go> {
     let mut changed = false;
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 8.0;
@@ -1056,11 +1083,14 @@ fn grid(ui: &mut egui::Ui, v: &mut View, g: &mut Grid, loading: bool) -> Option<
         }
         ui.add_space(10.0);
         for (f, label) in [
-            (MbFilter::All, tr!("filter-all")),
-            (MbFilter::Unplayed, tr!("filter-unwatched")),
-            (MbFilter::Resumable, tr!("filter-in-progress")),
-            (MbFilter::Favorites, tr!("filter-favorites")),
+            (CatalogFilter::All, tr!("filter-all")),
+            (CatalogFilter::Unplayed, tr!("filter-unwatched")),
+            (CatalogFilter::Resumable, tr!("filter-in-progress")),
+            (CatalogFilter::Favorites, tr!("filter-favorites")),
         ] {
+            if f == CatalogFilter::Favorites && !caps.favorites {
+                continue;
+            }
             if widgets::chip(ui, label, g.query.filter == f).clicked() && g.query.filter != f {
                 g.query.filter = f;
                 changed = true;
@@ -1072,20 +1102,20 @@ fn grid(ui: &mut egui::Ui, v: &mut View, g: &mut Grid, loading: bool) -> Option<
         if page::sort_bar(
             ui,
             &[
-                (MbSort::Name, tr!("sort-title")),
-                (MbSort::Added, tr!("sort-date-added")),
-                (MbSort::Released, tr!("sort-release-date")),
-                (MbSort::Rating, tr!("filter-rating")),
-                (MbSort::Runtime, tr!("filter-length")),
-                (MbSort::LastWatched, tr!("sort-last-watched")),
-                (MbSort::Random, tr!("sort-shuffle")),
+                (CatalogSort::Name, tr!("sort-title")),
+                (CatalogSort::Added, tr!("sort-date-added")),
+                (CatalogSort::Released, tr!("sort-release-date")),
+                (CatalogSort::Rating, tr!("filter-rating")),
+                (CatalogSort::Runtime, tr!("filter-length")),
+                (CatalogSort::LastWatched, tr!("sort-last-watched")),
+                (CatalogSort::Random, tr!("sort-shuffle")),
             ],
             &mut g.query.sort,
         ) {
             g.query.descending = g.query.sort.default_descending();
             changed = true;
         }
-        changed |= if g.query.sort == MbSort::Random {
+        changed |= if g.query.sort == CatalogSort::Random {
             page::shuffle_again(ui)
         } else {
             page::direction(
@@ -1124,7 +1154,7 @@ fn grid(ui: &mut egui::Ui, v: &mut View, g: &mut Grid, loading: bool) -> Option<
         }
         let mut open = true;
         let count = tr!("count-items", count = g.total);
-        let clear = page::filter_drawer(ui, &mut open, &count, |ui| changed |= drawer(ui, g));
+        let clear = page::filter_drawer(ui, &mut open, &count, |ui| changed |= drawer(ui, g, caps));
         g.filters_open = open;
         if clear {
             g.clear_filters();
@@ -1160,7 +1190,7 @@ fn grid(ui: &mut egui::Ui, v: &mut View, g: &mut Grid, loading: bool) -> Option<
 
 /// The Filters drawer's sections, those the library has choices for; true
 /// when a filter changed.
-fn drawer(ui: &mut egui::Ui, g: &mut Grid) -> bool {
+fn drawer(ui: &mut egui::Ui, g: &mut Grid, caps: CatalogCapabilities) -> bool {
     let facets = match std::mem::replace(&mut g.facets, Facets::Asked) {
         Facets::Got(f) => f,
         other => {
@@ -1233,10 +1263,7 @@ fn drawer(ui: &mut egui::Ui, g: &mut Grid) -> bool {
         });
     }
     // Series and folders have no width of their own.
-    let videos = q.types.is_empty()
-        || q.types
-            .iter()
-            .any(|t| matches!(t.as_str(), "Movie" | "Video" | "MusicVideo" | "Episode"));
+    let videos = caps.width_filter && (q.types.is_empty() || q.types.iter().any(|t| t.playable()));
     if videos {
         page::filter_section(ui, tr!("adjust-resolution"), |ui| {
             for (w, label) in RESOLUTIONS {
@@ -1260,7 +1287,7 @@ fn drawer(ui: &mut egui::Ui, g: &mut Grid) -> bool {
     let tags: Vec<&str> = facets
         .tags
         .iter()
-        .filter(|t| !g.base_tags.contains(t))
+        .filter(|t| caps.tags && !g.base_tags.contains(t))
         .map(String::as_str)
         .collect();
     changed |= list(
@@ -1270,7 +1297,7 @@ fn drawer(ui: &mut egui::Ui, g: &mut Grid) -> bool {
         &tags,
         &mut q.tags,
     );
-    if facets.genres.is_empty() && facets.studios.is_empty() && facets.tags.is_empty() && !videos {
+    if facets.genres.is_empty() && facets.studios.is_empty() && tags.is_empty() && !videos {
         ui.label(RichText::new(tr!("jf-no-filters")).color(theme::TEXT_2));
     }
     g.facets = Facets::Got(facets);
@@ -1278,7 +1305,7 @@ fn drawer(ui: &mut egui::Ui, g: &mut Grid) -> bool {
 }
 
 /// Year, rating and other facts about an item.
-fn item_facts(item: &MbItem) -> Vec<String> {
+fn item_facts(item: &CatalogItem) -> Vec<String> {
     let mut f = Vec::new();
     if let Some(y) = item.year {
         f.push(y.to_string());
@@ -1304,14 +1331,15 @@ fn item_facts(item: &MbItem) -> Vec<String> {
 }
 
 /// The favourite and watched toggles.
-fn mark_chips(ui: &mut egui::Ui, item: &MbItem) -> Option<Go> {
+fn mark_chips(ui: &mut egui::Ui, item: &CatalogItem, caps: CatalogCapabilities) -> Option<Go> {
     let mut go = None;
     let heart = if item.favorite {
         tr!("feed-favorite")
     } else {
         tr!("feed-add-favorite")
     };
-    if widgets::chip_icon(ui, Some(icons::HEART), heart, item.favorite).clicked() {
+    if caps.favorites && widgets::chip_icon(ui, Some(icons::HEART), heart, item.favorite).clicked()
+    {
         go = Some(Go::Mark(item.id.clone(), Mark::Favorite, !item.favorite));
     }
     if widgets::chip_icon(ui, Some(icons::CHECK), tr!("jf-watched"), item.played).clicked() {
@@ -1334,11 +1362,12 @@ fn clip(text: &str, max: usize) -> String {
 fn series_page(
     ui: &mut egui::Ui,
     v: &mut View,
-    series: &MbItem,
-    seasons: &[MbItem],
+    series: &CatalogItem,
+    seasons: &[CatalogItem],
     season: &mut Option<String>,
-    episodes: &[MbItem],
-    next_up: Option<&MbItem>,
+    episodes: &[CatalogItem],
+    next_up: Option<&CatalogItem>,
+    caps: CatalogCapabilities,
 ) -> Option<Go> {
     let mut go = None;
     ui.add_space(4.0);
@@ -1385,7 +1414,7 @@ fn series_page(
                     });
                 }
             }
-            go = go.take().or(mark_chips(ui, series));
+            go = go.take().or(mark_chips(ui, series, caps));
         });
     });
     ui.add_space(18.0);
@@ -1420,7 +1449,7 @@ fn series_page(
 
 /// One episode: still, number and title, facts, the start of its story;
 /// returns (play clicked, details clicked).
-fn episode_row(ui: &mut egui::Ui, v: &mut View, e: &MbItem) -> (bool, bool) {
+fn episode_row(ui: &mut egui::Ui, v: &mut View, e: &CatalogItem) -> (bool, bool) {
     let (rect, resp) =
         ui.allocate_exact_size(Vec2::new(ui.available_width(), 132.0), Sense::click());
     if !ui.is_rect_visible(rect) {
@@ -1554,7 +1583,12 @@ fn episode_row(ui: &mut egui::Ui, v: &mut View, e: &MbItem) -> (bool, bool) {
 }
 
 /// A film's, episode's or video's page.
-fn details(ui: &mut egui::Ui, v: &mut View, item: &mut MbItem) -> Option<Go> {
+fn details(
+    ui: &mut egui::Ui,
+    v: &mut View,
+    item: &mut CatalogItem,
+    caps: CatalogCapabilities,
+) -> Option<Go> {
     let mut go = None;
     ui.add_space(4.0);
     let key = item
@@ -1602,7 +1636,10 @@ fn details(ui: &mut egui::Ui, v: &mut View, item: &mut MbItem) -> Option<Go> {
         });
         if matches!(
             item.kind,
-            MbKind::Movie | MbKind::Episode | MbKind::Video | MbKind::MusicVideo
+            CatalogKind::Movie
+                | CatalogKind::Episode
+                | CatalogKind::Video
+                | CatalogKind::MusicVideo
         ) {
             inner.add_space(8.0);
             inner.horizontal(|ui| {
@@ -1624,17 +1661,17 @@ fn details(ui: &mut egui::Ui, v: &mut View, item: &mut MbItem) -> Option<Go> {
         inner.add_space(8.0);
         inner.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 8.0;
-            go = go.take().or(mark_chips(ui, item));
-            if item.kind == MbKind::Episode
+            go = go.take().or(mark_chips(ui, item, caps));
+            if item.kind == CatalogKind::Episode
                 && let Some(id) = &item.series_id
                 && widgets::chip_icon(ui, Some(icons::MONITOR_PLAY), tr!("jf-series"), false)
                     .clicked()
             {
-                go = Some(Go::Open(MbItem {
+                go = Some(Go::Open(CatalogItem {
                     id: id.clone(),
                     name: item.series_name.clone().unwrap_or_default(),
-                    kind: MbKind::Series,
-                    ..MbItem::default()
+                    kind: CatalogKind::Series,
+                    ..CatalogItem::default()
                 }));
             }
         });
@@ -1689,7 +1726,7 @@ fn details(ui: &mut egui::Ui, v: &mut View, item: &mut MbItem) -> Option<Go> {
             .join(",  "),
     );
     line(ui, tr!("filter-studios"), item.studios.join("  ·  "));
-    if !item.tags.is_empty() {
+    if caps.tags && !item.tags.is_empty() {
         widgets::section_label(ui, tr!("filter-tags"));
         ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing = Vec2::new(8.0, 8.0);
@@ -1706,7 +1743,7 @@ fn details(ui: &mut egui::Ui, v: &mut View, item: &mut MbItem) -> Option<Go> {
 
 /// The versions the server keeps of a film or video (4K and 1080p, a
 /// director's cut); the one clicked, to play it from wherever it is opened.
-fn version_chips(ui: &mut egui::Ui, item: &MbItem) -> Option<Option<String>> {
+fn version_chips(ui: &mut egui::Ui, item: &CatalogItem) -> Option<Option<String>> {
     let mut chosen = None;
     widgets::section_label(ui, tr!("jf-version"));
     ui.horizontal_wrapped(|ui| {
@@ -1735,37 +1772,37 @@ fn version_chips(ui: &mut egui::Ui, item: &MbItem) -> Option<Option<String>> {
 mod tests {
     use super::*;
 
-    fn item(id: &str, kind: MbKind) -> MbItem {
-        MbItem {
+    fn item(id: &str, kind: CatalogKind) -> CatalogItem {
+        CatalogItem {
             id: id.into(),
             name: id.into(),
             kind,
-            ..MbItem::default()
+            ..CatalogItem::default()
         }
     }
 
     #[test]
     fn answers_reach_the_page_that_asked() {
-        let mut j = JellyfinView::new(1);
+        let mut j = CatalogView::new(1);
         j.pages.push(Page {
             seq: 2,
             loading: true,
             error: None,
             body: Body::Grid(Box::new(Grid::new(
                 "Movies".into(),
-                MbQuery {
+                CatalogQuery {
                     parent: Some("lib".into()),
-                    ..MbQuery::default()
+                    ..CatalogQuery::default()
                 },
             ))),
         });
-        let page = |n: usize| MbPage {
+        let page = |n: usize| CatalogPage {
             items: (0..n)
-                .map(|i| item(&i.to_string(), MbKind::Movie))
+                .map(|i| item(&i.to_string(), CatalogKind::Movie))
                 .collect(),
             total: 100,
         };
-        let grid = |page: MbPage, append: bool| Loaded::Grid {
+        let grid = |page: CatalogPage, append: bool| Loaded::Grid {
             page,
             append,
             order: None,
@@ -1786,7 +1823,7 @@ mod tests {
         assert_eq!(j.pages[0].error.as_deref(), Some("offline"));
 
         // The header says where the page is.
-        assert_eq!(trail(&j.pages[..1]), "Jellyfin / Emby");
+        assert!(trail(&j.pages[..1]).is_empty());
         assert_eq!(trail(&j.pages), "Movies");
 
         // A reload covers everything shown.
@@ -1798,13 +1835,13 @@ mod tests {
 
     #[test]
     fn a_shuffle_pages_through_its_own_order() {
-        let mut j = JellyfinView::new(1);
-        let mut g = Grid::new("Movies".into(), MbQuery::default());
-        g.query.sort = MbSort::Random;
+        let mut j = CatalogView::new(1);
+        let mut g = Grid::new("Movies".into(), CatalogQuery::default());
+        g.query.sort = CatalogSort::Random;
         j.pages[0].body = Body::Grid(Box::new(g));
         let order: Vec<String> = (0..150).map(|i| format!("id{i}")).collect();
-        let items = |ids: &[String]| MbPage {
-            items: ids.iter().map(|i| item(i, MbKind::Movie)).collect(),
+        let items = |ids: &[String]| CatalogPage {
+            items: ids.iter().map(|i| item(i, CatalogKind::Movie)).collect(),
             total: 0,
         };
         j.loaded(
@@ -1855,13 +1892,13 @@ mod tests {
         assert!(g.order.is_some());
         // The drawer's choices don't end the page's loading.
         j.pages[0].loading = true;
-        j.loaded(1, Ok(Loaded::Facets(Ok(MbFacets::default()))));
+        j.loaded(1, Ok(Loaded::Facets(Ok(CatalogFacets::default()))));
         assert!(j.pages[0].loading);
     }
 
     #[test]
     fn filters_are_chips_until_taken_off() {
-        let mut g = Grid::new("Tagged sea".into(), MbQuery::tagged("sea"));
+        let mut g = Grid::new("Tagged sea".into(), CatalogQuery::tagged("sea"));
         assert!(g.labels().is_empty(), "the page's own tag is no filter");
         g.query.genres = vec!["Drama".into()];
         g.query.years = (1990..2000).chain([2004]).collect();
@@ -1882,14 +1919,14 @@ mod tests {
 
     #[test]
     fn marks_show_everywhere() {
-        let mut j = JellyfinView::new(1);
-        let mut watched = item("e1", MbKind::Episode);
+        let mut j = CatalogView::new(1);
+        let mut watched = item("e1", CatalogKind::Episode);
         watched.position = 300.0;
         j.loaded(
             1,
-            Ok(Loaded::Home(MbHome {
+            Ok(Loaded::Home(CatalogHome {
                 resume: vec![watched.clone()],
-                ..MbHome::default()
+                ..CatalogHome::default()
             })),
         );
         j.pages.push(Page {
@@ -1914,7 +1951,7 @@ mod tests {
 
     #[test]
     fn search_pages_show_rows_by_kind() {
-        let mut j = JellyfinView::new(1);
+        let mut j = CatalogView::new(1);
         j.pages.push(Page {
             seq: 2,
             loading: true,
@@ -1932,8 +1969,8 @@ mod tests {
             Ok(Loaded::Search {
                 text: "aliens".into(),
                 results: vec![
-                    ("Movies", vec![item("m1", MbKind::Movie)]),
-                    ("Shows", vec![item("s1", MbKind::Series)]),
+                    ("Movies", vec![item("m1", CatalogKind::Movie)]),
+                    ("Shows", vec![item("s1", CatalogKind::Series)]),
                 ],
             }),
         );
@@ -1957,7 +1994,7 @@ mod tests {
 
     #[test]
     fn requests_resume_from_the_server() {
-        let mut m = item("m1", MbKind::Movie);
+        let mut m = item("m1", CatalogKind::Movie);
         m.location = "mb:http://jf#item=m1".into();
         assert_eq!(request("jf", &m, false).start_at, None);
         m.position = 120.0;

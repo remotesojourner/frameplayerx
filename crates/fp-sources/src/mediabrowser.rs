@@ -1162,6 +1162,10 @@ impl Source for MediaBrowserSource {
     fn as_media_browser(&self) -> Option<&MediaBrowserSource> {
         Some(self)
     }
+
+    fn as_catalog(&self) -> Option<&dyn crate::Catalog> {
+        Some(self)
+    }
 }
 
 /// Initiates Quick Connect for a server URL.

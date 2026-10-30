@@ -16,12 +16,14 @@
 //! | DeoVR / HereSphere feeds | [`feed`] | feed and scene URLs |
 //! | SMB2/3 | [`smb`] | `smb://host/share/path` |
 //! | Jellyfin / Emby | [`mediabrowser`] | `mb:<url>#<kind>=<id>` |
+//! | Plex | [`plex`] | `plex://source/<source>/<machine>/<kind>/<id>` |
 //!
 //! Sources are built from a serializable [`SourceConfig`] with [`build`];
 //! [`save_configs`] / [`load_configs`] persist them (credentials included)
 //! in a 0600 JSON file. Blocking I/O and plain threads only.
 
 pub mod cache;
+pub mod catalog;
 pub mod config;
 pub mod dlna;
 pub mod error;
@@ -31,6 +33,7 @@ pub mod httpdir;
 mod json;
 pub mod local;
 pub mod mediabrowser;
+pub mod plex;
 pub mod sidecar;
 pub mod smb;
 pub mod timeutil;
@@ -41,10 +44,14 @@ pub mod webdav;
 mod xml;
 
 pub use cache::{CacheOptions, CacheStats};
+pub use catalog::{
+    Catalog, CatalogCapabilities, CatalogFacets, CatalogFilter, CatalogHome, CatalogItem,
+    CatalogKind, CatalogPage, CatalogQuery, CatalogSort, CatalogVersion,
+};
 pub use config::{
     CardRef, Credentials, DlnaConfig, FeedConfig, HttpConfig, LibraryConfig, LocalConfig,
-    MediaBrowserConfig, SmbConfig, SourceConfig, SourceKind, default_config_path, load_configs,
-    save_configs,
+    MediaBrowserConfig, PlexConfig, SmbConfig, SourceConfig, SourceKind, default_config_path,
+    load_configs, save_configs,
 };
 pub use dlna::{DlnaDevice, DlnaSource, SsdpResponse, discover};
 pub use error::{Error, Result};
@@ -59,7 +66,7 @@ pub use mediabrowser::{
 pub use sidecar::{ScriptFile, Sidecars, SubtitleFile, match_sidecars};
 pub use smb::SmbSource;
 pub use transcode::TranscodeTarget;
-pub use watch::{WatchEvent, WatchKind, WatchSession};
+pub use watch::{PlaybackTrack, WatchEvent, WatchKind, WatchSession};
 pub use webdav::WebDavSource;
 
 use fp_core::source::{ByteSource, Entry, EntryKind, is_video_name};
@@ -89,6 +96,20 @@ pub trait Source: Send + Sync {
     /// Opens a file for random access.
     fn open(&self, location: &str) -> Result<Arc<dyn ByteSource>>;
 
+    /// Opens media using the same session as its playback reports.
+    fn open_playback(
+        &self,
+        location: &str,
+        _session: &WatchSession,
+    ) -> Result<Arc<dyn ByteSource>> {
+        self.open(location)
+    }
+
+    /// A refreshed configuration to persist; taking it performs no network I/O.
+    fn updated_config(&self) -> Option<SourceConfig> {
+        None
+    }
+
     /// Folder containing `location`, when the source can list it.
     fn parent(&self, _location: &str) -> Option<String> {
         None
@@ -115,6 +136,11 @@ pub trait Source: Send + Sync {
         None
     }
 
+    /// Original track choices when an encoding exposes only its selected tracks.
+    fn playback_tracks(&self, _video: &Entry) -> Result<Vec<PlaybackTrack>> {
+        Ok(Vec::new())
+    }
+
     /// Tells the server one change in a [`Source::watch_session`].
     fn report_watch(&self, _session: &WatchSession, _event: WatchEvent) -> Result<()> {
         Ok(())
@@ -136,6 +162,17 @@ pub trait Source: Send + Sync {
         Err(Error::NotFound(format!("transcode {id} of {location}")))
     }
 
+    /// Restarts an encoding within the video's existing playback session.
+    fn open_transcode_session(
+        &self,
+        location: &str,
+        id: &str,
+        start: f64,
+        _session: &WatchSession,
+    ) -> Result<Arc<dyn ByteSource>> {
+        self.open_transcode(location, id, start)
+    }
+
     /// This source as a DeoVR feed or HereSphere API, when it is one.
     fn as_scene_feed(&self) -> Option<&dyn SceneFeed> {
         None
@@ -143,6 +180,11 @@ pub trait Source: Send + Sync {
 
     /// This source as a Jellyfin/Emby server, when it is one.
     fn as_media_browser(&self) -> Option<&MediaBrowserSource> {
+        None
+    }
+
+    /// This source's rich media catalog, when it has one.
+    fn as_catalog(&self) -> Option<&dyn Catalog> {
         None
     }
 }
@@ -175,6 +217,7 @@ pub fn build(config: &SourceConfig) -> Result<Box<dyn Source>> {
         SourceConfig::HereSphere(c) => Box::new(FeedSource::heresphere(c)?),
         SourceConfig::Smb(c) => Box::new(SmbSource::new(c)?),
         SourceConfig::MediaBrowser(c) => Box::new(MediaBrowserSource::new(c)?),
+        SourceConfig::Plex(c) => Box::new(plex::PlexSource::new(c)?),
     })
 }
 

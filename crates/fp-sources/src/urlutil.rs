@@ -154,6 +154,13 @@ const SECRET_PARAMS: &[&str] = &[
     "pass",
     "token",
     "access_token",
+    "auth_token",
+    "authtoken",
+    "x-plex-token",
+    "devicejwt",
+    "jwt",
+    "pin",
+    "code",
     "auth",
     "key",
 ];
@@ -185,7 +192,11 @@ pub fn redact(location: &str) -> String {
         let redacted: Vec<String> = query
             .split('&')
             .map(|pair| match pair.split_once('=') {
-                Some((k, _)) if SECRET_PARAMS.iter().any(|s| s.eq_ignore_ascii_case(k)) => {
+                Some((k, _))
+                    if SECRET_PARAMS
+                        .iter()
+                        .any(|s| s.eq_ignore_ascii_case(&percent_decode(k))) =>
+                {
                     format!("{k}=***")
                 }
                 _ => pair.to_string(),
@@ -431,6 +442,14 @@ mod tests {
         assert_eq!(redact("http://bob@nas/a"), "http://bob@nas/a");
         assert_eq!(redact("smb://u:pw@host/share"), "smb://u:***@host/share");
         assert_eq!(redact("/local/a?b"), "/local/a?b");
+        assert_eq!(
+            redact("https://app.plex.tv/auth#?code=secret&clientID=device"),
+            "https://app.plex.tv/auth#?code=***&clientID=device"
+        );
+        assert_eq!(
+            redact("https://pms/v?X%2DPlex%2DToken=secret&deviceJWT=assertion"),
+            "https://pms/v?X%2DPlex%2DToken=***&deviceJWT=***"
+        );
     }
 
     #[test]
