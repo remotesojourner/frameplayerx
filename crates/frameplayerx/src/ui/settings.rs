@@ -451,6 +451,8 @@ fn video_position(ui: &mut egui::Ui, v: &mut View) {
             2,
         );
     });
+    heading(ui, tr!("settings-background"));
+    super::player::background_controls(ui, &mut d.background);
 }
 
 fn sound(ui: &mut egui::Ui, v: &mut View) {
@@ -1025,7 +1027,7 @@ fn about(ui: &mut egui::Ui, v: &mut View) {
                             .color(theme::ACCENT_HOVER),
                     );
                     if ui.add(link).clicked() {
-                        v.actions.push(Action::OpenWebPage(address));
+                        v.actions.push(Action::OpenWebPage(address.into()));
                     }
                 },
                 |_| {},
