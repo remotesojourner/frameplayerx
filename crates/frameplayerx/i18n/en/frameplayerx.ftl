@@ -76,6 +76,8 @@ settings-image-cache-desc = Pictures from your servers are kept on the headset u
 settings-diagnostics = Diagnostics
 settings-hardware-decoding = Hardware video decoding
 settings-hardware-decoding-desc = Recommended: smooth 8K. Turn off only to rule out a decoder problem.
+settings-network-single-stream = Read server videos as one stream
+settings-network-single-stream-desc = One connection read in order, instead of four requests at once. Slower from most servers; for servers that limit connections. Applies to videos opened next.
 settings-perf-overlay = Performance overlay
 settings-perf-overlay-desc = Frame time, the video's frame rate and decoder, CPU, GPU and memory, low in your view.
 

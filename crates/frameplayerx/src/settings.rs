@@ -56,6 +56,9 @@ pub const IMAGE_CACHE_SIZES: [u32; 5] = [100, 250, 500, 1000, 2000];
 pub struct Settings {
     /// Use the V4L2 hardware decoder when available.
     pub hardware_decoding: bool,
+    /// Read videos from servers as one stream instead of several requests
+    /// at once (see [`fp_sources::ReadMode`]).
+    pub network_single_stream: bool,
     /// ALSA device ("default" routes to PipeWire on SteamOS).
     pub audio_device: String,
     pub volume: f32,
@@ -135,6 +138,7 @@ impl Default for Settings {
     fn default() -> Self {
         Settings {
             hardware_decoding: true,
+            network_single_stream: false,
             audio_device: "default".into(),
             volume: 1.0,
             subtitles: SubtitleMode::default(),

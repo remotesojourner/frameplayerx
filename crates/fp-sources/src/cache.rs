@@ -5,8 +5,15 @@
 //! occasional seeks (often to the end of an MP4 for its `moov` atom). Each
 //! network round trip is expensive, so reads are served from fixed-size
 //! blocks (1 MiB by default) kept in a small LRU. When access is sequential
-//! the next block is fetched on a background thread so playback never waits
+//! the next blocks are fetched on background threads so playback never waits
 //! on the network for data it was always going to need.
+//!
+//! One block at a time is not enough for 8K video over the internet: each
+//! request waits a round trip (and a redirect, on debrid WebDAV) before its
+//! first byte, so a 1 MiB block a request read about 5.5 MB/s from a server
+//! that serves 39 MB/s to four 4 MiB requests at once (measured on a Frame),
+//! and a 50 Mbit/s video needs 6.3 MB/s. [`CacheOptions::streaming`] keeps
+//! several blocks in flight.
 
 use fp_core::ByteSource;
 use fp_core::sync::lock;
@@ -40,8 +47,12 @@ pub struct CacheOptions {
     /// Blocks kept in memory. Default 8 (8 MiB per open file). At least 3
     /// are always kept so a read-ahead block is not evicted before use.
     pub max_blocks: usize,
-    /// Fetch the next block in the background when reads are sequential.
+    /// Fetch the next blocks in the background when reads are sequential.
     pub read_ahead: bool,
+    /// How many blocks past the one being read to fetch ahead. Default 1.
+    pub ahead_blocks: usize,
+    /// Read-ahead requests in flight at once. Default 1.
+    pub ahead_workers: usize,
 }
 
 impl Default for CacheOptions {
@@ -50,6 +61,23 @@ impl Default for CacheOptions {
             block_size: 1 << 20,
             max_blocks: 8,
             read_ahead: true,
+            ahead_blocks: 1,
+            ahead_workers: 1,
+        }
+    }
+}
+
+impl CacheOptions {
+    /// For video over the internet: 4 MiB blocks, 32 MiB fetched ahead by
+    /// four requests at once (about 5 s of a 50 Mbit/s 8K video), 64 MiB
+    /// kept.
+    pub fn streaming() -> Self {
+        CacheOptions {
+            block_size: 4 << 20,
+            max_blocks: 16,
+            read_ahead: true,
+            ahead_blocks: 8,
+            ahead_workers: 4,
         }
     }
 }
@@ -75,6 +103,10 @@ struct State {
     blocks: HashMap<u64, Slot>,
     tick: u64,
     last_block: Option<u64>,
+    /// Blocks the reader has moved forward through one after another: read
+    /// ahead deeply only after two, so a probe or a thumbnail reading a
+    /// block or two doesn't download megabytes it won't use.
+    run: u64,
     stats: CacheStats,
 }
 
@@ -83,6 +115,8 @@ struct Inner<F: RangeFetch> {
     block_size: u64,
     max_blocks: usize,
     read_ahead: bool,
+    ahead_blocks: u64,
+    ahead_workers: usize,
     state: Mutex<State>,
     loaded: Condvar,
     ahead: Mutex<Option<Sender<u64>>>,
@@ -99,12 +133,17 @@ impl<F: RangeFetch> CachedSource<F> {
             inner: Arc::new(Inner {
                 fetcher,
                 block_size: opts.block_size.max(4096) as u64,
-                max_blocks: opts.max_blocks.max(3),
+                // Room for every block fetched ahead and a few behind, so a
+                // read-ahead block is not evicted before it is used.
+                max_blocks: opts.max_blocks.max(3).max(opts.ahead_blocks + 2),
                 read_ahead: opts.read_ahead,
+                ahead_blocks: opts.ahead_blocks.max(1) as u64,
+                ahead_workers: opts.ahead_workers.max(1),
                 state: Mutex::new(State {
                     blocks: HashMap::new(),
                     tick: 0,
                     last_block: None,
+                    run: 0,
                     stats: CacheStats::default(),
                 }),
                 loaded: Condvar::new(),
@@ -144,16 +183,20 @@ impl<F: RangeFetch> Inner<F> {
             .filter(|s| matches!(s, Slot::Ready { .. }))
             .count();
         if ready > self.max_blocks {
+            // Least recently used first, but blocks fetched ahead and not
+            // read yet last: their use is still to come.
+            let last = st.last_block;
+            let ahead = |i: u64| last.is_some_and(|l| i > l && i <= l + self.ahead_blocks);
             let victim = st
                 .blocks
                 .iter()
                 .filter(|(i, _)| **i != index)
                 .filter_map(|(i, s)| match s {
-                    Slot::Ready { used, .. } => Some((*used, *i)),
+                    Slot::Ready { used, .. } => Some((ahead(*i), *used, *i)),
                     Slot::Loading => None,
                 })
                 .min()
-                .map(|(_, i)| i);
+                .map(|(_, _, i)| i);
             if let Some(v) = victim {
                 st.blocks.remove(&v);
             }
@@ -232,59 +275,91 @@ impl<F: RangeFetch> Inner<F> {
     }
 }
 
-fn read_ahead_worker<F: RangeFetch>(weak: Weak<Inner<F>>, rx: Receiver<u64>) {
-    while let Ok(mut index) = rx.recv() {
+fn read_ahead_worker<F: RangeFetch>(weak: Weak<Inner<F>>, rx: Arc<Mutex<Receiver<u64>>>) {
+    loop {
+        let next = lock(&rx).recv();
+        let Ok(index) = next else { break };
         let Some(inner) = weak.upgrade() else { break };
-        // After a seek only the newest request matters.
-        while let Ok(newer) = rx.try_recv() {
+        // After a seek, blocks asked for before it are no longer wanted:
+        // those behind the reader or beyond its read-ahead window.
+        let last = lock(&inner.state).last_block;
+        let wanted = last.is_none_or(|l| index > l && index <= l + inner.ahead_blocks);
+        if wanted {
+            inner.read_ahead(index);
+        } else {
             inner.unreserve(index);
-            index = newer;
         }
-        inner.read_ahead(index);
     }
 }
 
 impl<F: RangeFetch> CachedSource<F> {
     /// Records that the reader used block `index` and starts a read-ahead of
-    /// the next block when access looks sequential.
+    /// the next blocks when access looks sequential.
     fn note_access(&self, index: u64) {
         let inner = &self.inner;
         if !inner.read_ahead || inner.fetcher.sequential_only() {
             return;
         }
-        let next = index + 1;
+        let mut wanted = Vec::new();
         {
             let mut st = lock(&inner.state);
             let sequential = matches!(st.last_block, Some(l) if l == index || l + 1 == index);
+            st.run = match st.last_block {
+                Some(l) if l + 1 == index => st.run + 1,
+                Some(l) if l == index => st.run,
+                _ => 0,
+            };
             st.last_block = Some(index);
-            let in_file = inner
-                .fetcher
-                .size()
-                .is_none_or(|s| next * inner.block_size < s);
-            if !sequential || !in_file || st.blocks.contains_key(&next) {
+            if !sequential {
                 return;
             }
-            // Reserved now, not when the thread gets to it: a reader that
-            // gets there first waits for the read-ahead instead of fetching
-            // the block itself.
-            st.blocks.insert(next, Slot::Loading);
+            let depth = if st.run >= 2 { inner.ahead_blocks } else { 1 };
+            for next in index + 1..=index + depth {
+                let in_file = inner
+                    .fetcher
+                    .size()
+                    .is_none_or(|s| next * inner.block_size < s);
+                if !in_file {
+                    break;
+                }
+                if st.blocks.contains_key(&next) {
+                    continue;
+                }
+                // Reserved now, not when a thread gets to it: a reader that
+                // gets there first waits for the read-ahead instead of
+                // fetching the block itself.
+                st.blocks.insert(next, Slot::Loading);
+                wanted.push(next);
+            }
+        }
+        if wanted.is_empty() {
+            return;
         }
         let mut ahead = lock(&inner.ahead);
         if ahead.is_none() {
             let (tx, rx) = mpsc::channel();
-            let weak = Arc::downgrade(inner);
-            match std::thread::Builder::new()
-                .name("fp-read-ahead".into())
-                .spawn(move || read_ahead_worker(weak, rx))
-            {
-                Ok(_) => *ahead = Some(tx),
-                Err(e) => log::warn!("cannot start read-ahead thread: {e}"),
+            let rx = Arc::new(Mutex::new(rx));
+            let mut started = 0;
+            for _ in 0..inner.ahead_workers {
+                let weak = Arc::downgrade(inner);
+                let rx = rx.clone();
+                match std::thread::Builder::new()
+                    .name("fp-read-ahead".into())
+                    .spawn(move || read_ahead_worker(weak, rx))
+                {
+                    Ok(_) => started += 1,
+                    Err(e) => log::warn!("cannot start read-ahead thread: {e}"),
+                }
+            }
+            if started > 0 {
+                *ahead = Some(tx);
             }
         }
-        let sent = ahead.as_ref().is_some_and(|tx| tx.send(next).is_ok());
-        drop(ahead);
-        if !sent {
-            inner.unreserve(next);
+        for next in wanted {
+            let sent = ahead.as_ref().is_some_and(|tx| tx.send(next).is_ok());
+            if !sent {
+                inner.unreserve(next);
+            }
         }
     }
 }
@@ -388,7 +463,43 @@ mod tests {
             block_size: block,
             max_blocks: blocks,
             read_ahead: ahead,
+            ..CacheOptions::default()
         }
+    }
+
+    #[test]
+    fn streaming_reads_ahead_several_blocks_at_once() {
+        let opts = CacheOptions {
+            block_size: 4096,
+            max_blocks: 4,
+            ahead_blocks: 6,
+            ahead_workers: 3,
+            read_ahead: true,
+        };
+        let (s, _, d) = source(64 * 1024, opts);
+        let mut buf = vec![0u8; 4096];
+        // Two blocks in: one ahead only (a probe reads this much).
+        s.read_at(0, &mut buf).unwrap();
+        s.read_at(4096, &mut buf).unwrap();
+        std::thread::sleep(Duration::from_millis(50));
+        assert_eq!(s.stats().read_aheads, 1, "{:?}", s.stats());
+        // Three: blocks 3..=8 come in the background.
+        s.read_at(8192, &mut buf).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while s.stats().read_aheads < 7 && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(s.stats().read_aheads >= 7, "{:?}", s.stats());
+        let before = s.stats().fetches;
+        for i in 3..9u64 {
+            let n = s.read_at(i * 4096, &mut buf).unwrap();
+            assert_eq!(buf[..n], d[(i * 4096) as usize..(i * 4096) as usize + n]);
+        }
+        assert_eq!(
+            s.stats().fetches,
+            before,
+            "all from read-ahead, none evicted early"
+        );
     }
 
     #[test]

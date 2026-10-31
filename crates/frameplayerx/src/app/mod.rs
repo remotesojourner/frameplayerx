@@ -204,6 +204,15 @@ struct PanelDrag {
     from: [f32; 2],
 }
 
+/// How videos opened from now on are read from servers.
+fn apply_network_read(settings: &Settings) {
+    fp_sources::set_network_read(if settings.network_single_stream {
+        fp_sources::ReadMode::Stream
+    } else {
+        fp_sources::ReadMode::Parallel
+    });
+}
+
 fn panel(px: [u32; 2], width_m: f32, ppp: f32) -> Panel {
     let size = Vec2::new(width_m, width_m * px[1] as f32 / px[0] as f32);
     Panel::new(px, size, ppp)
@@ -234,6 +243,7 @@ fn floating_panel(px: [u32; 2], width_m: f32, ppp: f32) -> Panel {
 impl App {
     pub fn new(settings: Settings, library: Library) -> App {
         crate::i18n::set_language(&settings.interface_language());
+        apply_network_read(&settings);
         let services = Services::new(&settings, library);
         let thumbs = ui::thumbs::Thumbs::new(services.opener.clone(), services.images.clone());
         let mut panels = [
@@ -433,6 +443,9 @@ impl App {
         }
         if self.settings.ui_scale != self.saved.ui_scale {
             self.apply_ui_scale();
+        }
+        if self.settings.network_single_stream != self.saved.network_single_stream {
+            apply_network_read(&self.settings);
         }
         if self.settings.language != self.saved.language {
             crate::i18n::set_language(&self.settings.interface_language());

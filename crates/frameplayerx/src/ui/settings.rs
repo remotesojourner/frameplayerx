@@ -354,6 +354,11 @@ fn general(ui: &mut egui::Ui, v: &mut View) {
             &mut s.hardware_decoding,
         );
         r.switch(
+            tr!("settings-network-single-stream"),
+            Some(tr!("settings-network-single-stream-desc")),
+            &mut s.network_single_stream,
+        );
+        r.switch(
             tr!("settings-perf-overlay"),
             Some(tr!("settings-perf-overlay-desc")),
             &mut s.perf_overlay,

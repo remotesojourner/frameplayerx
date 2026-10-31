@@ -532,6 +532,12 @@ under ⚙ › Format.
 From a server, a video that stutters can also be transcoded by the server
 as it plays, without converting anything: see below.
 
+Videos from a server are read four 4 MB requests at a time, up to 32 MB
+ahead once one plays: an 8K video of 50 Mbit/s needs 6.3 MB/s, which one
+request at a time couldn't reach over the internet. For a server that
+limits connections, Settings › General › **Read server videos as one
+stream** reads one request in order instead (slower from most servers).
+
 ### Server transcoding
 
 Jellyfin and Emby can transcode a video live, while it plays, and DeoVR

@@ -49,7 +49,7 @@ pub use config::{
 pub use dlna::{DlnaDevice, DlnaSource, SsdpResponse, discover};
 pub use error::{Error, Result};
 pub use feed::{FeedLibrary, FeedScene, FeedSource, MediaSource, SceneFeed, SceneInfo};
-pub use http::{HttpClient, HttpFile, HttpOptions};
+pub use http::{HttpClient, HttpFile, HttpOptions, ReadMode, network_read, set_network_read};
 pub use httpdir::HttpDirSource;
 pub use local::LocalSource;
 pub use mediabrowser::{

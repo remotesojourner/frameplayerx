@@ -5,7 +5,7 @@ mod common;
 
 use common::{Req, TestServer, pattern, resp, serve_bytes};
 use fp_core::ByteSource;
-use fp_sources::{CacheOptions, Credentials, Error, HttpClient, HttpOptions};
+use fp_sources::{CacheOptions, Credentials, Error, HttpClient, HttpOptions, ReadMode};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
@@ -38,8 +38,12 @@ fn range_requests_cache_and_read_ahead() {
         }
         serve_bytes(req, &d, true)
     });
+    // One block ahead at a time, to count the requests.
     let client = HttpClient::new(
-        HttpOptions::default(),
+        HttpOptions {
+            cache: CacheOptions::default(),
+            ..HttpOptions::default()
+        },
         Some(&Credentials::new("bob", "s3cret")),
     );
     let url = server.url("/v/My%20Clip.mp4");
@@ -47,6 +51,11 @@ fn range_requests_cache_and_read_ahead() {
     assert!(f.supports_ranges());
     assert_eq!(f.size(), Some(data.len() as u64));
     assert_eq!(f.block_size(), 1 << 20);
+    assert_eq!(
+        HttpOptions::default().cache,
+        CacheOptions::streaming(),
+        "network video reads ahead several blocks by default"
+    );
     assert!(f.describe().contains("My%20Clip.mp4"));
 
     // Demuxer-style sequential reads of 64 KiB through the first 1.5 MiB.
@@ -205,6 +214,7 @@ fn servers_without_ranges_stream_sequentially() {
             block_size: 64 * 1024,
             max_blocks: 3,
             read_ahead: true,
+            ..CacheOptions::default()
         },
         max_forward_skip: 128 * 1024,
         ..HttpOptions::default()
@@ -427,4 +437,41 @@ fn a_short_first_range_is_no_end_of_file() {
         "end of file at 1024"
     );
     assert!(read_all(&f, 3000) == *data);
+}
+
+#[test]
+fn stream_mode_reads_on_from_one_request_and_reopens_after_a_seek() {
+    let data = Arc::new(pattern(6 * 64 * 1024 + 1000));
+    let d = data.clone();
+    let server = TestServer::start(move |req| serve_bytes(req, &d, true));
+    let client = HttpClient::new(
+        HttpOptions {
+            read_mode: ReadMode::Stream,
+            cache: CacheOptions {
+                block_size: 64 * 1024,
+                ahead_workers: 1,
+                ahead_blocks: 2,
+                ..CacheOptions::default()
+            },
+            ..HttpOptions::default()
+        },
+        None,
+    );
+    let f = client.open(&server.url("/v.mp4")).unwrap();
+    // The whole file in order: the probe, then one open-ended request.
+    assert_eq!(read_all(&f, 10_000), *data);
+    let opened = |s: &TestServer| s.count(|r| r.header("range").is_some_and(|r| r.ends_with('-')));
+    assert_eq!(opened(&server), 1, "one stream for a sequential read");
+    // A seek back to a block still cached reads nothing.
+    let mut buf = vec![0u8; 5000];
+    let at = 64 * 1024 + 123;
+    let n = f.read_at(at as u64, &mut buf).unwrap();
+    assert_eq!(buf[..n], data[at..at + n]);
+    assert_eq!(opened(&server), 1);
+    // A fresh file seeking ahead opens one there, and the bytes are right.
+    let f = client.open(&server.url("/v.mp4")).unwrap();
+    let at = 4 * 64 * 1024 + 77;
+    let n = f.read_at(at as u64, &mut buf).unwrap();
+    assert_eq!(buf[..n], data[at..at + n]);
+    assert_eq!(opened(&server), 2);
 }

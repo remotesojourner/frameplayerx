@@ -21,6 +21,7 @@ use fp_core::ByteSource;
 use fp_core::sync::lock;
 use std::io::{self, Read};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::time::Duration;
 use ureq::http;
 use ureq::unversioned::resolver::DefaultResolver;
@@ -46,8 +47,11 @@ pub struct HttpOptions {
     pub insecure_tls: bool,
     /// `User-Agent` header.
     pub user_agent: String,
-    /// Block cache used by [`HttpFile`].
+    /// Block cache used by [`HttpFile`]: from [`network_read`] by default.
     pub cache: CacheOptions,
+    /// How a file on a server with range support is read: from
+    /// [`network_read`] by default.
+    pub read_mode: ReadMode,
     /// Furthest a forward seek may skip by reading and discarding data when
     /// the server does not support ranges.
     pub max_forward_skip: u64,
@@ -62,7 +66,8 @@ impl Default for HttpOptions {
             retry_delay: Duration::from_millis(250),
             insecure_tls: false,
             user_agent: concat!("FramePlayerX/", env!("CARGO_PKG_VERSION")).to_string(),
-            cache: CacheOptions::default(),
+            cache: network_read().cache(),
+            read_mode: network_read(),
             max_forward_skip: 256 << 20,
         }
     }
@@ -140,6 +145,51 @@ impl From<Error> for Failure {
 }
 
 type Response = http::Response<ureq::Body>;
+
+/// How video files are read from servers that take range requests.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReadMode {
+    /// 4 MiB ranges, four requests in flight ([`CacheOptions::streaming`]):
+    /// the fastest from most servers (39-51 MB/s from debrid WebDAV on a
+    /// Frame).
+    #[default]
+    Parallel,
+    /// One open-ended request read in order, its TCP window left to grow,
+    /// reopened only after a seek: one connection and one redirect (30-37
+    /// MB/s from the same server), for servers that limit connections.
+    Stream,
+}
+
+impl ReadMode {
+    /// The block cache that goes with it: a stream is read one block ahead
+    /// at a time, in order, by one thread, so it never has to reopen.
+    pub fn cache(self) -> CacheOptions {
+        match self {
+            ReadMode::Parallel => CacheOptions::streaming(),
+            ReadMode::Stream => CacheOptions {
+                ahead_workers: 1,
+                ..CacheOptions::streaming()
+            },
+        }
+    }
+}
+
+static NETWORK_READ: AtomicU8 = AtomicU8::new(0);
+
+/// Sets the [`ReadMode`] of HTTP clients made from now on (Settings ›
+/// Playback › Network reading).
+pub fn set_network_read(mode: ReadMode) {
+    NETWORK_READ.store(mode as u8, Ordering::Relaxed);
+}
+
+/// The [`ReadMode`] set by [`set_network_read`].
+pub fn network_read() -> ReadMode {
+    match NETWORK_READ.load(Ordering::Relaxed) {
+        1 => ReadMode::Stream,
+        _ => ReadMode::Parallel,
+    }
+}
 
 /// The agent's connections, each wait for the network capped at the read
 /// timeout: ureq's body deadline covers a whole body, which a video stream
@@ -722,6 +772,82 @@ impl HttpFetcher {
         })
     }
 
+    /// [`ReadMode::Stream`]: reads on from one open-ended range request
+    /// (`bytes=<offset>-`), opened again where a read doesn't continue it.
+    fn fetch_ranged_stream(&self, offset: u64, len: usize) -> Result<Vec<u8>> {
+        let mut guard = lock(&self.stream);
+        if let Some(size) = self.size
+            && offset >= size
+        {
+            return Ok(Vec::new());
+        }
+        if guard.as_ref().is_none_or(|s| s.pos != offset) {
+            let range = format!("bytes={offset}-");
+            let resp = self.client.retrying(&self.url, || {
+                let resp = self.client.send_once(
+                    "GET",
+                    &self.url,
+                    &[("Range", range.as_str())],
+                    None,
+                    true,
+                )?;
+                let status = resp.status().as_u16();
+                if status == 206 {
+                    return Ok(resp);
+                }
+                if is_transient_status(status) {
+                    return Err(Failure::Retry(
+                        Error::HttpStatus {
+                            status,
+                            url: self.display(),
+                        },
+                        retry_after(&resp),
+                    ));
+                }
+                Err(Failure::Fatal(status_error(status, &self.url).unwrap_or(
+                    Error::HttpStatus {
+                        status,
+                        url: self.display(),
+                    },
+                )))
+            })?;
+            *guard = Some(Stream {
+                reader: Box::new(resp.into_body().into_reader()),
+                pos: offset,
+            });
+        }
+        let Some(stream) = guard.as_mut() else {
+            return Err(Error::Unsupported("stream unavailable".into()));
+        };
+        let mut out = Vec::with_capacity(len);
+        let read = (&mut stream.reader).take(len as u64).read_to_end(&mut out);
+        match read {
+            Ok(_) => {
+                stream.pos += out.len() as u64;
+                let at_eof = self.size.is_some_and(|s| stream.pos >= s);
+                if out.len() < len && !at_eof {
+                    // The server ended the response early; the next read
+                    // opens a new one from here.
+                    *guard = None;
+                    if out.is_empty() {
+                        return Err(Error::Http {
+                            url: self.display(),
+                            message: format!("stream ended at byte {offset}"),
+                        });
+                    }
+                }
+                Ok(out)
+            }
+            Err(e) => {
+                *guard = None;
+                Err(Error::Http {
+                    url: self.display(),
+                    message: format!("stream read failed at byte {offset}: {e}"),
+                })
+            }
+        }
+    }
+
     fn fetch_streaming(&self, offset: u64, len: usize) -> Result<Vec<u8>> {
         let mut guard = lock(&self.stream);
         let max_skip = self.client.opts.max_forward_skip;
@@ -811,10 +937,12 @@ impl RangeFetch for HttpFetcher {
         if len == 0 {
             return Ok(Vec::new());
         }
-        let r = if self.ranges {
-            self.fetch_range(offset, len)
-        } else {
+        let r = if !self.ranges {
             self.fetch_streaming(offset, len)
+        } else if self.client.opts.read_mode == ReadMode::Stream {
+            self.fetch_ranged_stream(offset, len)
+        } else {
+            self.fetch_range(offset, len)
         };
         r.map_err(io::Error::from)
     }
