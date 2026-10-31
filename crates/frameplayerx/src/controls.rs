@@ -4,8 +4,8 @@
 //!
 //! | Input | Right hand | Left hand |
 //! |---|---|---|
-//! | Thumbstick left / right | Seek back / forward (repeats while held) | Zoom out / in |
-//! | Thumbstick up / down | Volume | Tilt the picture |
+//! | Thumbstick left / right | Seek back / forward (repeats while held) | Turn the picture |
+//! | Thumbstick up / down | Zoom in / out | Tilt the picture |
 //! | Thumbstick press | Mute | Reset the picture |
 //! | A / D-pad down | Play / pause | Play / pause |
 //! | B / D-pad right | Back | Your room on / off |
@@ -13,7 +13,7 @@
 //! | Y / D-pad up | Next video | Show or hide the controls |
 //! | Menu / View | Library | Recenter |
 //! | Bumper | Forward 1 minute | Back 1 minute |
-//! | Grip + thumbstick | Up / down raises or lowers you | Left / right turns the picture, up / down zooms |
+//! | Grip + thumbstick | Up / down raises or lowers you | Up / down zooms in / out |
 //! | Grip + X / Y | Previous / next chapter | As without the grip |
 //! | Grip + A | Bookmark | As without the grip |
 //! | Grip + thumbstick press | Subtitles on / off | As without the grip |
@@ -25,7 +25,8 @@
 //! it).
 //!
 //! The trigger held on the video (not a panel) and moved drags the picture
-//! too, without the grip; while it is held the thumbstick's up / down zooms.
+//! too, without the grip; while it is held the thumbstick's up / down zooms
+//! (up in).
 //! Let go without moving, it shows or hides the controls as a click.
 
 use crate::bindings::{Axis, AxisAction, Bindings, Button, ButtonAction};
@@ -270,10 +271,10 @@ impl Controls {
             let s = hand.stick;
             let grip = gripping(hand);
             if scene_drag == Some(i) {
-                // Dragging the video: up / down zooms, down in as DeoVR.
+                // Dragging the video: up / down zooms, up in.
                 self.held[i] = [(0, 0.0); 4];
                 if s.y.abs() > STICK_HOLD && s.x.abs() < s.y.abs() {
-                    out.push(Cmd::Zoom(-s.y * ctx.dt * DRAG_ZOOM_SPEED));
+                    out.push(Cmd::Zoom(s.y * ctx.dt * DRAG_ZOOM_SPEED));
                 }
                 continue;
             }
@@ -310,9 +311,8 @@ impl Controls {
                             AxisAction::Tilt => Cmd::Pitch(d * PITCH_SPEED),
                             AxisAction::Turn => Cmd::Yaw(-d * YAW_SPEED),
                             AxisAction::Height => Cmd::Height(d * HEIGHT_SPEED),
-                            // Right zooms in; down does, as in DeoVR.
-                            _ if matches!(axis, Axis::StickX | Axis::GripX) => Cmd::Zoom(d * 0.8),
-                            _ => Cmd::Zoom(-d * 0.8),
+                            // Up or right zooms in.
+                            _ => Cmd::Zoom(d * 0.8),
                         });
                     }
                     _ => {}
@@ -495,24 +495,6 @@ mod tests {
     }
 
     #[test]
-    fn left_stick_sideways_zooms_right_in() {
-        let mut c = Controls::default();
-        let mut h = hands();
-        h[LEFT].stick = Vec2::new(0.9, 0.0);
-        let r = run(&mut c, &h, ctx(true));
-        assert!(
-            matches!(r[..], [Cmd::Zoom(d)] if d > 0.0),
-            "right zooms in: {r:?}"
-        );
-        h[LEFT].stick = Vec2::new(-0.9, 0.0);
-        let l = run(&mut c, &h, ctx(true));
-        assert!(
-            matches!(l[..], [Cmd::Zoom(d)] if d < 0.0),
-            "left zooms out: {l:?}"
-        );
-    }
-
-    #[test]
     fn right_stick_seeks_and_repeats_while_held() {
         for hand in [RIGHT] {
             let mut c = Controls::default();
@@ -539,16 +521,50 @@ mod tests {
     }
 
     #[test]
-    fn right_stick_up_is_volume_left_is_tilt() {
+    fn left_stick_moves_the_picture_right_stick_seeks_and_zooms() {
+        let mut c = Controls::default();
+        let mut h = hands();
+        // Left stick: right turns the picture right, up tilts it up.
+        h[LEFT].stick = Vec2::new(0.9, 0.0);
+        let r = run(&mut c, &h, ctx(true));
+        assert!(
+            matches!(r[..], [Cmd::Yaw(d)] if d < 0.0),
+            "right turns right: {r:?}"
+        );
+        h[LEFT].stick = Vec2::new(-0.9, 0.0);
+        let l = run(&mut c, &h, ctx(true));
+        assert!(
+            matches!(l[..], [Cmd::Yaw(d)] if d > 0.0),
+            "left turns left: {l:?}"
+        );
+        h[LEFT].stick = Vec2::new(0.0, 1.0);
+        let u = run(&mut c, &h, ctx(true));
+        assert!(
+            matches!(u[..], [Cmd::Pitch(d)] if d > 0.0),
+            "up tilts up: {u:?}"
+        );
+        h[LEFT].stick = Vec2::new(0.0, -1.0);
+        let d = run(&mut c, &h, ctx(true));
+        assert!(
+            matches!(d[..], [Cmd::Pitch(x)] if x < 0.0),
+            "down tilts down: {d:?}"
+        );
+        // Right stick: up zooms in, down out (left / right seeks, tested
+        // with repeats below).
         let mut c = Controls::default();
         let mut h = hands();
         h[RIGHT].stick = Vec2::new(0.0, 1.0);
         let up = run(&mut c, &h, ctx(true));
-        assert!(matches!(up[..], [Cmd::Volume(d)] if d > 0.0), "{up:?}");
-        h[RIGHT].stick = Vec2::ZERO;
-        h[LEFT].stick = Vec2::new(0.0, -1.0);
-        let down = run(&mut c, &h, ctx(true));
-        assert!(matches!(down[..], [Cmd::Pitch(d)] if d < 0.0), "{down:?}");
+        assert!(
+            matches!(up[..], [Cmd::Zoom(d)] if d > 0.0),
+            "up zooms in: {up:?}"
+        );
+        h[RIGHT].stick = Vec2::new(0.0, -1.0);
+        let dn = run(&mut c, &h, ctx(true));
+        assert!(
+            matches!(dn[..], [Cmd::Zoom(d)] if d < 0.0),
+            "down zooms out: {dn:?}"
+        );
         // Pointing at a menu, up/down scrolls it instead (through the pointer).
         let over = Context {
             over_ui: true,
@@ -558,21 +574,20 @@ mod tests {
     }
 
     #[test]
-    fn left_grip_and_stick_turn_and_zoom() {
-        let mut c = Controls::default();
+    fn grips_and_sticks_zoom_and_set_height_not_volume() {
         let mut h = hands();
         h[LEFT].squeeze = 1.0;
-        h[LEFT].stick = Vec2::new(0.9, 0.0);
-        let turn = run(&mut c, &h, ctx(true));
+        h[LEFT].stick = Vec2::new(0.0, 1.0);
+        let v = run(&mut Controls::default(), &h, ctx(true));
         assert!(
-            matches!(turn[..], [Cmd::Yaw(d)] if d < 0.0),
-            "right turns it right: {turn:?}"
+            matches!(v[..], [Cmd::Zoom(d)] if d > 0.0),
+            "left grip + up zooms in: {v:?}"
         );
-        h[LEFT].stick = Vec2::new(0.0, -1.0);
-        let z = run(&mut c, &h, ctx(true));
-        assert!(
-            matches!(z[..], [Cmd::Zoom(d)] if d > 0.0),
-            "down zooms in: {z:?}"
+        h[LEFT].stick = Vec2::new(0.9, 0.0);
+        assert_eq!(
+            run(&mut Controls::default(), &h, ctx(true)),
+            vec![],
+            "left grip + sideways: nothing"
         );
         // The right grip + stick: left / right does nothing (and does not
         // seek), up raises you.
@@ -589,7 +604,7 @@ mod tests {
     fn remapped_buttons_and_axes_follow_the_bindings() {
         let mut b = Bindings::default();
         b.right.south = ButtonAction::NextVideo;
-        b.left.stick_x = AxisAction::Turn;
+        b.left.stick_x = AxisAction::Volume;
         b.right.stick_y = AxisAction::Nothing;
         let mut c = Controls::default();
         let mut h = hands();
@@ -600,8 +615,8 @@ mod tests {
         h[RIGHT].stick = Vec2::new(0.0, 0.9);
         let out = c.update(&h, Quat::IDENTITY, ctx(true), &b);
         assert!(
-            matches!(out[..], [Cmd::Yaw(d)] if d > 0.0),
-            "left turns left: {out:?}"
+            matches!(out[..], [Cmd::Volume(d)] if d < 0.0),
+            "remapped left stick: quieter: {out:?}"
         );
         // Pointed at a menu, the stick pages whatever it is bound to.
         let over = Context {
@@ -714,8 +729,8 @@ mod tests {
             }
             ref o => panic!("{o:?}"),
         }
-        // Stick down while dragging zooms in, and doesn't change the volume.
-        h[RIGHT].stick = Vec2::new(0.0, -1.0);
+        // Stick up while dragging zooms in, and doesn't change the volume.
+        h[RIGHT].stick = Vec2::new(0.0, 1.0);
         let out = run(&mut c, &h, ctx(true));
         assert!(
             out.iter().any(|c| matches!(c, Cmd::Zoom(d) if *d > 0.0)),

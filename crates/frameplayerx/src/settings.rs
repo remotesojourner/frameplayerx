@@ -109,6 +109,9 @@ pub struct Settings {
     pub perf_overlay: bool,
     /// What the controller buttons and thumbsticks do.
     pub controls: crate::bindings::Bindings,
+    /// The default thumbstick layout `controls` was last brought up to
+    /// (see [`CONTROLS_LAYOUT`]); 0 in files from before it was saved.
+    pub controls_layout: u32,
     /// Where the library and adjust panels were moved to: yaw and pitch in
     /// degrees from their usual places (left and up positive).
     pub panel_offsets: PanelOffsets,
@@ -129,6 +132,29 @@ pub struct PanelOffsets {
     /// The control bar, from below a flat screen (or in front of you
     /// during a 180°/360° video).
     pub bar: [f32; 2],
+}
+
+/// The default thumbstick layout: 2 moved the picture to the left stick
+/// (left / right turns, up / down tilts) and zoom to the right stick's up /
+/// down, with volume left to the control bar.
+pub const CONTROLS_LAYOUT: u32 = 2;
+
+/// Brings thumbsticks still on the layout before [`CONTROLS_LAYOUT`] 2 to
+/// it; a stick set to something else keeps it.
+fn upgrade_sticks(c: &mut crate::bindings::Bindings) {
+    use crate::bindings::AxisAction as X;
+    let new = crate::bindings::Bindings::default();
+    // Both sticks seeking was the old default (and zoom on the left the
+    // short-lived one after it).
+    if matches!(c.left.stick_x, X::Seek | X::Zoom) {
+        c.left.stick_x = new.left.stick_x;
+    }
+    if c.left.grip_x == X::Turn {
+        c.left.grip_x = new.left.grip_x;
+    }
+    if c.right.stick_y == X::Volume {
+        c.right.stick_y = new.right.stick_y;
+    }
 }
 
 impl Default for Settings {
@@ -170,6 +196,7 @@ impl Default for Settings {
             loop_playlist: false,
             perf_overlay: false,
             controls: crate::bindings::Bindings::default(),
+            controls_layout: CONTROLS_LAYOUT,
             panel_offsets: PanelOffsets::default(),
             browse_sort: fp_sources::EntrySort::default(),
             source_pins: Default::default(),
@@ -224,6 +251,16 @@ impl Settings {
                         && s.controls.right.grip_y == crate::bindings::AxisAction::Nothing
                     {
                         s.controls.right.grip_y = crate::bindings::AxisAction::Height;
+                    }
+                    // A file from before the layout was saved is on the old
+                    // one (a missing field reads as the default, the new).
+                    let saved_layout = serde_json::from_str::<serde_json::Value>(&text)
+                        .ok()
+                        .and_then(|v| v.get("controls_layout").and_then(serde_json::Value::as_u64))
+                        .unwrap_or(0);
+                    if saved_layout < u64::from(CONTROLS_LAYOUT) {
+                        upgrade_sticks(&mut s.controls);
+                        s.controls_layout = CONTROLS_LAYOUT;
                     }
                     s
                 }
@@ -301,6 +338,30 @@ mod tests {
         s.controls.right.grip_y = crate::bindings::AxisAction::Nothing;
         s.save(&path).unwrap();
         assert_eq!(Settings::load(&path), s);
+        // The old stick layout moves to the new one; a stick changed from
+        // it stays as it was.
+        let old = r#"{"controls": {"left": {"stick_x": "seek", "stick_y": "tilt", "grip_x": "turn", "grip_y": "zoom"}, "right": {"stick_x": "seek", "stick_y": "volume"}}}"#;
+        std::fs::write(&path, old).unwrap();
+        let s = Settings::load(&path);
+        assert_eq!(s.controls, crate::bindings::Bindings::default());
+        assert_eq!(s.controls_layout, CONTROLS_LAYOUT);
+        let custom =
+            r#"{"controls": {"left": {"stick_x": "height"}, "right": {"stick_y": "nothing"}}}"#;
+        std::fs::write(&path, custom).unwrap();
+        let s = Settings::load(&path);
+        assert_eq!(s.controls.left.stick_x, crate::bindings::AxisAction::Height);
+        assert_eq!(
+            s.controls.right.stick_y,
+            crate::bindings::AxisAction::Nothing
+        );
+        // Saved on the new layout, a stick set back to seek stays so.
+        let mut s = Settings::default();
+        s.controls.left.stick_x = crate::bindings::AxisAction::Seek;
+        s.save(&path).unwrap();
+        assert_eq!(
+            Settings::load(&path).controls.left.stick_x,
+            crate::bindings::AxisAction::Seek
+        );
         std::fs::write(&path, "garbage").unwrap();
         assert_eq!(Settings::load(&path).volume, 1.0);
         std::fs::remove_dir_all(&dir).unwrap();

@@ -574,8 +574,8 @@ picture. Play/pause and seeking are under either thumb.
 
 | Control | Right hand | Left hand |
 |---|---|---|
-| Thumbstick left / right | Seek back / forward 10 s (adjustable; hold to repeat). Pointing at a list: previous / next page. Pointing at a slider: one fine step | Zoom out / in (left / right). Pointing at a list or slider: as the right |
-| Thumbstick up / down | Volume (or scroll a menu you point at) | Tilt the picture (or scroll a menu you point at) |
+| Thumbstick left / right | Seek back / forward 10 s (adjustable; hold to repeat). Pointing at a list: previous / next page. Pointing at a slider: one fine step | Turn the picture left / right. Pointing at a list or slider: as the right |
+| Thumbstick up / down | Zoom in / out (or scroll a menu you point at) | Tilt the picture up / down (or scroll a menu you point at) |
 | Thumbstick press | Mute | Reset the picture |
 | A / D-pad down | Play / pause | Play / pause |
 | B / D-pad right | Back: closes the open panel, then shows the browse panel over the video, then returns to the video | Your room on / off: around flat videos and the panels, or through a side-by-side passthrough video's mask |
@@ -583,16 +583,16 @@ picture. Play/pause and seeking are under either thumb.
 | Y / D-pad up | Next video | Show or hide the controls |
 | Menu / View | Browse | Recenter |
 | Bumper | Forward 1 minute | Back 1 minute |
-| Grip + thumbstick | Up / down raises or lowers you | Left / right turns the picture, up / down zooms in / out |
+| Grip + thumbstick | Up / down raises or lowers you | Up / down zooms in / out |
 | Grip + X / Y | Previous / next chapter or bookmark (back within 3 s of one's start goes to the one before) | As without the grip |
 | Grip + A | Bookmark where you are | As without the grip |
 | Grip + thumbstick press | Subtitles off, or back on: the ones you had, else those in your language | As without the grip |
 | Hold grip + trigger, move | Drag the picture (a flat screen or the dome follows your hand) | The same |
-| Hold the trigger on the video, move | Drag the picture, as with the grip; thumbstick up / down zooms while you hold | The same |
+| Hold the trigger on the video, move | Drag the picture, as with the grip; thumbstick up zooms in, down out, while you hold | The same |
 | Trigger | Click; on empty space, show or hide the controls (when you let go) | The same |
 
-On the control bar, point at the speaker for the volume slider above it;
-press the speaker to mute.
+Volume is on the control bar: point at the speaker for the volume slider
+above it; press the speaker to mute (or press the right thumbstick).
 
 To recenter, hold the Steam button, as in any game (both grips together, or
 the left Menu button, do it too). The picture and the panels come to where
@@ -631,8 +631,9 @@ Controller: point at a button, pull the trigger and pick an action.
 **Grip + press** above the controllers shows what each does with that
 controller's grip held, and changes it there; one left at **Same as press**
 does what it does without the grip. **Reset to defaults** puts this layout
-back. For example, to zoom with the right thumbstick, set the right controller's
-thumbstick **↑↓ Up / down** (or **Grip + ↑↓**) to Zoom. The trigger,
+back. For example, to set the volume with the right thumbstick as before,
+set the right controller's thumbstick **↑↓ Up / down** (or **Grip + ↑↓**)
+to Volume. The trigger,
 grip + trigger and trigger-on-the-video drags, both grips, menu paging and
 slider steps are fixed.
 

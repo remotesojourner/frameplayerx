@@ -322,9 +322,11 @@ impl HandBindings {
     }
 }
 
-/// Both controllers. The default: the right hand runs playback, the left
-/// the picture, with play/pause and seeking under either thumb; the right
-/// grip makes X/Y chapters, A a bookmark and the thumbstick press subtitles.
+/// Both controllers. The default: the right hand runs playback (its
+/// thumbstick seeks and zooms), the left the picture (its thumbstick turns
+/// and tilts it), with play/pause under either thumb; the right grip makes
+/// X/Y chapters, A a bookmark and the thumbstick press subtitles. Volume is
+/// on the control bar.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct Bindings {
     pub left: HandBindings,
@@ -383,9 +385,9 @@ impl Default for Bindings {
                 menu: B::Recenter,
                 shoulder: B::BackOneMinute,
                 stick_click: B::ResetPicture,
-                stick_x: X::Zoom,
+                stick_x: X::Turn,
                 stick_y: X::Tilt,
-                grip_x: X::Turn,
+                grip_x: X::Nothing,
                 grip_y: X::Zoom,
                 grip: GripButtons::default(),
             },
@@ -398,7 +400,7 @@ impl Default for Bindings {
                 shoulder: B::ForwardOneMinute,
                 stick_click: B::Mute,
                 stick_x: X::Seek,
-                stick_y: X::Volume,
+                stick_y: X::Zoom,
                 grip_x: X::Nothing,
                 grip_y: X::Height,
                 grip: GripButtons {
