@@ -2049,3 +2049,106 @@ fn stereo_pictures(
         }
     });
 }
+
+/// Above the control bar, in the audio and subtitles picker's place: the
+/// video could not get the hardware decoder because other programs hold it.
+/// Names them and offers to close them (Steam starts its interface again at
+/// once) and play the video in hardware, or to keep it in software.
+pub fn decoder_busy_panel(ctx: &egui::Context, v: &mut View) {
+    use crate::decoder_holders::Kind as HolderKind;
+    let actions = &mut *v.actions;
+    let Some(busy) = v.state.decoder_busy.as_ref() else {
+        return;
+    };
+    let full = ctx.screen_rect() - widgets::SHADOW_ROOM;
+    widgets::slab(ctx, full, 24.0);
+    egui::CentralPanel::default()
+        .frame(egui::Frame::NONE)
+        .show(ctx, |ui| {
+            let inner = full.shrink(TRACK_PAD);
+            let mut ui = ui.new_child(
+                egui::UiBuilder::new()
+                    .max_rect(inner)
+                    .layout(Layout::top_down(Align::Min)),
+            );
+            ui.horizontal(|ui| {
+                ui.label(
+                    RichText::new(icons::WARNING_CIRCLE)
+                        .font(theme::icon(26.0))
+                        .color(theme::WARN),
+                );
+                ui.label(
+                    RichText::new(tr!("decoder-busy-title"))
+                        .font(theme::font(Weight::Bold, 22.0))
+                        .color(theme::TEXT),
+                );
+            });
+            ui.add_space(4.0);
+            ui.label(
+                RichText::new(tr!("decoder-busy-desc"))
+                    .font(theme::font(Weight::Regular, 15.0))
+                    .color(theme::TEXT_2),
+            );
+            ui.add_space(8.0);
+            for h in &busy.holders {
+                let what = match h.kind {
+                    HolderKind::SteamInterface => tr!("decoder-busy-steam-ui"),
+                    HolderKind::SteamVr => tr!("decoder-busy-steamvr"),
+                    HolderKind::Other => tr!("decoder-busy-other"),
+                };
+                let sessions = h.sessions;
+                ui.label(
+                    RichText::new(tr!(
+                        "decoder-busy-holder",
+                        what = what,
+                        name = h.name.as_str(),
+                        sessions = sessions
+                    ))
+                    .font(theme::font(Weight::Medium, 16.0))
+                    .color(theme::TEXT),
+                );
+            }
+            if busy
+                .holders
+                .iter()
+                .any(|h| h.kind == HolderKind::SteamInterface)
+            {
+                ui.add_space(6.0);
+                ui.label(
+                    RichText::new(tr!("decoder-busy-steam-setting"))
+                        .font(theme::font(Weight::Regular, 14.0))
+                        .color(theme::TEXT_3),
+                );
+            }
+            if let Some(e) = &busy.error {
+                ui.add_space(6.0);
+                ui.label(RichText::new(e).color(theme::ERROR));
+            }
+            ui.add_space(10.0);
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 10.0;
+                if busy.closing {
+                    ui.spinner();
+                    ui.label(RichText::new(tr!("decoder-busy-closing")).color(theme::TEXT_2));
+                    return;
+                }
+                if busy
+                    .holders
+                    .iter()
+                    .any(crate::decoder_holders::Holder::closable)
+                    && widgets::button(
+                        ui,
+                        Some(icons::POWER),
+                        tr!("decoder-busy-close"),
+                        Kind::Primary,
+                    )
+                    .clicked()
+                {
+                    actions.push(Action::FreeDecoder);
+                }
+                if widgets::button(ui, None, tr!("decoder-busy-keep"), Kind::Ghost).clicked() {
+                    actions.push(Action::DismissDecoderBusy);
+                }
+            });
+        });
+}

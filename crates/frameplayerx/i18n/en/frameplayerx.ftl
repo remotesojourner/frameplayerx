@@ -1183,6 +1183,20 @@ decoder-notice-none = No hardware decoding for { $stream }, so it stutters. 8-bi
 decoder-notice-off = { $stream } in software stutters: turn on hardware decoding in Settings
 decoder-notice-busy = Hardware decoder busy: { $stream } in software stutters
 decoder-notice-refused = The hardware decoder can't play this { $stream } ({ $size }), so it stutters in software
+decoder-busy-title = Hardware decoder busy
+decoder-busy-desc = Other programs hold the hardware video decoder, so this video plays in software and stutters. Closing them frees it; the video then plays again from here in hardware.
+decoder-busy-holder = { $what } ({ $name }): { $sessions ->
+    [one] 1 session
+   *[other] { $sessions } sessions
+}
+decoder-busy-steam-ui = Steam's interface
+decoder-busy-steamvr = SteamVR (can't be closed from here)
+decoder-busy-other = Another program
+decoder-busy-steam-setting = Steam starts its interface again at once, without them. So that it doesn't take the decoder again: Steam › Settings › Interface › Enable hardware video decoding off, then restart Steam.
+decoder-busy-close = Close them and play in hardware
+decoder-busy-keep = Keep playing in software
+decoder-busy-closing = Closing…
+decoder-busy-still-held = The decoder is still held: { $holders }
 open-not-inserted = This video is on a microSD card or USB drive that is not inserted.
 error-too-large = larger than { $mb } MB
 # The headset's own folders, as a source's name.

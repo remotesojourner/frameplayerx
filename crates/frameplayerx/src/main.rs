@@ -13,6 +13,7 @@ mod app;
 mod bindings;
 mod controls;
 mod crash;
+mod decoder_holders;
 mod drives;
 mod image_cache;
 mod jobs;

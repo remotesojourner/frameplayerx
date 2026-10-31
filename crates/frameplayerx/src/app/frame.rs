@@ -355,6 +355,7 @@ impl App {
             && !paused
             && !self.ui.adjust_open
             && !self.ui.tracks_open
+            && self.ui.decoder_busy.is_none()
             && !self.show_browser
             && self.last_activity.elapsed().as_secs_f32() > self.settings.auto_hide_secs
         {
@@ -368,7 +369,9 @@ impl App {
         }
         self.panels[BAR].visible = playing && self.ui_visible && !self.show_browser;
         self.panels[ADJUST].visible = self.panels[BAR].visible && self.ui.adjust_open;
-        self.panels[TRACKS].visible = self.panels[BAR].visible && self.ui.tracks_open;
+        // The decoder-busy prompt takes the picker's place above the bar.
+        self.panels[TRACKS].visible =
+            self.panels[BAR].visible && (self.ui.tracks_open || self.ui.decoder_busy.is_some());
     }
 
     /// Where each panel goes: the control bar from the player (see
@@ -472,6 +475,9 @@ impl App {
             let r = panels[idx].paint(renderer, input.time, |ctx| match idx {
                 MAIN => ui::library::browser(ctx, &mut view),
                 BAR => ui::player::control_bar(ctx, &mut view),
+                TRACKS if view.state.decoder_busy.is_some() => {
+                    ui::player::decoder_busy_panel(ctx, &mut view);
+                }
                 TRACKS => ui::player::tracks_panel(ctx, &mut view),
                 _ => ui::player::adjust_panel(ctx, &mut view),
             });

@@ -258,7 +258,13 @@ impl App {
             return;
         }
         let playing = self.playback.is_some();
-        if playing && self.ui.tracks_open && self.ui_visible && !self.show_browser {
+        if playing
+            && self.ui_visible
+            && !self.show_browser
+            && self.ui.decoder_busy.as_ref().is_some_and(|b| !b.closing)
+        {
+            self.ui.decoder_busy = None;
+        } else if playing && self.ui.tracks_open && self.ui_visible && !self.show_browser {
             self.ui.tracks_open = false;
         } else if playing && self.ui.adjust_open && self.ui_visible && !self.show_browser {
             self.ui.adjust_open = false;

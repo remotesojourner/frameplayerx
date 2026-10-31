@@ -132,7 +132,7 @@ No. FramePlayerX is built only for the Steam Frame, so it can use the Frame's de
 
 ### Why does a video stutter?
 
-Usually because it's AV1 or 4:2:2, which the Frame's hardware decoder can't play, so it's decoded on the CPU. The control bar says so. Converting it to HEVC once on a PC makes it play smoothly; the [user guide](docs/USER-GUIDE.md#videos-that-stutter-av1-and-422) has the commands.
+Usually because it's AV1 or 4:2:2, which the Frame's hardware decoder can't play, so it's decoded on the CPU. The control bar says so. Converting it to HEVC once on a PC makes it play smoothly; the [user guide](docs/USER-GUIDE.md#videos-that-stutter-av1-and-422) has the commands. Or because the hardware decoder is busy: Steam's interface can hold it after playing a store video, and FramePlayerX offers to close what holds it.
 
 ---
 

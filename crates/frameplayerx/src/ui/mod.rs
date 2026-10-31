@@ -344,6 +344,10 @@ pub enum Action {
     SendCrashReport,
     DismissCrashReport,
     Recenter,
+    /// Close the programs holding the hardware decoder, then reopen the
+    /// video where it is.
+    FreeDecoder,
+    DismissDecoderBusy,
     TogglePassthrough,
     /// Settings › General › Screen follows you.
     ToggleFollow,
@@ -764,6 +768,9 @@ pub struct UiState {
     pub tracks_open: bool,
     /// The last run crashed: asks whether to send a report.
     pub crash: Option<crash::CrashPrompt>,
+    /// Other programs hold the hardware decoder the video playing could not
+    /// get: asks whether to close them (shown above the control bar).
+    pub decoder_busy: Option<DecoderBusy>,
     pub open_error: Option<String>,
     pub opening: Option<String>,
     pub toast: Option<(String, std::time::Instant)>,
@@ -776,6 +783,15 @@ pub struct UiState {
     pub keyboard_symbols: bool,
     /// Facts for the About tab (runtime, GPU, decoder...).
     pub about: Vec<(String, String)>,
+}
+
+/// The decoder-busy prompt: who holds the decoder, and whether closing them
+/// is under way.
+pub struct DecoderBusy {
+    pub holders: Vec<crate::decoder_holders::Holder>,
+    pub closing: bool,
+    /// Why closing them did not free the decoder.
+    pub error: Option<String>,
 }
 
 pub struct HomeRows {
@@ -822,6 +838,7 @@ impl Default for UiState {
             adjust_tab: 0,
             tracks_open: false,
             crash: None,
+            decoder_busy: None,
             open_error: None,
             opening: None,
             toast: None,

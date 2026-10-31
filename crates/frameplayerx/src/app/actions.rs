@@ -259,6 +259,8 @@ impl App {
             Action::SendCrashReport => self.send_crash_report(),
             Action::DismissCrashReport => self.ui.crash = None,
             Action::Recenter => self.recenter(),
+            Action::FreeDecoder => self.free_decoder(),
+            Action::DismissDecoderBusy => self.ui.decoder_busy = None,
             Action::TogglePassthrough => self.settings.passthrough = !self.settings.passthrough,
             Action::ToggleFollow => self.settings.follow = !self.settings.follow,
             Action::ToggleLoopVideo => self.settings.loop_video = !self.settings.loop_video,
@@ -386,6 +388,7 @@ impl App {
         if let Some(p) = self.playback.take() {
             p.close(&self.services.library);
         }
+        self.ui.decoder_busy = None;
         if self.ui.opening.take().is_some() {
             self.open_seq += 1;
         }

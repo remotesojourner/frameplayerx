@@ -855,6 +855,20 @@ decoder-why-untried = décodeur matériel non essayé
 decoder-notice-none = Pas de décodage matériel pour { $stream }, donc ça saccade. Le H.265 8 bits 4:2:0 est fluide
 decoder-notice-off = { $stream } saccade en logiciel : activez le décodage matériel dans les Paramètres
 decoder-notice-busy = Décodeur matériel occupé : { $stream } saccade en logiciel
+decoder-busy-title = Décodeur matériel occupé
+decoder-busy-desc = D'autres programmes utilisent le décodeur vidéo matériel : cette vidéo est décodée en logiciel et saccade. Les fermer le libère, puis la vidéo reprend d'ici en matériel.
+decoder-busy-holder = { $what } ({ $name }) : { $sessions ->
+    [one] 1 session
+   *[other] { $sessions } sessions
+}
+decoder-busy-steam-ui = L'interface de Steam
+decoder-busy-steamvr = SteamVR (ne peut pas être fermé d'ici)
+decoder-busy-other = Un autre programme
+decoder-busy-steam-setting = Steam relance aussitôt son interface, sans elles. Pour qu'elle ne reprenne pas le décodeur : Steam › Paramètres › Interface › désactivez « Activer le décodage vidéo matériel », puis redémarrez Steam.
+decoder-busy-close = Les fermer et lire en matériel
+decoder-busy-keep = Continuer en logiciel
+decoder-busy-closing = Fermeture…
+decoder-busy-still-held = Le décodeur est toujours occupé : { $holders }
 decoder-notice-refused = Le décodeur matériel ne peut pas lire ce { $stream } ({ $size }), donc ça saccade en logiciel
 open-not-inserted = Cette vidéo est sur une carte microSD ou une clé USB qui n’est pas insérée.
 error-too-large = plus de { $mb } Mo

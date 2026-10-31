@@ -66,6 +66,9 @@ pub(super) enum Job {
     /// The last run crashed: the report the user may send.
     CrashReport(Box<crate::crash::Report>),
     CrashSent(Result<(), String>),
+    /// The programs holding the hardware decoder were asked to close:
+    /// whether they did, and who still holds it.
+    DecoderFreed(bool, Vec<crate::decoder_holders::Holder>),
     /// Steam was asked to open a web page.
     WebPageOpened(Result<(), String>),
     /// Subtitle file `index` of the video opened as `seq`, read.
@@ -485,6 +488,7 @@ impl App {
             }
             Job::QuickConnectInitiated(seq, r) => self.quick_connect_code(seq, r),
             Job::QuickConnectPolled(secret, r) => self.quick_connect_answer(&secret, r),
+            Job::DecoderFreed(freed, left) => self.decoder_freed(freed, left),
             Job::CrashReport(report) => {
                 self.ui.crash = Some(ui::crash::CrashPrompt::new(*report));
                 self.show_browser = true;
@@ -535,6 +539,7 @@ impl App {
                 self.ui.open_error = None;
                 self.ui.adjust_open = false;
                 self.ui.tracks_open = false;
+                self.ask_to_free_decoder();
                 self.show_browser = false;
                 self.ui_visible = true;
                 self.last_activity = Instant::now();
@@ -793,6 +798,74 @@ impl App {
             let opened = playback::open(req, &opener, &lib, &settings, &reports);
             Job::Opened(seq, Box::new(opened))
         });
+    }
+
+    /// After a video opens: when it wanted the hardware decoder and found it
+    /// busy, and other programs hold it, asks whether to close them.
+    fn ask_to_free_decoder(&mut self) {
+        self.ui.decoder_busy = None;
+        let Some(p) = &self.playback else { return };
+        let st = p.player.stats();
+        let busy = !st.hardware
+            && st
+                .hardware_error
+                .as_deref()
+                .is_some_and(|e| e.contains("busy"));
+        if !busy {
+            return;
+        }
+        let holders = crate::decoder_holders::find();
+        log::info!(
+            "hardware decoder held by {}",
+            crate::decoder_holders::describe(&holders)
+        );
+        if holders.is_empty() {
+            return;
+        }
+        self.ui.decoder_busy = Some(ui::DecoderBusy {
+            holders,
+            closing: false,
+            error: None,
+        });
+    }
+
+    /// Closes the programs holding the decoder on a thread (it waits for
+    /// their sessions to go), then [`Self::decoder_freed`].
+    pub(super) fn free_decoder(&mut self) {
+        let Some(busy) = &mut self.ui.decoder_busy else {
+            return;
+        };
+        if busy.closing {
+            return;
+        }
+        busy.closing = true;
+        busy.error = None;
+        let holders = busy.holders.clone();
+        self.jobs.spawn("free-decoder", move || {
+            let freed = crate::decoder_holders::close(&holders);
+            Job::DecoderFreed(freed, crate::decoder_holders::find())
+        });
+    }
+
+    /// Reopens the video where it is, now that the decoder has room, or
+    /// says who still holds it.
+    fn decoder_freed(&mut self, freed: bool, left: Vec<crate::decoder_holders::Holder>) {
+        if !freed {
+            let holders = crate::decoder_holders::describe(&left);
+            if let Some(b) = &mut self.ui.decoder_busy {
+                b.closing = false;
+                b.error = Some(tr!("decoder-busy-still-held", holders = holders.as_str()));
+                b.holders = left;
+            }
+            return;
+        }
+        self.ui.decoder_busy = None;
+        let Some(p) = &self.playback else { return };
+        let req = OpenRequest {
+            start_at: Some(p.player.position()),
+            ..p.request.clone()
+        };
+        self.open_request(req);
     }
 
     /// Gives up on a video that has been opening for [`OPEN_TIMEOUT`]: says
