@@ -420,6 +420,9 @@ impl App {
         };
         let mut buzz = Vec::new();
         self.move_panels(routed.grab, &input.hands, anchor, &mut buzz);
+        if let Some(hand) = routed.pressed {
+            buzz.push((hand, 0.2, 8));
+        }
         self.controller(
             input,
             routed.over_ui,
@@ -441,6 +444,30 @@ impl App {
         let mut actions = Vec::new();
         if self.thumbs.poll(&self.panels[MAIN].ctx) {
             self.panels[MAIN].request_repaint();
+        }
+        // Paint the keyboard first so a pressed key's text reaches its target
+        // panel and paints on the same frame.
+        if let Some(target) = kb_target {
+            let mut events = Vec::new();
+            let mut close = false;
+            let shift = &mut self.ui.keyboard_shift;
+            let symbols = &mut self.ui.keyboard_symbols;
+            if self.panels[KEYBOARD].needs_paint() {
+                let r = self.panels[KEYBOARD].paint(renderer, input.time, |ctx| {
+                    let (e, c) = ui::keyboard::keyboard(ctx, shift, symbols);
+                    events = e;
+                    close = c;
+                });
+                if let Err(e) = r {
+                    log::error!("painting the keyboard: {e}");
+                }
+            }
+            for e in events {
+                self.panels[target].push(e);
+            }
+            if close {
+                self.panels[target].push(escape());
+            }
         }
         let devices = self.services.haptic_statuses();
         let passthrough_available = input.passthrough_available;
@@ -477,28 +504,6 @@ impl App {
             });
             if let Err(e) = r {
                 log::error!("painting panel: {e}");
-            }
-        }
-        if let Some(target) = kb_target {
-            let mut events = Vec::new();
-            let mut close = false;
-            let shift = &mut self.ui.keyboard_shift;
-            let symbols = &mut self.ui.keyboard_symbols;
-            if self.panels[KEYBOARD].needs_paint() {
-                let r = self.panels[KEYBOARD].paint(renderer, input.time, |ctx| {
-                    let (e, c) = ui::keyboard::keyboard(ctx, shift, symbols);
-                    events = e;
-                    close = c;
-                });
-                if let Err(e) = r {
-                    log::error!("painting the keyboard: {e}");
-                }
-            }
-            for e in events {
-                self.panels[target].push(e);
-            }
-            if close {
-                self.panels[target].push(escape());
             }
         }
         for a in actions {
