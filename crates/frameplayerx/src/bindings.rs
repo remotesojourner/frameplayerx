@@ -383,7 +383,7 @@ impl Default for Bindings {
                 menu: B::Recenter,
                 shoulder: B::BackOneMinute,
                 stick_click: B::ResetPicture,
-                stick_x: X::Seek,
+                stick_x: X::Zoom,
                 stick_y: X::Tilt,
                 grip_x: X::Turn,
                 grip_y: X::Zoom,

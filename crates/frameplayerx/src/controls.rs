@@ -4,7 +4,7 @@
 //!
 //! | Input | Right hand | Left hand |
 //! |---|---|---|
-//! | Thumbstick left / right | Seek back / forward (repeats while held) | the same |
+//! | Thumbstick left / right | Seek back / forward (repeats while held) | Zoom out / in |
 //! | Thumbstick up / down | Volume | Tilt the picture |
 //! | Thumbstick press | Mute | Reset the picture |
 //! | A / D-pad down | Play / pause | Play / pause |
@@ -23,6 +23,10 @@
 //! controls), grip + trigger drags the picture, both grips recenter, and a
 //! thumbstick pointed at a list pages it left / right (at a slider, steps
 //! it).
+//!
+//! The trigger held on the video (not a panel) and moved drags the picture
+//! too, without the grip; while it is held the thumbstick's up / down zooms.
+//! Let go without moving, it shows or hides the controls as a click.
 
 use crate::bindings::{Axis, AxisAction, Bindings, Button, ButtonAction};
 use fp_xr::Hand;
@@ -105,12 +109,29 @@ struct Drag {
     start: (f32, f32),
 }
 
+/// The trigger pulled on the video, away from any panel: a click until the
+/// ray moves [`SCENE_DRAG_DEG`], then a drag of the picture.
+#[derive(Clone, Copy, Debug)]
+struct ScenePress {
+    hand: usize,
+    /// Where the ray pointed when pulled, then when the drag began.
+    start: (f32, f32),
+    dragging: bool,
+}
+
+/// How far the ray turns, in degrees, before a trigger held on the video
+/// drags it rather than clicks: a steady hand wanders about a degree.
+const SCENE_DRAG_DEG: f32 = 3.0;
+/// Zoom change a second at full stick while dragging the video.
+const DRAG_ZOOM_SPEED: f32 = 0.8;
+
 #[derive(Default)]
 pub struct Controls {
     prev: [Hand; 2],
     /// Per hand and axis: the direction held (seeking or paging) and for how long.
     held: [[(i32, f32); 4]; 2],
     drag: Option<Drag>,
+    scene: Option<ScenePress>,
 }
 
 /// Yaw and pitch, degrees, of a controller's pointing direction in the
@@ -177,6 +198,59 @@ impl Controls {
         }
         let any_grip = hands.iter().any(gripping);
 
+        // Trigger on the video: click (controls) or drag (picture + zoom).
+        let mut toggle_ui = false;
+        match self.scene {
+            Some(mut sp) => {
+                let h = &hands[sp.hand];
+                if h.trigger > TRIGGER * 0.5 && ctx.playing && !gripping(h) {
+                    if let Some((_, rot)) = h.aim {
+                        let now = angles(rot, anchor);
+                        let moved = wrap(now.0 - sp.start.0).hypot(now.1 - sp.start.1);
+                        if !sp.dragging && moved > SCENE_DRAG_DEG {
+                            // From here, so the picture doesn't jump by the
+                            // threshold.
+                            sp.dragging = true;
+                            sp.start = now;
+                            out.push(Cmd::DragBegin);
+                        } else if sp.dragging {
+                            out.push(Cmd::DragTo {
+                                yaw: wrap(now.0 - sp.start.0),
+                                pitch: now.1 - sp.start.1,
+                            });
+                        }
+                    }
+                    self.scene = Some(sp);
+                } else {
+                    self.scene = None;
+                    if sp.dragging {
+                        out.push(Cmd::DragEnd);
+                    } else if ctx.playing {
+                        toggle_ui = true;
+                    }
+                }
+            }
+            None if ctx.click_outside && !any_grip && ctx.playing && self.drag.is_none() => {
+                // The hand whose trigger just went down.
+                if let Some(i) = (0..2).find(|&i| {
+                    hands[i].trigger > TRIGGER
+                        && prev[i].trigger <= TRIGGER
+                        && hands[i].aim.is_some()
+                }) && let Some((_, rot)) = hands[i].aim
+                {
+                    self.scene = Some(ScenePress {
+                        hand: i,
+                        start: angles(rot, anchor),
+                        dragging: false,
+                    });
+                } else {
+                    toggle_ui = true;
+                }
+            }
+            None => {}
+        }
+        let scene_drag = self.scene.filter(|s| s.dragging).map(|s| s.hand);
+
         let playing = ctx.playing;
         for (i, hand) in hands.iter().enumerate() {
             let map = bindings.hand(i);
@@ -195,6 +269,14 @@ impl Controls {
 
             let s = hand.stick;
             let grip = gripping(hand);
+            if scene_drag == Some(i) {
+                // Dragging the video: up / down zooms, down in as DeoVR.
+                self.held[i] = [(0, 0.0); 4];
+                if s.y.abs() > STICK_HOLD && s.x.abs() < s.y.abs() {
+                    out.push(Cmd::Zoom(-s.y * ctx.dt * DRAG_ZOOM_SPEED));
+                }
+                continue;
+            }
             if !grip && (!playing || ctx.over_ui) {
                 // Menus: left / right pages the list pointed at, or steps the
                 // slider, repeating while held (up / down scrolls, through
@@ -228,7 +310,8 @@ impl Controls {
                             AxisAction::Tilt => Cmd::Pitch(d * PITCH_SPEED),
                             AxisAction::Turn => Cmd::Yaw(-d * YAW_SPEED),
                             AxisAction::Height => Cmd::Height(d * HEIGHT_SPEED),
-                            // Down zooms in, as in DeoVR.
+                            // Right zooms in; down does, as in DeoVR.
+                            _ if matches!(axis, Axis::StickX | Axis::GripX) => Cmd::Zoom(d * 0.8),
                             _ => Cmd::Zoom(-d * 0.8),
                         });
                     }
@@ -241,7 +324,7 @@ impl Controls {
         if both(hands) && !both(&prev) && self.drag.is_none() {
             out.push(Cmd::Recenter);
         }
-        if ctx.click_outside && !any_grip && ctx.playing {
+        if toggle_ui {
             out.push(Cmd::ToggleUi);
         }
         self.prev = *hands;
@@ -412,8 +495,26 @@ mod tests {
     }
 
     #[test]
-    fn either_stick_seeks_and_repeats_while_held() {
-        for hand in [LEFT, RIGHT] {
+    fn left_stick_sideways_zooms_right_in() {
+        let mut c = Controls::default();
+        let mut h = hands();
+        h[LEFT].stick = Vec2::new(0.9, 0.0);
+        let r = run(&mut c, &h, ctx(true));
+        assert!(
+            matches!(r[..], [Cmd::Zoom(d)] if d > 0.0),
+            "right zooms in: {r:?}"
+        );
+        h[LEFT].stick = Vec2::new(-0.9, 0.0);
+        let l = run(&mut c, &h, ctx(true));
+        assert!(
+            matches!(l[..], [Cmd::Zoom(d)] if d < 0.0),
+            "left zooms out: {l:?}"
+        );
+    }
+
+    #[test]
+    fn right_stick_seeks_and_repeats_while_held() {
+        for hand in [RIGHT] {
             let mut c = Controls::default();
             let mut h = hands();
             h[hand].stick = Vec2::new(0.9, 0.0);
@@ -557,12 +658,80 @@ mod tests {
         h[0].squeeze = 1.0;
         h[1].squeeze = 1.0;
         assert_eq!(run(&mut c, &h, ctx(false)), vec![Cmd::Recenter]);
+        let mut c = Controls::default();
         let mut h = hands();
+        run(&mut c, &h, ctx(true));
         h[1].trigger = 1.0;
         let click = Context {
             click_outside: true,
             ..ctx(true)
         };
-        assert_eq!(run(&mut c, &h, click), vec![Cmd::ToggleUi]);
+        assert_eq!(run(&mut c, &h, click), vec![], "a press may become a drag");
+        h[1].trigger = 0.0;
+        assert_eq!(
+            run(&mut c, &h, ctx(true)),
+            vec![Cmd::ToggleUi],
+            "let go: a click"
+        );
+    }
+
+    fn aim(yaw: f32, pitch: f32) -> Option<(Vec3, Quat)> {
+        Some((
+            Vec3::ZERO,
+            Quat::from_euler(
+                glam::EulerRot::YXZ,
+                yaw.to_radians(),
+                pitch.to_radians(),
+                0.0,
+            ),
+        ))
+    }
+
+    #[test]
+    fn trigger_on_the_video_drags_it_and_the_stick_zooms() {
+        let mut c = Controls::default();
+        let mut h = hands();
+        run(&mut c, &h, ctx(true));
+        h[RIGHT].trigger = 1.0;
+        let click = Context {
+            click_outside: true,
+            ..ctx(true)
+        };
+        assert_eq!(run(&mut c, &h, click), vec![]);
+        // A wobble under the threshold is still a click.
+        h[RIGHT].aim = aim(-1.0, 0.5);
+        assert_eq!(run(&mut c, &h, ctx(true)), vec![]);
+        // Past it: the drag starts there, without a jump.
+        h[RIGHT].aim = aim(-5.0, 0.0);
+        assert_eq!(run(&mut c, &h, ctx(true)), vec![Cmd::DragBegin]);
+        h[RIGHT].aim = aim(-15.0, 10.0);
+        match run(&mut c, &h, ctx(true))[..] {
+            [Cmd::DragTo { yaw, pitch }] => {
+                assert!(
+                    (yaw + 10.0).abs() < 0.01 && (pitch - 10.0).abs() < 0.01,
+                    "{yaw} {pitch}"
+                );
+            }
+            ref o => panic!("{o:?}"),
+        }
+        // Stick down while dragging zooms in, and doesn't change the volume.
+        h[RIGHT].stick = Vec2::new(0.0, -1.0);
+        let out = run(&mut c, &h, ctx(true));
+        assert!(
+            out.iter().any(|c| matches!(c, Cmd::Zoom(d) if *d > 0.0)),
+            "{out:?}"
+        );
+        assert!(!out.iter().any(|c| matches!(c, Cmd::Volume(_))), "{out:?}");
+        // Sideways doesn't seek while dragging.
+        h[RIGHT].stick = Vec2::new(1.0, 0.0);
+        let out = run(&mut c, &h, ctx(true));
+        assert!(!out.iter().any(|c| matches!(c, Cmd::Seek(_))), "{out:?}");
+        h[RIGHT].stick = Vec2::ZERO;
+        h[RIGHT].trigger = 0.0;
+        assert_eq!(
+            run(&mut c, &h, ctx(true)),
+            vec![Cmd::DragEnd],
+            "no UI toggle after a drag"
+        );
     }
 }

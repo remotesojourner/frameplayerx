@@ -574,7 +574,7 @@ picture. Play/pause and seeking are under either thumb.
 
 | Control | Right hand | Left hand |
 |---|---|---|
-| Thumbstick left / right | Seek back / forward 10 s (adjustable; hold to repeat). Pointing at a list: previous / next page. Pointing at a slider: one fine step | The same |
+| Thumbstick left / right | Seek back / forward 10 s (adjustable; hold to repeat). Pointing at a list: previous / next page. Pointing at a slider: one fine step | Zoom out / in (left / right). Pointing at a list or slider: as the right |
 | Thumbstick up / down | Volume (or scroll a menu you point at) | Tilt the picture (or scroll a menu you point at) |
 | Thumbstick press | Mute | Reset the picture |
 | A / D-pad down | Play / pause | Play / pause |
@@ -588,7 +588,8 @@ picture. Play/pause and seeking are under either thumb.
 | Grip + A | Bookmark where you are | As without the grip |
 | Grip + thumbstick press | Subtitles off, or back on: the ones you had, else those in your language | As without the grip |
 | Hold grip + trigger, move | Drag the picture (a flat screen or the dome follows your hand) | The same |
-| Trigger | Click; on empty space, show or hide the controls | The same |
+| Hold the trigger on the video, move | Drag the picture, as with the grip; thumbstick up / down zooms while you hold | The same |
+| Trigger | Click; on empty space, show or hide the controls (when you let go) | The same |
 
 On the control bar, point at the speaker for the volume slider above it;
 press the speaker to mute.
@@ -632,7 +633,8 @@ controller's grip held, and changes it there; one left at **Same as press**
 does what it does without the grip. **Reset to defaults** puts this layout
 back. For example, to zoom with the right thumbstick, set the right controller's
 thumbstick **↑↓ Up / down** (or **Grip + ↑↓**) to Zoom. The trigger,
-grip + trigger drags, both grips, menu paging and slider steps are fixed.
+grip + trigger and trigger-on-the-video drags, both grips, menu paging and
+slider steps are fixed.
 
 Drags, turns, tilts and zoom count as adjustments: save them for that video
 under ⚙, or press the left thumbstick to undo them.
