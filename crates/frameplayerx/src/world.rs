@@ -154,7 +154,7 @@ impl Panel {
     }
 
     /// egui's input for one pass: the queued events, over the whole panel.
-    fn input(&mut self, time: f64) -> egui::RawInput {
+    pub(crate) fn input(&mut self, time: f64) -> egui::RawInput {
         egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(Pos2::ZERO, self.points())),
             time: Some(time),
@@ -365,11 +365,17 @@ pub fn follow(anchor: Mat4, head: (Vec3, Quat), dt: f32) -> Mat4 {
 #[derive(Default, Clone, Copy)]
 struct Trigger {
     down: bool,
+    /// Pulled past the press point on the same frame as the other hand: held
+    /// back a frame so egui sees each press at its own spot.
+    pending: bool,
     /// This frame's pull, and how fast it is changing (of its travel a
     /// second).
     value: f32,
     rate: f32,
 }
+
+const TRIGGER_PRESS: f32 = 0.6;
+const TRIGGER_RELEASE: f32 = 0.45;
 
 /// A trigger changing faster than this is being pulled or let go, which
 /// tips the controller; a finger resting on it stays well under.
@@ -377,13 +383,22 @@ const TRAVEL_RATE: f32 = 2.0;
 
 impl Trigger {
     /// Returns Some(pressed) on a transition.
-    fn update(&mut self, value: f32, dt: f32) -> Option<bool> {
+    fn update(&mut self, value: f32, dt: f32, allow_press: bool) -> Option<bool> {
         self.rate = (value - self.value) / dt.max(1e-3);
         self.value = value;
-        if !self.down && value > 0.7 {
-            self.down = true;
-            Some(true)
-        } else if self.down && value < 0.35 {
+        if !self.down {
+            if value > TRIGGER_PRESS || (self.pending && value >= TRIGGER_RELEASE) {
+                if allow_press {
+                    self.down = true;
+                    self.pending = false;
+                    return Some(true);
+                }
+                self.pending = true;
+            } else if value < TRIGGER_RELEASE {
+                self.pending = false;
+            }
+            None
+        } else if value < TRIGGER_RELEASE {
             self.down = false;
             Some(false)
         } else {
@@ -434,6 +449,8 @@ pub struct Pointer {
     pub active: usize,
     /// Panel that received the last press, so the release goes there too.
     pressed_panel: Option<usize>,
+    /// The hand whose trigger made that press: only its let-go ends it.
+    pressed_hand: Option<usize>,
     /// Where that press puts the pointer, and whether it has left
     /// [`CLICK_SLOP`] of the press point.
     hold: Option<Hold>,
@@ -447,6 +464,8 @@ pub struct Pointer {
 pub struct Routed {
     /// The active hand points at some panel.
     pub over_ui: bool,
+    /// A trigger was pressed on a panel this frame: which hand, for haptics.
+    pub pressed: Option<usize>,
     /// A trigger was pressed while not pointing at any panel.
     pub click_outside: bool,
     /// A grip was squeezed while that hand pointed at a panel: (panel, hand),
@@ -463,13 +482,35 @@ impl Pointer {
         if self.pressed_panel != Some(panel) {
             return pos;
         }
-        if self.triggers[self.active].travelling() {
+        if self.triggers[self.pressed_hand.unwrap_or(self.active)].travelling() {
             h.offset = h.at - pos;
         } else if self.dragging || (pos + h.offset).distance(h.at) > CLICK_SLOP {
             self.dragging = true;
             h.at = pos + h.offset;
         }
         h.at
+    }
+
+    /// Ends the press that is held, on its panel: where the pointer was
+    /// held if `hit` (the pressing hand's ray) is still on that panel or it
+    /// was a drag. A press let go off its panel without moving isn't a click.
+    fn let_go(&mut self, panels: &mut [&mut Panel], hit: Option<(usize, f32, Pos2)>) {
+        self.pressed_hand = None;
+        let Some(pi) = self.pressed_panel.take() else {
+            return;
+        };
+        let on_panel = hit.is_some_and(|h| h.0 == pi);
+        let pos = match self.hold.take() {
+            Some(h) if on_panel || self.dragging => h.at,
+            _ => Pos2::new(-1.0, -1.0),
+        };
+        self.dragging = false;
+        panels[pi].push(Event::PointerButton {
+            pos,
+            button: PointerButton::Primary,
+            pressed: false,
+            modifiers: Modifiers::NONE,
+        });
     }
 
     /// Routes the hands' rays and triggers into panel events.
@@ -496,10 +537,13 @@ impl Pointer {
                 }
             });
         }
-        // A trigger press makes that hand the active one.
+        // A trigger press makes that hand the active one. If both cross the
+        // press point on the same frame, the second waits a frame so egui
+        // sees each press at its own spot.
         let mut transitions = [None, None];
         for (i, h) in hands.iter().enumerate() {
-            transitions[i] = self.triggers[i].update(h.trigger, dt);
+            let allow_press = transitions.iter().all(|t| *t != Some(true));
+            transitions[i] = self.triggers[i].update(h.trigger, dt, allow_press);
             if transitions[i] == Some(true) {
                 self.active = i;
             }
@@ -510,6 +554,18 @@ impl Pointer {
             self.active = other;
         }
         let aim = self.aims[self.active];
+        // The panels have one pointer, so a press is one hand's. The other
+        // hand pressing lets go of it first, before the pointer moves to
+        // where that hand points: typing with both hands, the next key is
+        // often pressed before the last is let go. Without this egui saw a
+        // second press on a button already down, gave that key's click to
+        // the first, and the first hand's let-go was lost with it.
+        if transitions[self.active] == Some(true)
+            && let Some(h) = self.pressed_hand.filter(|&h| h != self.active)
+        {
+            let held = self.aims[h].and_then(|a| a.hit);
+            self.let_go(panels, held);
+        }
         let hit = aim.and_then(|a| a.hit);
         // Hover changes.
         let target = hit.map(|h| h.0);
@@ -560,7 +616,9 @@ impl Pointer {
                         pressed: true,
                         modifiers: Modifiers::NONE,
                     });
+                    routed.pressed = Some(self.active);
                     self.pressed_panel = Some(pi);
+                    self.pressed_hand = Some(self.active);
                     self.dragging = crate::ui::widgets::over_slider(&panels[pi].ctx);
                     self.hold = Some(Hold {
                         at: pos,
@@ -570,24 +628,15 @@ impl Pointer {
                     routed.click_outside = true;
                 }
             }
-            Some(false) => {
-                if let Some(pi) = self.pressed_panel.take() {
-                    // A press let go off its panel without moving isn't a click.
-                    let on_panel = hit.is_some_and(|h| h.0 == pi);
-                    let pos = match self.hold.take() {
-                        Some(h) if on_panel || self.dragging => h.at,
-                        _ => Pos2::new(-1.0, -1.0),
-                    };
-                    self.dragging = false;
-                    panels[pi].push(Event::PointerButton {
-                        pos,
-                        button: PointerButton::Primary,
-                        pressed: false,
-                        modifiers: Modifiers::NONE,
-                    });
-                }
-            }
-            None => {}
+            _ => {}
+        }
+        // Let go by the hand that pressed, whether or not it is still the
+        // active one.
+        if let Some(h) = self.pressed_hand
+            && transitions[h] == Some(false)
+        {
+            let held = self.aims[h].and_then(|a| a.hit);
+            self.let_go(panels, held);
         }
         routed
     }
@@ -819,10 +868,19 @@ mod tests {
         hands[1].active = true;
         let r = ptr.route(&mut [&mut p], &hands, 0.016);
         assert!(r.over_ui);
+        assert_eq!(r.pressed, None);
         hands[1].trigger = 0.9;
-        ptr.route(&mut [&mut p], &hands, 0.016);
+        let r = ptr.route(&mut [&mut p], &hands, 0.016);
+        assert_eq!(r.pressed, Some(1));
         hands[1].trigger = 0.5; // hysteresis: still down
+        let r = ptr.route(&mut [&mut p], &hands, 0.016);
+        assert_eq!(r.pressed, None);
+        // A quick double-click only needs to lift past 0.45 and pull past 0.6.
+        hands[1].trigger = 0.4;
         ptr.route(&mut [&mut p], &hands, 0.016);
+        hands[1].trigger = 0.65;
+        let r = ptr.route(&mut [&mut p], &hands, 0.016);
+        assert_eq!(r.pressed, Some(1));
         hands[1].trigger = 0.1;
         ptr.route(&mut [&mut p], &hands, 0.016);
         let presses: Vec<bool> = p
@@ -833,8 +891,71 @@ mod tests {
                 _ => None,
             })
             .collect();
-        assert_eq!(presses, vec![true, false]);
+        assert_eq!(presses, vec![true, false, true, false]);
         assert_eq!(ptr.active, 1);
+    }
+
+    #[test]
+    fn typing_with_both_hands_clicks_every_key() {
+        let mut p = panel_in_front();
+        let mut ptr = Pointer::default();
+        let mut hands = [Hand::default(), Hand::default()];
+        // Left hand on key A (left half), right hand on key B (right half).
+        let at = |x: f32| {
+            let dir = Vec3::new(x, 0.0, -2.0).normalize();
+            Some((Vec3::ZERO, Quat::from_rotation_arc(Vec3::NEG_Z, dir)))
+        };
+        hands[0].aim = at(-0.4);
+        hands[1].aim = at(0.4);
+        let mut time = 0.0;
+        let mut typed = Vec::new();
+        let mut frame =
+            |p: &mut Panel, ptr: &mut Pointer, hands: &[Hand; 2], typed: &mut Vec<char>| {
+                ptr.route(&mut [&mut *p], hands, 0.016);
+                time += 0.016;
+                let input = p.input(time);
+                let _ = p.ctx.run(input, |ctx| {
+                    egui::CentralPanel::default()
+                        .frame(egui::Frame::NONE)
+                        .show(ctx, |ui| {
+                            ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
+                            ui.horizontal(|ui| {
+                                for k in ['A', 'B'] {
+                                    let size = egui::vec2(400.0, 400.0);
+                                    let (_, r) = ui.allocate_exact_size(size, egui::Sense::click());
+                                    if r.clicked() {
+                                        typed.push(k);
+                                    }
+                                }
+                            });
+                        });
+                });
+            };
+        // Laid out before egui can tell what the pointer is on.
+        frame(&mut p, &mut ptr, &hands, &mut typed);
+        frame(&mut p, &mut ptr, &hands, &mut typed);
+        // A pressed, then B pressed before A is let go: a quick "AB".
+        hands[0].trigger = 1.0;
+        frame(&mut p, &mut ptr, &hands, &mut typed);
+        hands[1].trigger = 1.0;
+        frame(&mut p, &mut ptr, &hands, &mut typed);
+        hands[0].trigger = 0.0;
+        frame(&mut p, &mut ptr, &hands, &mut typed);
+        hands[1].trigger = 0.0;
+        frame(&mut p, &mut ptr, &hands, &mut typed);
+        assert_eq!(typed, vec!['A', 'B']);
+
+        // Both triggers crossing the press point on the exact same frame still
+        // click both keys across consecutive frames.
+        typed.clear();
+        hands[0].trigger = 1.0;
+        hands[1].trigger = 1.0;
+        frame(&mut p, &mut ptr, &hands, &mut typed);
+        frame(&mut p, &mut ptr, &hands, &mut typed);
+        hands[0].trigger = 0.0;
+        hands[1].trigger = 0.0;
+        frame(&mut p, &mut ptr, &hands, &mut typed);
+        assert_eq!(typed, vec!['A', 'B']);
     }
 
     #[test]

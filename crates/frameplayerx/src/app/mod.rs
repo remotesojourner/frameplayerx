@@ -157,7 +157,6 @@ pub struct App {
     /// Each hand's ray direction when it last counted as moving.
     activity_aim: [Option<Vec3>; 2],
     controls: crate::controls::Controls,
-    trigger_prev: [f32; 2],
     /// Yaw/pitch when a dome drag began.
     drag_start: Option<(f32, f32)>,
     panel_drag: Option<PanelDrag>,
@@ -289,7 +288,6 @@ impl App {
             last_activity: Instant::now(),
             activity_aim: [None; 2],
             controls: Default::default(),
-            trigger_prev: [0.0; 2],
             drag_start: None,
             panel_drag: None,
             adjust_hold: None,
