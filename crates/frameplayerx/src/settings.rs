@@ -109,8 +109,9 @@ pub struct Settings {
     pub perf_overlay: bool,
     /// What the controller buttons and thumbsticks do.
     pub controls: crate::bindings::Bindings,
-    /// Where the library and adjust panels were moved to: yaw and pitch in
-    /// degrees from their usual places (left and up positive).
+    /// Where the library and adjust panels and the performance overlay
+    /// were moved to: yaw and pitch in degrees from their usual places
+    /// (left and up positive).
     pub panel_offsets: PanelOffsets,
     /// How folders are ordered when browsing a source.
     pub browse_sort: fp_sources::EntrySort,
@@ -129,6 +130,7 @@ pub struct PanelOffsets {
     /// The control bar, from below a flat screen (or in front of you
     /// during a 180°/360° video).
     pub bar: [f32; 2],
+    pub perf: [f32; 2],
 }
 
 impl Default for Settings {

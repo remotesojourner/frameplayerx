@@ -18,10 +18,11 @@ use crate::config::Credentials;
 use crate::error::{Error, Result};
 use crate::urlutil::{basic_auth_value, redact, same_origin, split_credentials};
 use fp_core::ByteSource;
+use fp_core::source::NetCounters;
 use fp_core::sync::lock;
 use std::io::{self, Read};
 use std::net::SocketAddr;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use ureq::http;
 use ureq::unversioned::resolver::{DefaultResolver, ResolvedSocketAddrs, Resolver};
@@ -1331,6 +1332,10 @@ impl ByteSource for HttpFile {
 
     fn describe(&self) -> String {
         self.src.describe()
+    }
+
+    fn net(&self) -> Option<Arc<NetCounters>> {
+        self.src.net()
     }
 }
 

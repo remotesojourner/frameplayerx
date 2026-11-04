@@ -2,6 +2,7 @@
 //! draws.
 
 use super::*;
+use std::sync::atomic::Ordering;
 
 impl App {
     /// Forward becomes where the head faces, and the browse panel comes
@@ -51,14 +52,14 @@ impl App {
             .find(|&i| self.panels[i].visible && self.panels[i].wants_keyboard())
     }
 
-    /// Squeezing a grip on the library panel, the control bar or the
-    /// adjust panel moves it round the viewer with that hand; where it is
-    /// let go is saved: the bar's relative to a flat screen, the adjust
-    /// panel's relative to the bar, so each goes along when what it is
-    /// placed from moves. Squeezing one on the keyboard moves the panel it
-    /// types into, and the keyboard with it; on the audio and subtitles
-    /// picker, the bar it sits on. The picture itself is dragged with grip
-    /// and trigger (see `controls`).
+    /// Squeezing a grip on the library panel, the control bar, the
+    /// adjust panel or the performance overlay moves it round the viewer
+    /// with that hand; where it is let go is saved: the bar's relative to
+    /// a flat screen, the adjust panel's relative to the bar, so each goes
+    /// along when what it is placed from moves. Squeezing one on the
+    /// keyboard moves the panel it types into, and the keyboard with it;
+    /// on the audio and subtitles picker, the bar it sits on. The picture
+    /// itself is dragged with grip and trigger (see `controls`).
     pub(super) fn move_panels(
         &mut self,
         grab: Option<(usize, usize)>,
@@ -68,7 +69,7 @@ impl App {
     ) {
         use crate::controls::{GRIP, angles, wrap};
         // The adjust panel sits beside the control bar, turned with the
-        // picture; the library panel is placed in the room.
+        // picture; the library panel and the overlay are placed in the room.
         let room = anchor.to_scale_rotation_translation().1;
         let rotation = |m: Mat4| m.to_scale_rotation_translation().1;
         // Each is moved about what it is placed from: the adjust panel
@@ -90,7 +91,7 @@ impl App {
         };
         let grab = grab.and_then(|(panel, hand)| match panel {
             KEYBOARD => self.keyboard_target().map(|t| (t, hand)),
-            MAIN | ADJUST => Some((panel, hand)),
+            MAIN | ADJUST | PERF => Some((panel, hand)),
             BAR | TRACKS if self.playback.is_some() => Some((BAR, hand)),
             _ => None,
         });
@@ -100,6 +101,7 @@ impl App {
             let start = match panel {
                 MAIN => self.offsets.main,
                 ADJUST => self.offsets.adjust,
+                PERF => self.offsets.perf,
                 _ => self.offsets.bar,
             };
             self.panel_drag = Some(PanelDrag {
@@ -128,6 +130,7 @@ impl App {
                 match panel {
                     MAIN => self.offsets.main = to,
                     ADJUST => self.offsets.adjust = to,
+                    PERF => self.offsets.perf = [yaw, (op + p - p0).clamp(-60.0, 60.0)],
                     _ => self.offsets.bar = to,
                 }
                 self.last_activity = Instant::now();
@@ -272,14 +275,16 @@ impl App {
         }
     }
 
-    /// The performance overlay while Settings › General turns it on: low and
-    /// to the left in the view, repainted twice a second.
+    /// The performance overlay while Settings › General turns it on, where
+    /// it was put in the room (see `place_panels`), repainted twice a
+    /// second.
     fn perf_overlay(&mut self, renderer: &mut Renderer, input: &FrameInput) {
         if !self.settings.perf_overlay {
             self.perf.visible = false;
             self.perf_monitor = None;
             self.frame_times.clear();
             self.perf_video = None;
+            self.perf_net = None;
             return;
         }
         let sample = self
@@ -294,10 +299,6 @@ impl App {
             while self.frame_times.len() > second {
                 self.frame_times.pop_front();
             }
-        }
-        if let Some((pos, rot)) = input.head {
-            self.perf.pose =
-                Mat4::from_rotation_translation(rot, pos) * Mat4::from_translation(PERF_OFFSET);
         }
         self.perf.visible = true;
         if !self.perf.needs_paint() {
@@ -328,10 +329,31 @@ impl App {
         if self.playback.is_none() {
             self.perf_video = None;
         }
+        let network = self.playback.as_ref().and_then(|p| {
+            let net = p.net.as_ref()?;
+            let totals = [&net.bytes, &net.reads, &net.read_ns].map(|n| n.load(Ordering::Relaxed));
+            let now = Instant::now();
+            let (mb_s, read_ms) = self
+                .perf_net
+                .get_or_insert_with(|| ui::perf::NetRate::new(totals, now))
+                .update(totals, now);
+            let st = p.player.stats();
+            let (ahead, target) = st.read_ahead;
+            Some(ui::perf::Network {
+                mb_s,
+                read_ms,
+                reconnects: net.reconnects.load(Ordering::Relaxed),
+                buffer: (ahead as f32, target as f32, st.bytes_queued),
+            })
+        });
+        if network.is_none() {
+            self.perf_net = None;
+        }
         let overlay = ui::perf::Overlay {
             frame_ms,
             display_hz: input.display_hz,
             video,
+            network,
             sample,
         };
         if let Err(e) = self
@@ -426,6 +448,9 @@ impl App {
         };
         let kb_anchor = place_around(kb_from, ky, kp, 0.0, 0.0);
         self.panels[KEYBOARD].pose = place(kb_anchor, 0.0, 0.95, -0.55, 35.0);
+        let (yaw, pitch, distance) = PERF_PLACE;
+        let [py, pp] = self.offsets.perf;
+        self.perf.pose = place_around(anchor, yaw + py, pitch + pp, distance, 0.0);
     }
 
     /// Pointer rays to panel events, grips moving panels, and controller
@@ -434,7 +459,7 @@ impl App {
         let routed = {
             let [a, b, c, d, e, _toast] = &mut self.panels;
             self.pointer
-                .route(&mut [a, b, c, d, e], &input.hands, input.dt)
+                .route(&mut [a, b, c, d, e, &mut self.perf], &input.hands, input.dt)
         };
         let mut buzz = Vec::new();
         self.move_panels(routed.grab, &input.hands, anchor, &mut buzz);
@@ -646,7 +671,7 @@ impl App {
                 _ => quads.extend(p.quad()),
             }
         }
-        // The performance overlay rides with the head, nearest of all.
+        // The performance overlay, nearest of all.
         self.perf.update_fade(input.dt);
         if self.perf.shown() {
             match self.perf.id {

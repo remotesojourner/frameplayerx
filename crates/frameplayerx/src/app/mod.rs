@@ -106,8 +106,13 @@ const BAR_PX: [u32; 2] = [1400, 268];
 const BAR_M_PER_PX: f32 = 1.2 / 1400.0;
 /// The performance overlay's quad layer (the panels' are their indices).
 const PERF_LAYER: u64 = 8;
-/// Where the performance overlay sits from the eyes: low and to the left.
-const PERF_OFFSET: Vec3 = Vec3::new(-0.3, -0.12, -0.85);
+/// The performance overlay's place when routing input: after the panels,
+/// leaving out the toast, which takes no input.
+const PERF: usize = TOAST;
+/// Where the performance overlay sits until it is moved: yaw and pitch in
+/// degrees (left and up positive), to the left of where you face and clear
+/// of the control bar, and metres away, nearer than the panels.
+const PERF_PLACE: (f32, f32, f32) = (19.0, 0.0, 0.9);
 /// How far below where you face the browse panel sits, degrees: what is in
 /// front of you is a little below eye level (the panel's top bar, Quit
 /// among it, is then about level with your eyes). It stands upright there,
@@ -136,11 +141,14 @@ pub struct App {
     panels: [Panel; 6],
     subs: Panel,
     /// The performance overlay, its sampler while it shows, the last
-    /// second of frame times, and the video's counters at its last paint.
+    /// second of frame times, and the video's counters at its last paint
+    /// (its frames, and for a network video its reads).
     perf: Panel,
     perf_monitor: Option<crate::perf::Monitor>,
     frame_times: std::collections::VecDeque<f32>,
     perf_video: Option<(Instant, u64, u64)>,
+    /// Bytes, reads and read time, ns.
+    perf_net: Option<ui::perf::NetRate>,
     sub_key: String,
     sub_textures: Vec<egui::TextureHandle>,
     /// The subtitle panel holds a 3D video's pictures, an eye's on each half.
@@ -168,7 +176,8 @@ pub struct App {
     /// Where the adjust panel was placed from when the trigger went down on
     /// it (see `place_panels`).
     adjust_hold: Option<Mat4>,
-    /// Where the library and adjust panels sit now (saved when let go).
+    /// Where the library and adjust panels and the performance overlay sit
+    /// now (saved when let go).
     offsets: crate::settings::PanelOffsets,
     /// The list the open video came from, for next/previous.
     /// Up next.
@@ -256,10 +265,11 @@ impl App {
         panels[TOAST].refresh = Some(Duration::from_millis(100));
         panels[MAIN].refresh = Some(Duration::from_millis(1000));
         let subs = panel([1600, 320], 1.6, 1.0);
-        let mut perf = panel([640, 300], 0.4, 1.0);
+        let mut perf = panel([640, 440], 0.4, 1.0);
         perf.ctx
             .style_mut(|s| s.visuals.panel_fill = egui::Color32::TRANSPARENT);
         perf.refresh = Some(Duration::from_millis(500));
+        perf.grab_only = true;
         subs.ctx
             .style_mut(|s| s.visuals.panel_fill = egui::Color32::TRANSPARENT);
         let sub_fonts = Jobs::new();
@@ -278,6 +288,7 @@ impl App {
             perf_monitor: None,
             frame_times: Default::default(),
             perf_video: None,
+            perf_net: None,
             sub_key: String::new(),
             sub_textures: Vec::new(),
             subs_split: false,
@@ -401,14 +412,17 @@ impl App {
     pub fn panel_id(&self, name: &str) -> Option<fp_render::PanelId> {
         let p = match name {
             "subs" => &self.subs,
+            "perf" => &self.perf,
             _ => &self.panels[Self::panel_index(name)?],
         };
         p.visible.then_some(p.id).flatten()
     }
 
     pub fn panel_point(&self, name: &str, x: f32, y: f32) -> Option<Vec3> {
-        let i = Self::panel_index(name)?;
-        let p = &self.panels[i];
+        let p = match name {
+            "perf" => &self.perf,
+            _ => &self.panels[Self::panel_index(name)?],
+        };
         if !p.visible {
             return None;
         }

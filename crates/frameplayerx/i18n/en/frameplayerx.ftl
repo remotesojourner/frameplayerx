@@ -77,7 +77,7 @@ settings-diagnostics = Diagnostics
 settings-hardware-decoding = Hardware video decoding
 settings-hardware-decoding-desc = Recommended: smooth 8K. Turn off only to rule out a decoder problem.
 settings-perf-overlay = Performance overlay
-settings-perf-overlay-desc = Frame time, the video's frame rate and decoder, CPU, GPU and memory, low in your view.
+settings-perf-overlay-desc = Frame time, the video's frame rate and decoder, network reads, CPU, GPU and memory, to your left. Squeeze a grip on it to move it.
 
 ## Settings: the other tabs
 
@@ -1175,6 +1175,11 @@ perf-frame-value = { $typical } ms, longest { $longest }{ $hz }
 perf-video = Video
 perf-video-value = { $fps } fps · { $dropped } dropped/s
 perf-cpu-value = { $all }% · app { $app }%
+perf-network = Network
+perf-network-value = { $mb_s } MB/s · { $reconnects } reconnects
+perf-network-reads = { $mb_s } MB/s · { $ms } ms/read · { $reconnects } reconnects
+perf-buffer = Buffer
+perf-buffer-value = { $ahead } of { $target } s · { $mb } MB
 perf-memory = Memory
 perf-memory-value = { $used } of { $total } GB
 perf-memory-app = { $used } of { $total } GB · app { $app } GB

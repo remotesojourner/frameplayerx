@@ -118,6 +118,9 @@ pub struct Stats {
     pub video_queue: usize,
     pub packets_queued: usize,
     pub bytes_queued: usize,
+    /// Seconds of video read ahead of the picture, and how far ahead the
+    /// demuxer reads ([`PlayerConfig::read_ahead_secs`]).
+    pub read_ahead: (f64, f64),
 }
 
 struct PacketQueue {
@@ -194,6 +197,10 @@ struct Shared {
     frames_cv: Condvar,
     current: Mutex<Option<Arc<VideoFrame>>>,
     serial: AtomicU64,
+    /// How far the demuxer has read: the last video packet's time, seconds
+    /// (`f64` bits).
+    read_to: AtomicU64,
+    read_ahead_secs: f64,
     /// Precise seek: frames before this time (in serial) are dropped.
     seek_floor: Mutex<Option<(u64, f64)>>,
     /// Waiting for the first frame after open/seek before the clock runs.
@@ -293,6 +300,8 @@ impl Player {
             frames_cv: Condvar::new(),
             current: Mutex::new(None),
             serial: AtomicU64::new(1),
+            read_to: AtomicU64::new(config.start_at.to_bits()),
+            read_ahead_secs: config.read_ahead_secs,
             seek_floor: Mutex::new(None),
             buffering: AtomicBool::new(true),
             demux_eof: AtomicBool::new(false),
@@ -571,6 +580,8 @@ impl Player {
         st.packets_queued = s.vpkts.len() + s.apkts.len();
         st.bytes_queued =
             s.vpkts.bytes.load(Ordering::Relaxed) + s.apkts.bytes.load(Ordering::Relaxed);
+        let read_to = f64::from_bits(s.read_to.load(Ordering::Relaxed));
+        st.read_ahead = ((read_to - s.clock.now()).max(0.0), s.read_ahead_secs);
         st
     }
 
@@ -795,6 +806,7 @@ fn demux_thread(
             sh.buffering.store(true, Ordering::Release);
             sh.clock.pause();
             sh.clock.set(req.target);
+            sh.read_to.store(req.target.to_bits(), Ordering::Relaxed);
             first_video_ts = None;
             await_key = Some(req.target + 20.0);
             sh.frames_cv.notify_all();
@@ -852,6 +864,7 @@ fn demux_thread(
                     if let Some(t) = t {
                         last_video_ts = t;
                         first_video_ts.get_or_insert(t);
+                        sh.read_to.store(t.to_bits(), Ordering::Relaxed);
                     }
                     sh.vpkts.push(serial, Some(pkt.take()));
                 } else if Some(idx) == audio_stream {
@@ -1323,6 +1336,23 @@ mod tests {
         let st = p.stats();
         assert_eq!(st.video_decoder, "h264");
         assert_eq!(st.audio_sink, "null");
+    }
+
+    #[test]
+    fn stats_say_how_far_ahead_the_demuxer_has_read() {
+        // The performance overlay's buffer: a network video that stalls
+        // shows it running dry before the picture stops.
+        let p = open(
+            "h264_aac_180_LR.mp4",
+            PlayerConfig {
+                start_paused: true,
+                ..cfg()
+            },
+        );
+        run(&p, 3.0, |p, _| p.stats().read_ahead.0 > 1.5);
+        let (ahead, target) = p.stats().read_ahead;
+        assert!((1.5..2.1).contains(&ahead), "{ahead}");
+        assert_eq!(target, 4.0);
     }
 
     #[test]

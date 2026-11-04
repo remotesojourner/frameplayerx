@@ -9,11 +9,14 @@
 //! on the network for data it was always going to need.
 
 use fp_core::ByteSource;
+use fp_core::source::NetCounters;
 use fp_core::sync::lock;
 use std::collections::HashMap;
 use std::io;
+use std::sync::atomic::Ordering;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Condvar, Mutex, PoisonError, Weak};
+use std::time::Instant;
 
 /// Fetches byte ranges from the underlying file.
 pub(crate) trait RangeFetch: Send + Sync + 'static {
@@ -86,6 +89,7 @@ struct Inner<F: RangeFetch> {
     state: Mutex<State>,
     loaded: Condvar,
     ahead: Mutex<Option<Sender<u64>>>,
+    net: Arc<NetCounters>,
 }
 
 /// A [`ByteSource`] reading through the block cache.
@@ -95,6 +99,12 @@ pub(crate) struct CachedSource<F: RangeFetch> {
 
 impl<F: RangeFetch> CachedSource<F> {
     pub(crate) fn new(fetcher: F, opts: &CacheOptions) -> Self {
+        Self::counted(fetcher, opts, Default::default())
+    }
+
+    /// [`Self::new`], counting its reads in `net`, which the fetcher may
+    /// count its reconnects in.
+    pub(crate) fn counted(fetcher: F, opts: &CacheOptions, net: Arc<NetCounters>) -> Self {
         CachedSource {
             inner: Arc::new(Inner {
                 fetcher,
@@ -109,6 +119,7 @@ impl<F: RangeFetch> CachedSource<F> {
                 }),
                 loaded: Condvar::new(),
                 ahead: Mutex::new(None),
+                net,
             }),
         }
     }
@@ -188,9 +199,17 @@ impl<F: RangeFetch> Inner<F> {
 
     /// Fetches a block already marked `Loading` and publishes the result.
     fn load(&self, index: u64) -> io::Result<Arc<Vec<u8>>> {
+        let started = Instant::now();
         let result = self
             .fetcher
             .fetch(index * self.block_size, self.block_size as usize);
+        if let Ok(data) = &result {
+            let net = &self.net;
+            net.bytes.fetch_add(data.len() as u64, Ordering::Relaxed);
+            net.reads.fetch_add(1, Ordering::Relaxed);
+            let ns = started.elapsed().as_nanos() as u64;
+            net.read_ns.fetch_add(ns, Ordering::Relaxed);
+        }
         let mut st = lock(&self.state);
         let out = match result {
             Ok(data) => {
@@ -331,6 +350,10 @@ impl<F: RangeFetch> ByteSource for CachedSource<F> {
     fn describe(&self) -> String {
         self.inner.fetcher.describe()
     }
+
+    fn net(&self) -> Option<Arc<NetCounters>> {
+        Some(self.inner.net.clone())
+    }
 }
 
 #[cfg(test)]
@@ -402,6 +425,21 @@ mod tests {
         assert_eq!(s.read_at(10_000, &mut buf).unwrap(), 0);
         assert_eq!(s.read_at(50_000, &mut buf).unwrap(), 0);
         assert_eq!(s.read_at(0, &mut []).unwrap(), 0);
+    }
+
+    #[test]
+    fn what_comes_over_the_network_is_counted() {
+        // The performance overlay's throughput and read times: only what was
+        // fetched, not what the cache served again.
+        let (s, _, _) = source(10_000, opts(4096, 4, false));
+        let mut buf = vec![0u8; 10_000];
+        for _ in 0..2 {
+            assert_eq!(s.read_at(0, &mut buf).unwrap(), 10_000);
+        }
+        let net = s.net().unwrap();
+        let count = |c: &std::sync::atomic::AtomicU64| c.load(Ordering::Relaxed);
+        assert_eq!((count(&net.bytes), count(&net.reads)), (10_000, 3));
+        assert!(count(&net.read_ns) > 0);
     }
 
     #[test]

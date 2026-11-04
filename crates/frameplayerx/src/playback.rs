@@ -125,6 +125,8 @@ pub struct Playback {
     /// What the server is transcoding it to; `None` for the file as it is.
     pub transcoding: Option<TranscodeTarget>,
     pub source_tracks: Vec<fp_sources::PlaybackTrack>,
+    /// How reading it goes, for a video from the network.
+    pub net: Option<Arc<fp_core::source::NetCounters>>,
 }
 
 /// The result of opening on a background thread.
@@ -410,6 +412,7 @@ pub fn open(
         .and_then(|id| targets.iter().find(|t| &t.id == id))
         .cloned();
     let mut notice = None;
+    let mut net = None;
     let (player, pick, transcoding) = match asked {
         Some(t) => {
             let (p, pick) = transcoded(&t).map_err(failed)?;
@@ -435,6 +438,7 @@ pub fn open(
                     .map(Some),
             }
             .map_err(failed)?;
+            net = src.as_ref().and_then(|src| src.net());
             match src.map(|src| open_player(src, player_config(settings, start_at))) {
                 Some(Ok((p, pick))) => (p, pick, None),
                 Some(Err(e))
@@ -570,6 +574,8 @@ pub fn open(
             decode_check: (Instant::now(), 0, 0, 0),
             watch,
             targets,
+            // A server's live encoding isn't read through the block cache.
+            net: net.filter(|_| transcoding.is_none()),
             transcoding,
             source_tracks,
         },

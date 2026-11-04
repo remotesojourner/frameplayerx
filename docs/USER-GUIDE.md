@@ -853,9 +853,14 @@ The translations started as machine drafts. If one reads wrong, the
 ## Troubleshooting
 
 - When a video stutters, turn on Settings › General › **Performance
-  overlay**. Low in your view, it shows how long each frame takes to draw
+  overlay**. To your left, it shows how long each frame takes to draw
   (amber when longer than the display allows), the video's frame rate and
   dropped frames, its decoder, how busy the CPU and GPU are, and memory.
+  For a video from the network it adds what arrives each second, how long
+  each read of 1 MiB takes from request to last byte, how often an SMB
+  share's connection was made again after a read failed or took over 15 s,
+  and how many seconds of video are read ahead (amber under one). Squeeze
+  a grip on it to move it; it stays where you leave it, next time too.
 - After a crash, the next start asks whether to send a crash report to
   FramePlayerX's developers, as a private issue on GitHub. It contains the
   versions of FramePlayerX and the headset's system, what went wrong, and

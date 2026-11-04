@@ -24,6 +24,10 @@ pub struct Panel {
     /// Centre and orientation; the panel faces +Z of this transform.
     pub pose: Mat4,
     pub visible: bool,
+    /// Not pointed at: rays pass through it to what is behind, and only a
+    /// grip takes hold of it (the performance overlay, which has nothing
+    /// to press).
+    pub grab_only: bool,
     pub opacity: f32,
     /// 0 hidden → 1 shown, following `visible` over a short fade.
     fade: f32,
@@ -52,6 +56,7 @@ impl Panel {
             size,
             pose: Mat4::IDENTITY,
             visible: false,
+            grab_only: false,
             opacity: 1.0,
             fade: 0.0,
             events: Vec::new(),
@@ -466,25 +471,28 @@ impl Pointer {
     /// Routes the hands' rays and triggers into panel events.
     pub fn route(&mut self, panels: &mut [&mut Panel], hands: &[Hand; 2], dt: f32) -> Routed {
         let mut routed = Routed::default();
+        // The nearest visible panel a ray hits, the grab-only ones with
+        // `grabbing`.
+        let nearest = |panels: &[&mut Panel], (pos, rot): (Vec3, Quat), grabbing: bool| {
+            let dir = rot * Vec3::NEG_Z;
+            let mut best: Option<(usize, f32, Pos2)> = None;
+            for (pi, p) in panels.iter().enumerate() {
+                if !p.visible || (p.grab_only && !grabbing) {
+                    continue;
+                }
+                if let Some((t, pt)) = p.hit(pos, dir)
+                    && best.is_none_or(|b| t < b.1)
+                {
+                    best = Some((pi, t, pt));
+                }
+            }
+            best
+        };
         for (i, h) in hands.iter().enumerate() {
-            self.aims[i] = h.aim.map(|(pos, rot)| {
-                let dir = rot * Vec3::NEG_Z;
-                let mut best: Option<(usize, f32, Pos2)> = None;
-                for (pi, p) in panels.iter().enumerate() {
-                    if !p.visible {
-                        continue;
-                    }
-                    if let Some((t, pt)) = p.hit(pos, dir)
-                        && best.is_none_or(|b| t < b.1)
-                    {
-                        best = Some((pi, t, pt));
-                    }
-                }
-                Aim {
-                    origin: pos,
-                    dir,
-                    hit: best,
-                }
+            self.aims[i] = h.aim.map(|aim| Aim {
+                origin: aim.0,
+                dir: aim.1 * Vec3::NEG_Z,
+                hit: nearest(panels, aim, false),
             });
         }
         // A trigger press makes that hand the active one. If both cross the
@@ -553,7 +561,7 @@ impl Pointer {
             let grip = h.squeeze > crate::controls::GRIP;
             if grip
                 && !self.grips[i]
-                && let Some((pi, _, _)) = self.aims[i].and_then(|a| a.hit)
+                && let Some((pi, _, _)) = h.aim.and_then(|aim| nearest(panels, aim, true))
             {
                 routed.grab = Some((pi, i));
             }
@@ -1100,6 +1108,35 @@ mod tests {
         hands[1].trigger = 0.0;
         frame(&mut p, &mut ptr, &hands, &mut typed);
         assert_eq!(typed, vec!['A', 'B']);
+    }
+
+    #[test]
+    fn the_grip_moves_the_performance_overlay_and_clicks_go_through_it() {
+        // The overlay floats in front of the library panel: the library's
+        // buttons behind it must stay pressable, and the grip must still
+        // take hold of the overlay to move it out of the way.
+        let mut back = panel_in_front();
+        let mut overlay = Panel::new([400, 200], Vec2::new(0.4, 0.2), 1.0);
+        overlay.pose = Mat4::from_translation(Vec3::new(0.0, 0.0, -1.0));
+        overlay.visible = true;
+        overlay.grab_only = true;
+        let mut ptr = Pointer::default();
+        let mut hands = [Hand::default(), Hand::default()];
+        hands[1].aim = Some((Vec3::ZERO, Quat::IDENTITY));
+        hands[1].trigger = 0.9;
+        let r = ptr.route(&mut [&mut back, &mut overlay], &hands, 0.016);
+        assert_eq!(r.grab, None);
+        hands[1].trigger = 0.1;
+        ptr.route(&mut [&mut back, &mut overlay], &hands, 0.016);
+        let clicks = back
+            .events
+            .iter()
+            .filter(|e| matches!(e, Event::PointerButton { .. }));
+        assert_eq!(clicks.count(), 2, "the click went through");
+        assert!(overlay.events.is_empty());
+        hands[1].squeeze = 1.0;
+        let r = ptr.route(&mut [&mut back, &mut overlay], &hands, 0.016);
+        assert_eq!(r.grab, Some((1, 1)));
     }
 
     #[test]

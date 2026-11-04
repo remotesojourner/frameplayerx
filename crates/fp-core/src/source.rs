@@ -3,6 +3,8 @@
 
 use serde::{Deserialize, Serialize};
 use std::io;
+use std::sync::Arc;
+use std::sync::atomic::AtomicU64;
 
 /// Random-access read of a remote or local file. The media pipeline wraps
 /// this in an FFmpeg I/O context, so FFmpeg never touches the network.
@@ -23,6 +25,27 @@ pub trait ByteSource: Send + Sync {
     fn streamed(&self) -> bool {
         false
     }
+    /// How reading the file over the network goes, for the performance
+    /// overlay; `None` for a local file.
+    fn net(&self) -> Option<Arc<NetCounters>> {
+        None
+    }
+}
+
+/// Running totals of a network file's reads, counted as they happen (see
+/// [`ByteSource::net`]); two readings apart give rates.
+#[derive(Debug, Default)]
+pub struct NetCounters {
+    /// Bytes received.
+    pub bytes: AtomicU64,
+    /// Reads answered (a block of the file each, 1 MiB by default), and the
+    /// time they took in all, nanoseconds: each from the request to its
+    /// last byte.
+    pub reads: AtomicU64,
+    pub read_ns: AtomicU64,
+    /// Reads that failed or timed out and were sent again on a new
+    /// connection (SMB).
+    pub reconnects: AtomicU64,
 }
 
 /// A `ByteSource` over a local file.
