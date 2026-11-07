@@ -134,7 +134,15 @@ struct Slot {
     scene_set_dirty: bool,
     /// The video image set (index, generation) the scene set points at.
     video_bound: Option<(usize, u64)>,
+    /// Or the NV12 decoder buffer it points at, read in place
+    /// ([`crate::shared`]), and that frame's description.
+    shared_bound: Option<(u64, params::FrameDesc)>,
     has_video: bool,
+    /// Frames in the decoder's buffers this slot's submission reads: kept
+    /// until its fence signals, which gives the buffers back.
+    frames: Vec<Arc<VideoFrame>>,
+    /// Imports of decoder buffers to destroy with the garbage.
+    garbage_imports: Vec<crate::shared::Imported>,
     quad_vb: Buffer,
     egui_vb: Buffer,
     egui_ib: Buffer,
@@ -172,6 +180,11 @@ pub struct Renderer {
     video_gen: [u64; 2],
     /// Shows hardware-decoded 10-bit frames, on GPUs that can.
     q10c: Option<Converter>,
+    /// Decoder buffers imported to be read in place.
+    imports: crate::shared::Imports,
+    /// The decoder buffer set of the last shared frame, whose imports stay
+    /// while frames come copied now and then.
+    shared_set: Option<u64>,
     current: usize,
     recording: bool,
 }
@@ -354,6 +367,8 @@ impl Renderer {
                 video_cur: 0,
                 video_gen: [0, 0],
                 q10c: Converter::new(&gpu),
+                imports: Default::default(),
+                shared_set: None,
                 current: 0,
                 recording: false,
             };
@@ -452,7 +467,10 @@ impl Renderer {
                 scene_set,
                 scene_set_dirty: true,
                 video_bound: None,
+                shared_bound: None,
                 has_video: false,
+                frames: Vec::new(),
+                garbage_imports: Vec::new(),
                 quad_vb: cpu(64 << 10, vk::BufferUsageFlags::VERTEX_BUFFER, "quads")?,
                 egui_vb: cpu(
                     1 << 20,
@@ -649,6 +667,17 @@ impl Renderer {
             for mut b in slot.garbage_buffers.drain(..) {
                 b.destroy(&self.gpu);
             }
+            for mut i in slot.garbage_imports.drain(..) {
+                i.destroy(&self.gpu);
+            }
+            // Its decoder buffers go back to the decoder.
+            slot.frames.clear();
+            // A decoder buffer is read only in a frame that took it over
+            // (set_video), so the binding doesn't carry over.
+            if slot.shared_bound.take().is_some() {
+                slot.has_video = false;
+                slot.scene_set_dirty = true;
+            }
             d.reset_command_buffer(slot.cmd, vk::CommandBufferResetFlags::empty())
                 .ctx("reset")?;
             d.begin_command_buffer(
@@ -670,6 +699,9 @@ impl Renderer {
     /// whichever of the two shared image sets the frame in flight isn't
     /// reading: an 8K frame is 50 MB, and copying it for every frame slot
     /// cost the render thread its 90 Hz deadline.
+    ///
+    /// A frame in the decoder's own buffer ([`VideoFrame::shared`]) is read
+    /// there instead, without a copy, and kept until the GPU is done with it.
     pub fn set_video(&mut self, frame: Option<&Arc<VideoFrame>>) -> Result<()> {
         let Some(f) = frame else {
             let slot = &mut self.slots[self.current];
@@ -677,8 +709,34 @@ impl Renderer {
                 slot.scene_set_dirty = true;
             }
             slot.has_video = false;
+            slot.shared_bound = None;
+            // Nothing playing: the decoder's buffers can go.
+            self.imports.retire(None, &mut slot.garbage_imports);
+            self.shared_set = None;
             return Ok(());
         };
+        if let Some(p) = f.shared().copied() {
+            let r = self.set_shared_video(f, &p);
+            if let Err(e) = &r {
+                log::warn!(
+                    "reading the decoder's buffer failed, frames are copied from now on: {e}"
+                );
+                fp_media::set_shared_frames(false);
+                let slot = &mut self.slots[self.current];
+                slot.has_video = false;
+                slot.shared_bound = None;
+                slot.scene_set_dirty = true;
+            }
+            return r;
+        }
+        {
+            let slot = &mut self.slots[self.current];
+            if slot.shared_bound.take().is_some() {
+                slot.scene_set_dirty = true;
+            }
+            self.imports
+                .retire(self.shared_set, &mut slot.garbage_imports);
+        }
         let resident = self.videos[self.video_cur]
             .as_ref()
             .is_some_and(|v| v.key == Some(f.id));
@@ -709,6 +767,12 @@ impl Renderer {
                 }
             }
         }
+        self.bind_video_set();
+        Ok(())
+    }
+
+    /// Points this slot's scene set at the newest video image set.
+    fn bind_video_set(&mut self) {
         let bound = (self.video_cur, self.video_gen[self.video_cur]);
         let slot = &mut self.slots[self.current];
         if slot.video_bound != Some(bound) || !slot.has_video {
@@ -716,6 +780,90 @@ impl Renderer {
             slot.video_bound = Some(bound);
         }
         slot.has_video = true;
+    }
+
+    /// Shows a frame in the decoder's buffer `p`: NV12 sampled there by
+    /// the eye passes, Q10C converted from there into an image set.
+    fn set_shared_video(&mut self, f: &Arc<VideoFrame>, p: &fp_media::SharedPicture) -> Result<()> {
+        let slot = &mut self.slots[self.current];
+        self.imports.retire(Some(p.set), &mut slot.garbage_imports);
+        self.shared_set = Some(p.set);
+        if !slot.frames.iter().any(|g| g.id == f.id) {
+            slot.frames.push(f.clone());
+        }
+        match f.layout {
+            fp_media::PixelLayout::Nv12 => {
+                self.imports
+                    .nv12(&self.gpu, slot.cmd, p, (f.width, f.height))?;
+                let desc = params::FrameDesc {
+                    width: f.width,
+                    height: f.height,
+                    layout: f.layout,
+                    color: f.color,
+                };
+                if slot.shared_bound.map(|(b, _)| b) != Some(p.buffer) || !slot.has_video {
+                    slot.scene_set_dirty = true;
+                }
+                slot.shared_bound = Some((p.buffer, desc));
+                slot.video_bound = None;
+                slot.has_video = true;
+                Ok(())
+            }
+            fp_media::PixelLayout::Q10c => {
+                self.convert_shared_q10c(f, p)?;
+                self.bind_video_set();
+                Ok(())
+            }
+            other => Err(crate::Error::Unsupported(format!(
+                "decoder buffers of {other:?} frames"
+            ))),
+        }
+    }
+
+    /// Converts the Q10C frame `f` in decoder buffer `p` into the image set
+    /// the frame in flight isn't reading, as copied ones are (`set_video`).
+    fn convert_shared_q10c(
+        &mut self,
+        f: &Arc<VideoFrame>,
+        p: &fp_media::SharedPicture,
+    ) -> Result<()> {
+        if self.videos[self.video_cur]
+            .as_ref()
+            .is_some_and(|v| v.key == Some(f.id))
+        {
+            return Ok(());
+        }
+        let Some(conv) = self.q10c.as_ref() else {
+            return Err(crate::Error::Unsupported(
+                "this GPU can't show 10-bit hardware-decoded (Q10C) frames".into(),
+            ));
+        };
+        let target = 1 - self.video_cur;
+        let slot = &mut self.slots[self.current];
+        if VideoPlanes::q10c_outputs(&mut self.videos[target], &self.gpu, f, &mut slot.garbage)? {
+            self.video_gen[target] += 1;
+            self.imports
+                .retire_target((target, self.video_gen[target]), &mut slot.garbage_imports);
+        }
+        let Some(set) = self.videos[target].as_mut() else {
+            return Ok(());
+        };
+        let geometry = crate::q10c::Geometry {
+            width: f.width,
+            height: f.height,
+            stride: p.stride,
+            rows: p.rows,
+            uv_offset: p.uv_offset,
+            len: p.len,
+        };
+        let gpu = &self.gpu;
+        let picture = self.imports.q10c(p, (target, self.video_gen[target]), || {
+            conv.import(gpu, geometry, p.fd, &set.images)
+        })?;
+        set.desc.color = f.color;
+        conv.record(gpu, slot.cmd, picture, &set.images);
+        set.key = Some(f.id);
+        self.video_cur = target;
         Ok(())
     }
 
@@ -723,6 +871,12 @@ impl Renderer {
     /// frames) can be shown; see [`fp_media::set_hevc_10bit_hardware`].
     pub fn shows_q10c(&self) -> bool {
         self.q10c.is_some()
+    }
+
+    /// Whether this GPU reads frames in the hardware decoder's own buffers
+    /// instead of copies; see [`fp_media::set_shared_frames`].
+    pub fn reads_decoder_buffers(&self) -> bool {
+        self.gpu.memory_fd.is_some()
     }
 
     /// The video image set this slot shows, if any.
@@ -1043,13 +1197,18 @@ impl Renderer {
             return;
         }
         let dummy = self.dummy.views[0];
-        let views: Vec<vk::ImageView> = match self.slot_video(self.current) {
-            Some(v) => {
+        let shared = self.slots[self.current]
+            .shared_bound
+            .filter(|_| self.slots[self.current].has_video)
+            .and_then(|(buffer, _)| self.imports.nv12_views(buffer));
+        let views: Vec<vk::ImageView> = match (shared, self.slot_video(self.current)) {
+            (Some([y, uv]), _) => vec![y, uv, dummy],
+            (None, Some(v)) => {
                 let mut vs: Vec<vk::ImageView> = v.images.iter().map(|i| i.views[0]).collect();
                 vs.resize(3, dummy);
                 vs
             }
-            None => vec![dummy; 3],
+            (None, None) => vec![dummy; 3],
         };
         let slot = &mut self.slots[self.current];
         let ubo = [vk::DescriptorBufferInfo::default()
@@ -1105,7 +1264,10 @@ impl Renderer {
             (eyes[1].proj * eyes[1].view).inverse(),
         ];
         let slot_idx = self.current;
-        let frame_desc = self.slot_video(slot_idx).map(|v| v.desc);
+        let frame_desc = match self.slots[slot_idx].shared_bound {
+            Some((_, desc)) if self.slots[slot_idx].has_video => Some(desc),
+            _ => self.slot_video(slot_idx).map(|v| v.desc),
+        };
         let p = params::build(video, frame_desc.as_ref(), inv);
         // Quad vertices: two triangles per quad.
         let mut verts: Vec<QuadVertex> = Vec::with_capacity(quads.len() * 6);
@@ -1270,6 +1432,10 @@ impl Renderer {
     /// Ends recording and submits the frame.
     pub fn end_frame(&mut self) -> Result<()> {
         let slot = &self.slots[self.current];
+        if let Some((buffer, _)) = slot.shared_bound {
+            // Taken over in set_video; back to the decoder once read.
+            self.imports.release_nv12(&self.gpu, slot.cmd, buffer);
+        }
         let d = &self.gpu.device;
         // SAFETY: the command buffer is recording; fence is unsignalled after reset.
         unsafe {
@@ -1608,8 +1774,12 @@ impl Drop for Renderer {
             if let Some(mut c) = self.q10c.take() {
                 c.destroy(&gpu);
             }
+            self.imports.destroy(&gpu);
             for mut s in self.slots.drain(..) {
                 for mut i in s.garbage.drain(..) {
+                    i.destroy(&gpu);
+                }
+                for mut i in s.garbage_imports.drain(..) {
                     i.destroy(&gpu);
                 }
                 for mut b in s.garbage_buffers.drain(..) {

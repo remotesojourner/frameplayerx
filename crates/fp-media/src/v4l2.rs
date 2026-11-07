@@ -46,6 +46,23 @@
 pub(crate) const OUTPUT_BUFFERS: u32 = 6;
 /// Decoded-picture (CAPTURE) buffers to request (at least the driver minimum).
 pub(crate) const CAPTURE_BUFFERS: u32 = 8;
+/// CAPTURE buffers beyond the driver's minimum when frames are shared, to
+/// lend out with them: the player's queue of shared frames
+/// ([`SHARED_QUEUE`]), the frame waiting for room in it, the picture on
+/// screen and the frames the GPU is still reading (two).
+pub(crate) const SHARED_SPARE: u32 = 7;
+/// Shared frames the player queues ahead. Each holds a decoder buffer, and
+/// the decoder runs well ahead of real time, so fewer than copies.
+pub(crate) const SHARED_QUEUE: usize = 3;
+
+/// Whether the CAPTURE buffer just dequeued may be lent out with its frame:
+/// of `buffers`, `lent` are out already, one may be `held` (after LAST),
+/// and the driver must keep `min` queued without this one. Otherwise the
+/// picture is copied and the buffer queued again, so lending never starves
+/// the decoder whatever holds the frames.
+pub(crate) fn lendable(buffers: usize, lent: usize, held: bool, min: u32) -> bool {
+    buffers.saturating_sub(lent + held as usize + 1) >= min as usize
+}
 /// Heights are lowered in steps the driver keeps without rounding up.
 pub(crate) const HEIGHT_STEP: u32 = 32;
 /// The smallest declared OUTPUT height worth trying: below this the
@@ -676,6 +693,18 @@ mod sys {
         pub reserved: [u32; 9],
     }
 
+    /// `struct v4l2_exportbuffer`.
+    #[repr(C)]
+    #[derive(Default)]
+    pub struct ExportBuffer {
+        pub type_: u32,
+        pub index: u32,
+        pub plane: u32,
+        pub flags: u32,
+        pub fd: i32,
+        pub reserved: [u32; 11],
+    }
+
     const WRITE: u64 = 1;
     const READ: u64 = 2;
     const fn ioc(dir: u64, nr: u64, size: usize) -> u64 {
@@ -698,6 +727,7 @@ mod sys {
     pub const VIDIOC_REQBUFS: u64 = iowr::<RequestBuffers>(8);
     pub const VIDIOC_QUERYBUF: u64 = iowr::<Buffer>(9);
     pub const VIDIOC_QBUF: u64 = iowr::<Buffer>(15);
+    pub const VIDIOC_EXPBUF: u64 = iowr::<ExportBuffer>(16);
     pub const VIDIOC_DQBUF: u64 = iowr::<Buffer>(17);
     pub const VIDIOC_STREAMON: u64 = iow::<i32>(18);
     pub const VIDIOC_STREAMOFF: u64 = iow::<i32>(19);
@@ -739,8 +769,8 @@ mod linux {
     use std::ffi::c_void;
     use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
     use std::path::Path;
-    use std::sync::Arc;
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+    use std::sync::{Arc, Mutex};
     use std::time::{Duration, Instant};
 
     const NV12: u32 = fourcc(b"NV12");
@@ -856,7 +886,36 @@ mod linux {
         layout: Layout,
         /// Buffer we hold after a LAST flag until decoding resumes.
         held: Option<u32>,
+        /// The buffers as DMA-BUFs when frames are shared, else empty.
+        exports: Vec<Arc<Export>>,
+        /// Names this set of buffers ([`crate::SharedPicture::set`]).
+        set: u64,
+        /// Buffers lent out with frames, queued again when they come back.
+        lent: Vec<bool>,
+        /// Buffers the driver needs queued to keep decoding.
+        min: u32,
     }
+
+    impl Capture {
+        /// Whether a buffer just dequeued may be lent: the driver keeps at
+        /// least its minimum queued without it.
+        fn can_lend(&self) -> bool {
+            let lent = self.lent.iter().filter(|&&l| l).count();
+            !self.exports.is_empty()
+                && lendable(self.bufs.len(), lent, self.held.is_some(), self.min)
+        }
+    }
+
+    /// A CAPTURE buffer exported as a DMA-BUF. The decoder holds it while
+    /// the buffer is allocated, and every frame lent from it while it lives,
+    /// so its descriptor stays open for the renderer.
+    struct Export {
+        fd: OwnedFd,
+        id: u64,
+    }
+
+    /// Numbers buffers and buffer sets for [`crate::SharedPicture`].
+    static NEXT_SHARED: AtomicU64 = AtomicU64::new(1);
 
     /// One dequeued CAPTURE buffer.
     struct Dequeued {
@@ -912,8 +971,17 @@ mod linux {
             ff::AVColorPrimaries,
         ),
         pub frames: u64,
+        /// Of `frames`, those lent out in their buffers.
+        shared_frames: u64,
         /// Set when the player closes: waits for the device stop early.
         interrupt: Option<Arc<AtomicBool>>,
+        /// Lend buffers with frames instead of copying the pictures out
+        /// ([`V4l2Decoder::share_frames`]).
+        share: bool,
+        /// Lent buffers whose frames were dropped, as (set, index), for the
+        /// decoder to queue again. Frames outlive the decoder: theirs are
+        /// then ignored.
+        returns: Arc<Mutex<Vec<(u64, u32)>>>,
     }
 
     // SAFETY: one thread drives a decoder at a time; the raw pointers are
@@ -923,6 +991,14 @@ mod linux {
     impl Drop for V4l2Decoder {
         fn drop(&mut self) {
             crate::decode::HW_SESSIONS.fetch_sub(1, Ordering::Relaxed);
+            if self.cap.as_ref().is_some_and(|c| !c.exports.is_empty()) {
+                log::info!(
+                    "V4L2: {} pictures, {} of them read in the decoder's buffers, {} copied",
+                    self.frames,
+                    self.shared_frames,
+                    self.frames - self.shared_frames
+                );
+            }
             for t in [BUF_TYPE_OUTPUT_MPLANE, BUF_TYPE_CAPTURE_MPLANE] {
                 let mut t = t as i32;
                 let _ = ioctl(&self.fd, VIDIOC_STREAMOFF, &mut t);
@@ -1148,7 +1224,10 @@ mod linux {
                 pool_size: 0,
                 color: (p.color_range, p.color_space, p.color_trc, p.color_primaries),
                 frames: 0,
+                shared_frames: 0,
                 interrupt: None,
+                share: false,
+                returns: Arc::default(),
             };
             crate::decode::HW_SESSIONS.fetch_add(1, Ordering::Relaxed); // until Drop
             dec.init_bsf(par, time_base)?;
@@ -1472,6 +1551,7 @@ mod linux {
         /// Sends a packet, or end of stream when `pkt` is null. Returns false
         /// when the decoder is full: receive frames, then send it again.
         pub(crate) fn send(&mut self, pkt: *const ff::AVPacket) -> Result<bool> {
+            self.take_returns()?;
             self.pump_output()?;
             if !self.pending.is_empty() {
                 return Ok(false);
@@ -1586,8 +1666,13 @@ mod linux {
             }
             let layout = self.layout(&f)?;
             let min = self.min_capture_buffers();
+            let spare = if self.share && crate::decode::shared_frames() {
+                SHARED_SPARE
+            } else {
+                0
+            };
             let mut r = RequestBuffers {
-                count: CAPTURE_BUFFERS.max(min),
+                count: CAPTURE_BUFFERS.max(min + spare),
                 type_: BUF_TYPE_CAPTURE_MPLANE,
                 memory: MEMORY_MMAP,
                 ..Default::default()
@@ -1608,11 +1693,23 @@ mod linux {
                     .map_err(|e| err("mmap capture", e))?,
                 );
             }
+            let exports = if self.share && crate::decode::shared_frames() {
+                self.export_buffers(r.count).unwrap_or_else(|e| {
+                    log::warn!("V4L2: capture buffers not shared, pictures are copied: {e}");
+                    Vec::new()
+                })
+            } else {
+                Vec::new()
+            };
             self.cap = Some(Capture {
+                lent: vec![false; bufs.len()],
                 bufs,
                 allocated_for: (f.width(), f.height()),
                 layout,
                 held: None,
+                set: NEXT_SHARED.fetch_add(1, Ordering::Relaxed),
+                min,
+                exports,
             });
             for i in 0..r.count {
                 self.queue_capture(i)?;
@@ -1620,8 +1717,10 @@ mod linux {
             let mut t = BUF_TYPE_CAPTURE_MPLANE as i32;
             ioctl(&self.fd, VIDIOC_STREAMON, &mut t).map_err(|e| err("STREAMON capture", e))?;
             let visible = layout.visible();
+            let shared = self.cap.as_ref().is_some_and(|c| !c.exports.is_empty());
             log::info!(
-                "V4L2 capture {} {}x{} (visible {}x{}, stride {}) x{} buffers of {} bytes",
+                "V4L2 capture {} {}x{} (visible {}x{}, stride {}) x{} buffers of {} bytes \
+                 (driver minimum {min}){}",
                 fourcc_str(f.pixelformat()),
                 f.width(),
                 f.height(),
@@ -1629,8 +1728,128 @@ mod linux {
                 visible.1,
                 layout.stride(),
                 r.count,
-                f.sizeimage(0)
+                f.sizeimage(0),
+                if shared { ", shared with the GPU" } else { "" }
             );
+            Ok(())
+        }
+
+        /// Exports the `count` CAPTURE buffers as DMA-BUFs, all or none.
+        fn export_buffers(&self, count: u32) -> std::io::Result<Vec<Arc<Export>>> {
+            (0..count)
+                .map(|index| {
+                    let mut x = ExportBuffer {
+                        type_: BUF_TYPE_CAPTURE_MPLANE,
+                        index,
+                        flags: (libc::O_RDWR | libc::O_CLOEXEC) as u32,
+                        ..Default::default()
+                    };
+                    ioctl(&self.fd, VIDIOC_EXPBUF, &mut x)?;
+                    Ok(Arc::new(Export {
+                        // SAFETY: a new descriptor the driver gave us.
+                        fd: unsafe { OwnedFd::from_raw_fd(x.fd) },
+                        id: NEXT_SHARED.fetch_add(1, Ordering::Relaxed),
+                    }))
+                })
+                .collect()
+        }
+
+        /// Lend buffers with frames instead of copying the pictures out,
+        /// while [`crate::decode::shared_frames`] is on. Before the first
+        /// packet: it decides how many buffers are allocated.
+        pub(crate) fn share_frames(&mut self) {
+            self.share = true;
+        }
+
+        /// Queues the lent buffers whose frames were dropped since.
+        fn take_returns(&mut self) -> Result<()> {
+            let back = std::mem::take(
+                &mut *self
+                    .returns
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner),
+            );
+            for (set, index) in back {
+                let i = index as usize;
+                let ours = self.cap.as_mut().is_some_and(|c| {
+                    let ours = c.set == set && c.lent.get(i) == Some(&true);
+                    if ours {
+                        c.lent[i] = false;
+                    }
+                    ours
+                });
+                if ours {
+                    self.queue_capture(index)?;
+                }
+            }
+            Ok(())
+        }
+
+        /// Hands the picture in CAPTURE buffer `index` over as a shared
+        /// frame, the buffer lent until the frame is dropped.
+        fn lend(
+            &mut self,
+            index: u32,
+            frame: *mut ff::AVFrame,
+            pts: i64,
+            duration: i64,
+        ) -> Result<()> {
+            let Some(cap) = self.cap.as_mut() else {
+                return Err(Error::Unsupported("V4L2: no capture buffers".into()));
+            };
+            let i = index as usize;
+            let (Some(export), Some(mapping)) = (cap.exports.get(i), cap.bufs.get(i)) else {
+                return Err(Error::Unsupported("V4L2: no such capture buffer".into()));
+            };
+            if cap.layout.end() > mapping.len {
+                return Err(Error::Unsupported(
+                    "V4L2: picture exceeds its buffer".into(),
+                ));
+            }
+            let (layout, stride, rows, uv_offset) = match cap.layout {
+                Layout::Nv12(l) => (
+                    crate::PixelLayout::Nv12,
+                    l.stride,
+                    (l.uv_offset / l.stride) as u32,
+                    l.uv_offset,
+                ),
+                Layout::Q10c(l) => (crate::PixelLayout::Q10c, l.stride, l.rows, l.uv_offset),
+            };
+            let picture = crate::SharedPicture {
+                fd: export.fd.as_raw_fd(),
+                len: mapping.len,
+                stride: stride as u32,
+                rows,
+                uv_offset,
+                buffer: export.id,
+                set: cap.set,
+            };
+            let (export, returns, set) = (export.clone(), self.returns.clone(), cap.set);
+            let release = move || {
+                // The descriptor stays open until here.
+                drop(export);
+                returns
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push((set, index));
+            };
+            cap.lent[i] = true;
+            let lent = Box::new(crate::frame::Lent {
+                picture,
+                layout,
+                release: Some(Box::new(release)),
+            });
+            // SAFETY: frame is a valid AVFrame we refill; set_shared takes
+            // over `lent`, giving the buffer back if it fails.
+            unsafe {
+                ff::av_frame_unref(frame);
+                let f = &mut *frame;
+                crate::frame::set_shared(f, lent, cap.layout.visible())?;
+                f.pts = pts;
+                f.best_effort_timestamp = pts;
+                f.duration = duration;
+                (f.color_range, f.colorspace, f.color_trc, f.color_primaries) = self.color;
+            }
             Ok(())
         }
 
@@ -1836,6 +2055,7 @@ mod linux {
                     self.change_resolution()?;
                     continue;
                 }
+                self.take_returns()?;
                 self.pump_output()?;
                 self.dequeue_events()?;
                 if let Some(d) = self.dequeue_capture()? {
@@ -1859,14 +2079,33 @@ mod linux {
                                 .is_none_or(|floor| pts == ff::AV_NOPTS_VALUE || pts >= floor)
                             && keep(pts, duration)
                     });
-                    let result = timing.map(|(pts, dur)| self.export(d.index, frame, pts, dur));
+                    // Lent with its frame while the driver keeps enough
+                    // queued; else copied out, as when frames aren't shared.
+                    // Never the LAST buffer, which is held.
+                    let lend = timing.is_some()
+                        && !last
+                        && crate::decode::shared_frames()
+                        && self.cap.as_ref().is_some_and(Capture::can_lend);
+                    let result = timing.map(|(pts, dur)| {
+                        if lend {
+                            self.lend(d.index, frame, pts, dur)
+                        } else {
+                            self.export(d.index, frame, pts, dur)
+                        }
+                    });
                     if last {
                         // Held until decoding resumes.
                         if let Some(c) = self.cap.as_mut() {
                             c.held = Some(d.index);
                         }
                         self.last_seen = true;
-                    } else {
+                    } else if !self
+                        .cap
+                        .as_ref()
+                        .is_some_and(|c| c.lent.get(d.index as usize) == Some(&true))
+                    {
+                        // Copied, or a lend that failed before the buffer
+                        // went out.
                         self.queue_capture(d.index)?;
                     }
                     if self.pictures_broken() {
@@ -1878,6 +2117,7 @@ mod linux {
                         Some(r) => {
                             r?;
                             self.frames += 1;
+                            self.shared_frames += lend as u64;
                             return Ok(Some(true));
                         }
                         None => continue,
@@ -2267,6 +2507,24 @@ mod tests {
         assert!(!can_reuse_capture(k8, 6, nv12_8k, k8, 7, nv12_8k));
         assert!(!can_reuse_capture(k8, 0, nv12_8k, k8, 1, nv12_8k));
         assert!(!can_reuse_capture(k8, 8, nv12_8k, k8, 7, 0));
+    }
+
+    #[test]
+    fn buffers_are_lent_only_while_the_driver_keeps_its_minimum() {
+        // Minimum 4 plus the spare: the spare goes out, the rest stays.
+        let buffers = (4 + SHARED_SPARE) as usize;
+        let lent_at_most = (0..=buffers)
+            .take_while(|&lent| lendable(buffers, lent, false, 4))
+            .count();
+        assert_eq!(lent_at_most, SHARED_SPARE as usize);
+        // A buffer held after LAST counts as out.
+        assert!(lendable(buffers, 6, false, 4));
+        assert!(!lendable(buffers, 6, true, 4));
+        // Without a spare (frames not shared, or too few buffers), nothing.
+        assert!(!lendable(4, 0, false, 4));
+        assert!(!lendable(0, 0, false, 1));
+        // Enough to cover what the player and renderer hold at once.
+        assert!(SHARED_SPARE as usize > SHARED_QUEUE + 2);
     }
 
     #[test]
