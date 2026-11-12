@@ -119,7 +119,7 @@ headset's Noto Sans CJK; for the preview, install it with
 | `packaging/` | What goes in the release zip besides the binary: the launcher, a README and the licences |
 | `tools/` | Build, package, preview and test scripts |
 | `tools/frame-desktop-install/` | The Desktop Mode installer: a Python script, and the install and uninstall `.desktop` launchers that download and run it (see its [README](../tools/frame-desktop-install/README.md)) |
-| `tools/crash-relay/` | Cloudflare Worker and build script for the [website](#project-website) and [crash relay](#crash-reports) |
+| `tools/crash-relay/` | The Cloudflare Worker crash reports go to (see [Crash reports](#crash-reports)) |
 
 ## How it fits together
 
@@ -609,35 +609,11 @@ release:
 |---|---|
 | Desktop Mode / Uninstall | The release's `Install-FramePlayerX.desktop` / `Uninstall-FramePlayerX.desktop` |
 | FrameDrop | `https://framedropvr.com/install?manifest=` with the release's `framedrop.json`, FrameDrop's documented link: it opens FrameDrop, or FrameDrop's site when it isn't installed |
-| Frame Control | [frameplayerx.org.uk/frame-control](https://frameplayerx.org.uk/frame-control), which opens `frame-control://install?manifest=` with the release's `frameplayerx.json`. GitHub doesn't keep links to app schemes like `frame-control://` in Markdown, so a web page has to |
+| Frame Control | `site/frame-control.html` on GitHub Pages, which opens `frame-control://install?manifest=` with the release's `frameplayerx.json`. GitHub doesn't keep links to app schemes like `frame-control://` in Markdown, so a web page has to |
 
-### Project website
-
-The same Cloudflare Worker serves `site/` at `https://frameplayerx.org.uk`
-and handles `POST /report`. It also keeps the original `workers.dev` URL
-active for copies of FramePlayerX that already use it.
-
-From the repository root, with Node.js 24:
-
-```sh
-node tools/crash-relay/build-site.mjs
-npx --yes wrangler@4.161.0 dev --config tools/crash-relay/wrangler.toml
-```
-
-Run the build script again after editing `site/` or the logo. It copies the
-public files and logo into `dist/website/`. For production, sign in with
-`npx --yes wrangler@4.161.0 login` and replace `dev` with `deploy` in the
-command above. The custom domain must be an active Cloudflare zone in the
-Worker's account.
-
-`.github/workflows/cloudflare.yml` can deploy relevant changes on `main`.
-Add the repository Actions variable `CLOUDFLARE_ACCOUNT_ID` and the
-`CLOUDFLARE_API_TOKEN` Actions secret. The deploy token needs permission to
-edit Workers in the account and read the zone and manage Worker routes for
-`frameplayerx.org.uk`. The crash relay's `GITHUB_TOKEN` stays in Cloudflare.
-
-The legacy GitHub Pages installer stays online during the transition. Its
-`pages` workflow runs only by hand and republishes the pre-migration page.
+`.github/workflows/pages.yml` publishes `site/` (with the logo) when it
+changes on `main`. Once, in the repository settings: **Pages › Build and
+deployment › Source: GitHub Actions**.
 
 ### Crash reports
 
@@ -660,15 +636,14 @@ up, once:
    `tools/crash-relay/wrangler.toml`, `frameplayerx-crashes` by default).
 2. Create a fine-grained GitHub token with access to that repository only
    and the **Issues: Read and write** permission.
-3. Deploy the [website Worker](#project-website). From the repository root,
-   run `npx --yes wrangler@4.161.0 secret put GITHUB_TOKEN --config tools/crash-relay/wrangler.toml`
-   and paste the GitHub token at the prompt. Leave the Worker's logs off: the
+3. In `tools/crash-relay/`, with a Cloudflare account:
+   `npx wrangler login`, `npx wrangler secret put GITHUB_TOKEN` (paste the
+   token), then `npx wrangler deploy`. Leave the Worker's logs off: the
    relay only uses the sender's address to rate-limit them (5 a minute).
-4. When setting up a different relay, point `REPORT_URL` in
-   `crates/frameplayerx/src/crash.rs` to its deployed URL plus `/report`.
+4. Set `REPORT_URL` in `crates/frameplayerx/src/crash.rs` to the deployed
+   URL plus `/report`, e.g. `Some("https://frameplayerx-crash-relay.<account>.workers.dev/report")`.
 
-Check routing without filing an issue with `curl -X POST <url>/report -d '{}'`
-(expected `400`). To check issue creation deliberately, use
+Check it with
 `curl -X POST <url>/report -d '{"app":"frameplayerx","version":"test","summary":"test","text":"test"}'`:
 `201` and a new issue. The preview's `crash-report` command shows the page
 with a report made from its own log.

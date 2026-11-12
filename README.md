@@ -11,8 +11,6 @@
 
 A VR video player for the Valve Steam Frame. It plays flat, 180°, 360° and fisheye videos, in 2D or 3D, from the headset, a microSD card, a USB drive or a media server. It runs natively on the headset and plays 8K video smoothly with the display at 120 Hz.
 
-[Project website](https://frameplayerx.org.uk/)
-
 ---
 
 ## Features
@@ -52,7 +50,7 @@ A VR video player for the Valve Steam Frame. It plays flat, 180°, 360° and fis
 <p align="center">
   <a href="https://github.com/remotesojourner/frameplayerx/releases/latest/download/Install-FramePlayerX.desktop"><img src="assets/install-button.svg" alt="Install in Desktop Mode" width="240" /></a>
   <!-- <a href="https://framedropvr.com/install?manifest=https%3A%2F%2Fgithub.com%2Fremotesojourner%2Fframeplayerx%2Freleases%2Flatest%2Fdownload%2Fframedrop.json"><img src="assets/framedrop-button.svg" alt="Install with FrameDrop" width="240" /></a> -->
-  <a href="https://frameplayerx.org.uk/frame-control"><img src="assets/frame-control-button.svg" alt="Install with Frame Control" width="240" /></a>
+  <a href="https://remotesojourner.github.io/frameplayerx/frame-control.html"><img src="assets/frame-control-button.svg" alt="Install with Frame Control" width="240" /></a>
 </p>
 
 1. **Install FramePlayerX** with one of the buttons above, or from a terminal:
