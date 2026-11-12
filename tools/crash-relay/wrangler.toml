@@ -1,8 +1,14 @@
-# The relay FramePlayerX sends crash reports to (worker.js), deployed with
-# Cloudflare's wrangler as docs/DEVELOPMENT.md (Crash reports) describes.
+# Serves the public website and handles crash reports (see docs/DEVELOPMENT.md).
 name = "frameplayerx-crash-relay"
 main = "worker.js"
 compatibility_date = "2026-10-01"
+# Released players already send reports to the workers.dev hostname.
+workers_dev = true
+routes = [{ pattern = "frameplayerx.org.uk", custom_domain = true }]
+
+[assets]
+directory = "../../dist/website"
+run_worker_first = ["/report"]
 
 [vars]
 # The private repository the reports become issues in.
