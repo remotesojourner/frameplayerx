@@ -48,7 +48,7 @@ FrameDrop or Valve's SteamOS Devkit Client.
 your PC and the headset paired, press the button in your PC's browser:
 
 <a href="https://framedropvr.com/install?manifest=https%3A%2F%2Fgithub.com%2Fremotesojourner%2Fframeplayerx%2Freleases%2Flatest%2Fdownload%2Fframedrop.json"><img src="../assets/framedrop-button.svg" alt="Install with FrameDrop" width="240" /></a>
-<a href="https://remotesojourner.github.io/frameplayerx/frame-control.html"><img src="../assets/frame-control-button.svg" alt="Install with Frame Control" width="240" /></a>
+<a href="https://frameplayerx.org.uk/frame-control"><img src="../assets/frame-control-button.svg" alt="Install with Frame Control" width="240" /></a>
 
 GitHub doesn't keep links that open apps, so the Frame Control button opens a
 small page that opens Frame Control. If that doesn't work, paste this link
