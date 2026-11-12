@@ -1,0 +1,37 @@
+name: pages
+
+# Keep the existing Frame Control page live during the Cloudflare transition.
+# Manual runs can republish the last GitHub Pages version if needed.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-24.04
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: f942e1d8c4691702f3b6ca72acd6f4a5e7fe9c80
+          persist-credentials: false
+      - name: Assemble the site
+        run: |
+          mkdir _site
+          cp site/* assets/logo.svg _site/
+      - uses: actions/configure-pages@v6
+      - uses: actions/upload-pages-artifact@v5
+        with:
+          path: _site
+      - id: deployment
+        uses: actions/deploy-pages@v5

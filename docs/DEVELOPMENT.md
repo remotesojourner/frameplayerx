@@ -636,6 +636,9 @@ Add the repository Actions variable `CLOUDFLARE_ACCOUNT_ID` and the
 edit Workers in the account and read the zone and manage Worker routes for
 `frameplayerx.org.uk`. The crash relay's `GITHUB_TOKEN` stays in Cloudflare.
 
+The legacy GitHub Pages installer stays online during the transition. Its
+`pages` workflow runs only by hand and republishes the pre-migration page.
+
 ### Crash reports
 
 The log records panics and fatal signals. When the previous run's log
