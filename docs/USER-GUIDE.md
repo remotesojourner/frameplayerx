@@ -8,7 +8,7 @@ or your network.
 - [Where your videos can be](#where-your-videos-can-be): browsing,
   PIN locks, microSD cards and USB drives
 - [Video formats](#video-formats), [fisheye lenses](#fisheye-lenses) and
-  [videos that stutter](#videos-that-stutter-av1-and-422)
+  [hardware decoding](#hardware-decoding)
 - [Display](#display): refresh rate, resolution and foveated rendering
 - [Controls](#controls), and [watching lying down](#watching-lying-down)
 - [Passthrough videos](#passthrough-videos)
@@ -690,16 +690,16 @@ font for it (the Noto fonts cover every language) into
 `~/.local/share/fonts` and restart FramePlayerX; frameplayerx.log names
 the characters it had no font for.
 
-### Videos that stutter: AV1 and 4:2:2
+### Hardware decoding
 
 The Frame's hardware decoder plays 4:2:0 HEVC (H.265, 8- and 10-bit) and
-H.264 (8-bit), up to 8K. AV1, 4:2:2 or 4:4:4 colour and 10-bit H.264 have
-no hardware path on the Frame, so they decode on the CPU, which can't keep
-up with VR resolutions: they stutter or stop to buffer, and a warning pill
-appears on the control bar. Point at it to read why ("No hardware decoding
-for AV1", "… for 4:2:2 HEVC"). Convert them to 4:2:0 HEVC once on a PC and
-they play smoothly. VP9 also decodes on the CPU: it keeps up at lower
-resolutions, but can stutter at 8K.
+H.264 (8-bit) smoothly up to 8K. The Frame has no hardware decoder for AV1,
+4:2:2 or 4:4:4 colour or 10-bit H.264, so those decode on the CPU, which
+can fall behind at VR sizes; a warning pill on the control bar shows when a
+video plays this way, and pointing at it says why ("No hardware decoding
+for AV1", "… for 4:2:2 HEVC"). Converted once to 4:2:0 HEVC on a PC, they
+play as smoothly as the rest. VP9 decodes on the CPU too and keeps up at
+lower resolutions; at 8K, convert it as well.
 
 "Too big for hardware" means the file can't fit even with nothing else
 open: the decoder takes at most 8192×4320 pixels a frame. 8192×4320 and
@@ -773,8 +773,8 @@ Keep the format tags in the name (`_180_LR` and so on); conversions drop
 the VR metadata, so a file without tags may need its format set once
 under ⚙ › Format.
 
-From a server, a video that stutters can also be transcoded by the server
-as it plays, without converting anything: see below.
+From a server, the server can instead transcode such a video as it plays,
+without converting anything: see below.
 
 ### Server transcoding
 
@@ -838,8 +838,8 @@ Changes apply at once, also while a video plays.
   detail anyway. It follows your eyes; without eye tracking it stays in the
   middle of each lens. Menus and the pointer always keep full detail.
 
-If a demanding video stutters (8K 10-bit, or a passthrough video with a
-mask), set foveation to High or lower the resolution. With foveation off,
+As they start, these settings play the most demanding videos (8K 10-bit,
+and passthrough videos with a mask) at full frame rate. With foveation off,
 8K 10-bit video needs a lower resolution or refresh rate to play smoothly.
 
 ## Controls
