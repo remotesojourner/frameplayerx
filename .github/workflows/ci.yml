@@ -37,8 +37,8 @@ jobs:
   # a re-run keeps it and replaces its own draft. A pushed v* tag is used
   # as it is.
   #
-  # What a change touches decides how far it goes. Markdown, docs/ and site/
-  # aren't built, tested or packaged, so they run nothing. CI's own settings
+  # What a change touches decides how far it goes. Markdown, docs/, site/ and
+  # tools/crash-relay/ aren't part of the app build. CI's own settings
   # are worth trying but change nothing people get, so they build and don't
   # release. The later jobs are skipped by their `if`, not by path filters on
   # the workflow, which would leave a required check pending for good. A
@@ -71,7 +71,7 @@ jobs:
           is_release=false
           draft=false
           latest=$(git tag -l 'v*' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1)
-          docs=(':!*.md' ':!docs' ':!site')
+          non_app=(':!*.md' ':!docs' ':!site' ':!tools/crash-relay')
           settings=(':!.github' ':!cliff.toml' ':!.gitignore' ':!.gitattributes')
           base=
           if [ "$GITHUB_EVENT_NAME" = pull_request ]; then
@@ -82,10 +82,10 @@ jobs:
           checks=true
           ships=true
           if [ -n "$base" ]; then
-            if git diff --quiet "$base" HEAD -- . "${docs[@]}"; then
+            if git diff --quiet "$base" HEAD -- . "${non_app[@]}"; then
               checks=false
             fi
-            if git diff --quiet "$base" HEAD -- . "${docs[@]}" "${settings[@]}"; then
+            if git diff --quiet "$base" HEAD -- . "${non_app[@]}" "${settings[@]}"; then
               ships=false
             fi
           fi
