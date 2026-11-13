@@ -25,7 +25,7 @@ pub fn page(ui: &mut egui::Ui, v: &mut View, l: &mut LocalView) -> bool {
             .find(|c| c.id() == b.source)
             .map(|c| c.name().to_string())
             .unwrap_or_default();
-        return super::folders::page(ui, v, title, &root, b);
+        return super::folders::page(ui, v, title, &root, None, b);
     }
     let back = page::header(ui, title, Some(tr!("sources-local-desc")), |_| {});
     roots(ui, v, l);
@@ -74,7 +74,7 @@ pub fn library_page(
         && let Some(b) = l.folder.as_mut()
     {
         let root = crate::libraries::display_location(&cfg.root());
-        return super::folders::page(ui, v, name, &root, b);
+        return super::folders::page(ui, v, name, &root, None, b);
     }
     let subtitle = match &scanning {
         Some(s) => s.clone(),

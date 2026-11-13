@@ -37,6 +37,8 @@ pub fn source(e: &fp_sources::Error) -> String {
         E::SftpUnavailable(message) => tr!("error-sftp-unavailable", error = message.as_str()),
         E::HostKeyChanged(server) => tr!("error-host-key-changed", server = server.as_str()),
         E::KeyPassphrase(file) => tr!("error-key-passphrase", file = file.as_str()),
+        E::Nfs(message) => tr!("error-nfs", error = message.as_str()),
+        E::NfsUnavailable(message) => tr!("error-nfs-unavailable", error = message.as_str()),
         E::Config(message) => tr!("error-config", error = message.as_str()),
     }
 }

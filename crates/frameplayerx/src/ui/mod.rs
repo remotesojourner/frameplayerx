@@ -488,7 +488,7 @@ pub struct SourceView {
 }
 
 pub enum SourcePage {
-    /// Files and folders (SMB, WebDAV, HTTP, DLNA, local folders).
+    /// Files and folders (SMB, NFS, WebDAV, HTTP, DLNA, local folders).
     Folders(Browse),
     /// The headset's folders and drives.
     Local(local::LocalView),
@@ -684,6 +684,9 @@ pub struct SourceForm {
     pub key_locked: Option<(String, Option<bool>)>,
     pub insecure_tls: bool,
     pub parallel_downloads: bool,
+    /// The user and group IDs an NFS source sends; blank for this device's.
+    pub nfs_uid: String,
+    pub nfs_gid: String,
     /// Signing in to a Jellyfin/Emby server with Quick Connect rather than a
     /// password.
     pub use_quick_connect: bool,
@@ -727,6 +730,8 @@ impl Default for SourceForm {
             key_locked: None,
             insecure_tls: false,
             parallel_downloads: false,
+            nfs_uid: String::new(),
+            nfs_gid: String::new(),
             use_quick_connect: true,
             quick_connect: QuickConnect::Idle,
             plex: plex::Connect::default(),

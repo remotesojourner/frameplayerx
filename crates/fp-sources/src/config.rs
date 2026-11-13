@@ -66,6 +66,8 @@ pub enum SourceKind {
     Smb,
     /// A folder on an SFTP (SSH) server.
     Sftp,
+    /// An NFSv3 export.
+    Nfs,
     /// A Jellyfin or Emby media server (MediaBrowser API).
     #[serde(rename = "mediabrowser")]
     MediaBrowser,
@@ -86,6 +88,7 @@ impl SourceKind {
             SourceKind::HereSphere => "HereSphere API",
             SourceKind::Smb => "SMB share",
             SourceKind::Sftp => "SFTP server",
+            SourceKind::Nfs => "NFS export",
             SourceKind::MediaBrowser => "Jellyfin/Emby",
             SourceKind::Plex => "Plex",
         }
@@ -268,6 +271,31 @@ impl fmt::Debug for SftpConfig {
     }
 }
 
+/// An NFSv3 export, or every export of a server.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct NfsConfig {
+    /// Stable identifier chosen by the app.
+    pub id: String,
+    pub name: String,
+    /// Server host name or IP address.
+    pub host: String,
+    /// TCP port of the NFS service; asked of the server's portmapper when
+    /// absent (usually 2049).
+    #[serde(default)]
+    pub port: Option<u16>,
+    /// Path mounted on the server (`/volume1/videos`), which may be a folder
+    /// inside an export. Empty for the whole server, whose root lists its
+    /// exports.
+    #[serde(default)]
+    pub export: String,
+    /// User ID sent with each request (AUTH_SYS); this process's when absent.
+    #[serde(default)]
+    pub uid: Option<u32>,
+    /// Group ID sent with each request; this process's when absent.
+    #[serde(default)]
+    pub gid: Option<u32>,
+}
+
 /// A Jellyfin or Emby media server (MediaBrowser API).
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 pub struct MediaBrowserConfig {
@@ -434,6 +462,8 @@ pub enum SourceConfig {
     Smb(SmbConfig),
     /// A folder on an SFTP (SSH) server.
     Sftp(SftpConfig),
+    /// An NFSv3 export.
+    Nfs(NfsConfig),
     /// A Jellyfin or Emby media server.
     #[serde(rename = "mediabrowser")]
     MediaBrowser(MediaBrowserConfig),
@@ -451,6 +481,7 @@ impl SourceConfig {
             SourceConfig::DeoVr(c) | SourceConfig::HereSphere(c) => &c.id,
             SourceConfig::Smb(c) => &c.id,
             SourceConfig::Sftp(c) => &c.id,
+            SourceConfig::Nfs(c) => &c.id,
             SourceConfig::MediaBrowser(c) => &c.id,
             SourceConfig::Plex(c) => &c.id,
         }
@@ -466,6 +497,7 @@ impl SourceConfig {
             SourceConfig::DeoVr(c) | SourceConfig::HereSphere(c) => &c.name,
             SourceConfig::Smb(c) => &c.name,
             SourceConfig::Sftp(c) => &c.name,
+            SourceConfig::Nfs(c) => &c.name,
             SourceConfig::MediaBrowser(c) => &c.name,
             SourceConfig::Plex(c) => &c.name,
         }
@@ -483,6 +515,7 @@ impl SourceConfig {
             SourceConfig::HereSphere(_) => SourceKind::HereSphere,
             SourceConfig::Smb(_) => SourceKind::Smb,
             SourceConfig::Sftp(_) => SourceKind::Sftp,
+            SourceConfig::Nfs(_) => SourceKind::Nfs,
             SourceConfig::MediaBrowser(_) => SourceKind::MediaBrowser,
             SourceConfig::Plex(_) => SourceKind::Plex,
         }
@@ -502,6 +535,7 @@ impl SourceConfig {
             SourceConfig::DeoVr(c) | SourceConfig::HereSphere(c) => redact(&c.url),
             SourceConfig::Smb(c) => crate::smb::smb_url(&c.host, c.port, &c.share, &c.path),
             SourceConfig::Sftp(c) => crate::sftp::sftp_url(&c.host, c.port, &c.path),
+            SourceConfig::Nfs(c) => crate::nfs::nfs_url(&c.host, c.port, &c.export),
             SourceConfig::MediaBrowser(c) => redact(&c.url),
             SourceConfig::Plex(c) => redact(&c.url),
         }

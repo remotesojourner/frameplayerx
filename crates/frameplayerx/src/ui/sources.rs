@@ -16,7 +16,7 @@ pub(super) fn kind_icon(kind: SourceKind) -> &'static str {
         SourceKind::Dlna => icons::BROADCAST,
         SourceKind::DeoVr | SourceKind::HereSphere => icons::VIRTUAL_REALITY,
         SourceKind::MediaBrowser | SourceKind::Plex => icons::MONITOR_PLAY,
-        SourceKind::Smb => icons::SHARE_NETWORK,
+        SourceKind::Smb | SourceKind::Nfs => icons::SHARE_NETWORK,
         SourceKind::Sftp => icons::TERMINAL_WINDOW,
     }
 }
@@ -38,6 +38,7 @@ pub(super) fn kind_label(kind: SourceKind) -> &'static str {
         SourceKind::HereSphere => tr!("source-kind-heresphere"),
         SourceKind::Smb => tr!("source-kind-smb"),
         SourceKind::Sftp => tr!("source-kind-sftp"),
+        SourceKind::Nfs => tr!("source-kind-nfs"),
         SourceKind::MediaBrowser => "Jellyfin/Emby",
         SourceKind::Plex => "Plex",
     }
@@ -50,6 +51,7 @@ fn kind_chip_label(kind: SourceKind) -> &'static str {
         SourceKind::HereSphere => "HereSphere",
         SourceKind::Smb => "SMB",
         SourceKind::Sftp => "SFTP",
+        SourceKind::Nfs => "NFS",
         _ => kind_label(kind),
     }
 }
@@ -313,7 +315,14 @@ fn browse(ui: &mut egui::Ui, v: &mut View) {
         .map(|c| kind_label(c.kind()))
         .unwrap_or(tr!("sources-folder"));
     let back = match &mut sv.page {
-        SourcePage::Folders(b) => super::folders::page(ui, v, &sv.name, kind, b),
+        SourcePage::Folders(b) => {
+            let address = v
+                .services
+                .opener
+                .source(&sv.source)
+                .and_then(|s| s.display_location(b.location.as_deref()));
+            super::folders::page(ui, v, &sv.name, kind, address, b)
+        }
         SourcePage::Local(l) => super::local::page(ui, v, l),
         SourcePage::Library(l) => super::local::library_page(ui, v, &sv.source, &sv.name, l),
         SourcePage::Catalog(j) => super::catalog::page(ui, v, &sv.source, &sv.name, j),
@@ -536,7 +545,7 @@ fn pin_form(ui: &mut egui::Ui, v: &mut View) {
     }
 }
 
-fn kinds() -> [(SourceKind, &'static str); 10] {
+fn kinds() -> [(SourceKind, &'static str); 11] {
     [
         (SourceKind::Library, tr!("source-kind-library-desc")),
         (SourceKind::MediaBrowser, tr!("source-kind-jellyfin-desc")),
@@ -547,6 +556,7 @@ fn kinds() -> [(SourceKind, &'static str); 10] {
         (SourceKind::Http, tr!("source-kind-http-desc")),
         (SourceKind::Smb, tr!("source-kind-smb-desc")),
         (SourceKind::Sftp, tr!("source-kind-sftp-desc")),
+        (SourceKind::Nfs, tr!("source-kind-nfs-desc")),
         (SourceKind::Dlna, tr!("source-kind-dlna-desc")),
     ]
 }
@@ -562,6 +572,7 @@ pub(super) fn address_hint(kind: SourceKind) -> &'static str {
         SourceKind::Http => "http://192.168.1.10:8080/videos/",
         SourceKind::Smb => "smb://nas.local/videos",
         SourceKind::Sftp => "sftp://pc.local/~/Videos",
+        SourceKind::Nfs => "nfs://nas.local/volume1/videos",
         SourceKind::Dlna => "",
     }
 }
@@ -574,7 +585,7 @@ pub(super) fn name_hint(kind: SourceKind) -> &'static str {
         SourceKind::HereSphere => tr!("source-name-hint-heresphere"),
         SourceKind::WebDav => tr!("source-name-hint-webdav"),
         SourceKind::Http => tr!("source-name-hint-http"),
-        SourceKind::Smb => tr!("source-name-hint-smb"),
+        SourceKind::Smb | SourceKind::Nfs => tr!("source-name-hint-smb"),
         SourceKind::Sftp => tr!("source-name-hint-sftp"),
         SourceKind::Local | SourceKind::Library => tr!("source-name-hint-library"),
         SourceKind::Dlna => tr!("source-name-hint"),
@@ -870,6 +881,7 @@ fn server_form(
     let local = f.kind == SourceKind::Local;
     let smb = f.kind == SourceKind::Smb;
     let sftp = f.kind == SourceKind::Sftp;
+    let nfs = f.kind == SourceKind::Nfs;
     let is_mb = f.kind == SourceKind::MediaBrowser;
     if is_mb && f.use_quick_connect {
         poll_quick_connect(ui, f, actions);
@@ -905,7 +917,18 @@ fn server_form(
                 },
             );
         }
-        if !local {
+        if nfs {
+            r.row(
+                tr!("source-nfs-uid"),
+                Some(tr!("source-nfs-ids-desc")),
+                |ui| {
+                    text_field(ui, &mut f.nfs_uid, &default_id(true), false);
+                },
+            );
+            r.row(tr!("source-nfs-gid"), None, |ui| {
+                text_field(ui, &mut f.nfs_gid, &default_id(false), false);
+            });
+        } else if !local {
             if is_mb && f.use_quick_connect {
                 quick_connect_rows(r, f, actions);
             } else {
@@ -959,7 +982,7 @@ fn server_form(
             }
         }
     });
-    if !is_mb || !f.use_quick_connect {
+    if !nfs && (!is_mb || !f.use_quick_connect) {
         ui.add_space(8.0);
         ui.label(
             RichText::new(tr!("source-passwords-note"))
@@ -968,6 +991,19 @@ fn server_form(
         );
     }
     save
+}
+
+/// What a blank NFS user (or group) ID sends: this process's.
+fn default_id(user: bool) -> String {
+    #[cfg(unix)]
+    // SAFETY: getuid and getgid cannot fail and touch no memory.
+    let id = unsafe { if user { libc::getuid() } else { libc::getgid() } };
+    #[cfg(not(unix))]
+    let id = {
+        let _ = user;
+        65534
+    };
+    id.to_string()
 }
 
 pub(super) fn text_field(ui: &mut egui::Ui, value: &mut String, hint: &str, masked: bool) {
@@ -1196,6 +1232,11 @@ pub fn edit_form(cfg: &SourceConfig) -> SourceForm {
                 .map(|p| p.display().to_string())
                 .unwrap_or_default();
             f.key_passphrase = c.key_passphrase.clone();
+        }
+        SourceConfig::Nfs(c) => {
+            f.address = fp_sources::nfs::nfs_url(&c.host, c.port, &c.export);
+            f.nfs_uid = c.uid.map(|u| u.to_string()).unwrap_or_default();
+            f.nfs_gid = c.gid.map(|g| g.to_string()).unwrap_or_default();
         }
         SourceConfig::MediaBrowser(c) => {
             creds(&c.credentials);
@@ -1471,6 +1512,38 @@ pub fn build_config(f: &SourceForm, id: String) -> Result<SourceConfig, String> 
                 host_key: None,
             })
         }
+        SourceKind::Nfs => {
+            let loc = fp_sources::nfs::NfsLocation::parse(&if address.contains("://") {
+                address.clone()
+            } else {
+                // `nas:/volume1/videos`, as mount and /etc/fstab write it.
+                format!("nfs://{}", address.replacen(":/", "/", 1))
+            })
+            .map_err(|_| tr!("source-error-nfs").to_string())?;
+            let id_field = |value: &str| -> Result<Option<u32>, String> {
+                let value = value.trim();
+                if value.is_empty() {
+                    return Ok(None);
+                }
+                value
+                    .parse()
+                    .map(Some)
+                    .map_err(|_| tr!("source-error-nfs-id").to_string())
+            };
+            SourceConfig::Nfs(fp_sources::NfsConfig {
+                id,
+                name,
+                export: if loc.path.is_empty() {
+                    String::new()
+                } else {
+                    format!("/{}", loc.path.join("/"))
+                },
+                host: loc.host,
+                port: loc.port,
+                uid: id_field(&f.nfs_uid)?,
+                gid: id_field(&f.nfs_gid)?,
+            })
+        }
         SourceKind::MediaBrowser => {
             let (credentials, access_token, user_id) = if f.use_quick_connect {
                 match &f.quick_connect {
@@ -1631,6 +1704,45 @@ mod tests {
             }
         }
         f.address = "smb://".into();
+        assert!(build_config(&f, "x".into()).is_err());
+        // NFS, as a URL or as mount writes it, with optional IDs.
+        f.kind = SourceKind::Nfs;
+        for address in [
+            "nfs://nas:2049/volume1/My%20Videos/",
+            "nas:/volume1/My Videos",
+        ] {
+            f.address = address.into();
+            match build_config(&f, "x".into()).unwrap() {
+                SourceConfig::Nfs(c) => {
+                    assert_eq!(c.host, "nas", "{address}");
+                    assert_eq!(c.export, "/volume1/My Videos", "{address}");
+                    assert_eq!((c.uid, c.gid), (None, None));
+                    assert_eq!(c.name, "nas");
+                }
+                other => panic!("{other:?}"),
+            }
+        }
+        f.address = "nfs://nas/".into();
+        f.nfs_uid = "1026".into();
+        f.nfs_gid = "100".into();
+        match build_config(&f, "x".into()).unwrap() {
+            SourceConfig::Nfs(c) => {
+                assert!(c.export.is_empty());
+                assert_eq!((c.uid, c.gid), (Some(1026), Some(100)));
+                let form = edit_form(&SourceConfig::Nfs(c.clone()));
+                assert_eq!(form.address, "nfs://nas/");
+                assert_eq!(
+                    (form.nfs_uid.as_str(), form.nfs_gid.as_str()),
+                    ("1026", "100")
+                );
+            }
+            other => panic!("{other:?}"),
+        }
+        f.nfs_uid = "me".into();
+        assert!(build_config(&f, "x".into()).is_err());
+        f.nfs_uid.clear();
+        f.nfs_gid.clear();
+        f.address = "nfs://".into();
         assert!(build_config(&f, "x".into()).is_err());
 
         // SFTP: the user from the address, and a password or a key file.
