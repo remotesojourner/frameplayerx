@@ -16,6 +16,7 @@
 //! | DeoVR / HereSphere feeds | [`feed`] | feed and scene URLs |
 //! | SMB2/3 | [`smb`] | `smb://host/share/path` |
 //! | SFTP | [`sftp`] | `source:` locations relative to its folder |
+//! | NFSv3 | [`nfs`] | `nfs://host/export/path` |
 //! | Jellyfin / Emby | [`mediabrowser`] | `mb:<url>#<kind>=<id>` |
 //! | Plex | [`plex`] | `plex://source/<source>/<machine>/<kind>/<id>` |
 //!
@@ -35,6 +36,7 @@ mod json;
 pub mod local;
 pub mod location;
 pub mod mediabrowser;
+pub mod nfs;
 pub mod plex;
 pub mod sftp;
 pub mod sidecar;
@@ -56,7 +58,7 @@ pub use catalog::{
 };
 pub use config::{
     CardRef, Credentials, DlnaConfig, FeedConfig, HttpConfig, LibraryConfig, LocalConfig,
-    MediaBrowserConfig, PlexConfig, SftpConfig, SmbConfig, SourceConfig, SourceKind,
+    MediaBrowserConfig, NfsConfig, PlexConfig, SftpConfig, SmbConfig, SourceConfig, SourceKind,
     default_config_path, load_configs, save_configs,
 };
 pub use dlna::{DlnaDevice, DlnaSource, SsdpResponse, discover};
@@ -69,6 +71,7 @@ pub use mediabrowser::{
     MbFacets, MbFilter, MbHome, MbItem, MbKind, MbPage, MbQuery, MbSort, MbVersion,
     MediaBrowserSource, QuickConnectState, quick_connect_initiate_url, quick_connect_poll_url,
 };
+pub use nfs::NfsSource;
 pub use sftp::SftpSource;
 pub use sidecar::{ScriptFile, Sidecars, SubtitleFile, match_sidecars};
 pub use smb::SmbSource;
@@ -128,6 +131,13 @@ pub trait Source: Send + Sync {
     /// picture changed, where opening it could only download it again. `None`
     /// for one that isn't over HTTP.
     fn picture_request(&self, _location: &str) -> Option<(HttpClient, String)> {
+        None
+    }
+
+    /// Where a folder of this source is (its root for `None`), for people
+    /// to read while browsing it. `None` when the source has no address
+    /// worth showing. Performs no I/O.
+    fn display_location(&self, _location: Option<&str>) -> Option<String> {
         None
     }
 
@@ -268,6 +278,7 @@ pub fn build(config: &SourceConfig) -> Result<Box<dyn Source>> {
         SourceConfig::HereSphere(c) => Box::new(FeedSource::heresphere(c)?),
         SourceConfig::Smb(c) => Box::new(SmbSource::new(c)?),
         SourceConfig::Sftp(c) => Box::new(SftpSource::new(c)?),
+        SourceConfig::Nfs(c) => Box::new(NfsSource::new(c)?),
         SourceConfig::MediaBrowser(c) => Box::new(MediaBrowserSource::new(c)?),
         SourceConfig::Plex(c) => Box::new(plex::PlexSource::new(c)?),
     })

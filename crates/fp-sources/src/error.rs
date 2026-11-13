@@ -72,6 +72,11 @@ pub enum Error {
     /// doesn't unlock it.
     #[error("{0}: the key file's passphrase is missing or wrong")]
     KeyPassphrase(String),
+    #[error("NFS error: {0}")]
+    Nfs(String),
+    /// NFS support is not available in this build.
+    #[error("NFS unavailable: {0}")]
+    NfsUnavailable(String),
     #[error("invalid source configuration: {0}")]
     Config(String),
 }

@@ -12,8 +12,16 @@ use fp_core::source::{Entry, EntryKind};
 use fp_sources::EntrySort;
 
 /// A folder listing of `b` under `title` (the source), the folder it is in
-/// (`root` at the top) underneath; true when Back was clicked.
-pub fn page(ui: &mut egui::Ui, v: &mut View, title: &str, root: &str, b: &mut Browse) -> bool {
+/// underneath: `address` when the source gives one, else `root` at the top
+/// and the folder's location below it; true when Back was clicked.
+pub fn page(
+    ui: &mut egui::Ui,
+    v: &mut View,
+    title: &str,
+    root: &str,
+    address: Option<String>,
+    b: &mut Browse,
+) -> bool {
     let words: Vec<String> = b.filter.split_whitespace().map(str::to_lowercase).collect();
     let shown: Vec<Entry> = b
         .entries
@@ -29,9 +37,10 @@ pub fn page(ui: &mut egui::Ui, v: &mut View, title: &str, root: &str, b: &mut Br
         .iter()
         .filter(|e| e.kind == EntryKind::Video)
         .collect();
-    let subtitle = match &b.location {
-        Some(l) => short_location(l),
-        None => root.to_string(),
+    let subtitle = match (address, &b.location) {
+        (Some(address), _) => shorten(&address),
+        (None, Some(l)) => short_location(l),
+        (None, None) => root.to_string(),
     };
     let (mut refresh, mut play_all) = (false, false);
     let back = page::header(ui, title, Some(&subtitle), |ui| {
@@ -275,7 +284,11 @@ fn row(ui: &mut egui::Ui, v: &mut View, e: &Entry) -> (bool, bool) {
 
 fn short_location(l: &str) -> String {
     let l = crate::libraries::display_location(l);
-    let l = l.split('#').next().unwrap_or(&l);
+    shorten(l.split('#').next().unwrap_or(&l))
+}
+
+/// `l`, or its last 57 characters after an ellipsis when longer than 60.
+fn shorten(l: &str) -> String {
     if l.chars().count() > 60 {
         let tail: String = l
             .chars()
