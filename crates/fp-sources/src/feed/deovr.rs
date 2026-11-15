@@ -88,6 +88,7 @@ pub fn parse_deovr_scene(v: &Value, base: &str) -> SceneInfo {
         title: text(v, "title").unwrap_or_default(),
         duration: num(v, "videoLength").filter(|d| *d > 0.0),
         thumbnail_url: url_field(v, "thumbnailUrl", base),
+        timeline_preview: url_field(v, "timelinePreview", base),
         format: deovr_format(v),
         sources,
         scripts: array(v, "fleshlight")
@@ -188,6 +189,7 @@ mod tests {
                 ]}
             ],
             "timeStamps": [{"ts": 300, "name": "Two"}, {"ts": 10, "name": "One"}],
+            "timelinePreview": "/timeline/1/4096_timelinePreview341x195.jpg",
             "fleshlight": [{"title": "Beach.funscript", "url": "http://vr/s/1.funscript"}]
         });
         let s = parse_deovr_scene(&v, "http://vr/deovr/1");
@@ -210,6 +212,10 @@ mod tests {
             [(10.0, "One".to_string()), (300.0, "Two".to_string())]
         );
         assert_eq!(s.scripts, ["http://vr/s/1.funscript"]);
+        assert_eq!(
+            s.timeline_preview.as_deref(),
+            Some("http://vr/timeline/1/4096_timelinePreview341x195.jpg")
+        );
 
         let mut e = Entry::new("x", "http://vr/deovr/1", EntryKind::Video);
         s.apply_to(&mut e);

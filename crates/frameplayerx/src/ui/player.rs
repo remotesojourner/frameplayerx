@@ -232,9 +232,9 @@ fn format_row(
 pub fn control_bar(ctx: &egui::Context, v: &mut View) {
     // The bar floats in its panel: the outer margin leaves room for its
     // shadow on the video.
-    widgets::panel_slab(ctx, 28.0);
+    widgets::panel_slab_in(ctx, 28.0, widgets::BAR_ROOM);
     let frame = egui::Frame::new()
-        .outer_margin(widgets::SHADOW_ROOM)
+        .outer_margin(widgets::BAR_ROOM)
         .inner_margin(egui::Margin::symmetric(BAR_MARGIN, 18));
     egui::CentralPanel::default().frame(frame).show(ctx, |ui| {
         let Some(pb) = v.playback.as_deref_mut() else {
@@ -248,7 +248,7 @@ pub fn control_bar(ctx: &egui::Context, v: &mut View) {
             &v.settings.subtitle_language,
         );
         ui.add_space(6.0);
-        seek_row(ui, pb, v.state, v.actions);
+        seek_row(ui, pb, v.state, v.thumbs, v.actions);
         ui.add_space(8.0);
 
         // Controls: three groups on one row, transport always centred.
@@ -391,6 +391,7 @@ fn seek_row(
     ui: &mut egui::Ui,
     pb: &mut crate::playback::Playback,
     state: &mut super::UiState,
+    thumbs: &mut super::thumbs::Thumbs,
     actions: &mut Vec<Action>,
 ) {
     let duration = pb.player.duration();
@@ -412,7 +413,7 @@ fn seek_row(
         };
         time(ui, position, Align::Min);
         let w = ui.available_width() - 68.0 - 14.0;
-        seek_bar(ui, w, state, pb, actions);
+        seek_bar(ui, w, state, thumbs, pb, actions);
         time(ui, duration, Align::Max);
     });
 }
@@ -966,14 +967,48 @@ fn skip_button(ui: &mut egui::Ui, secs: f64) -> egui::Response {
     resp
 }
 
+/// Uploads the feed's seek-bar sheet into the bar's egui context once it is
+/// decoded, and again when the server's picture changed. Asked for when the
+/// bar first shows, so it is ready by the first hover.
+fn load_timeline(
+    ctx: &egui::Context,
+    thumbs: &mut super::thumbs::Thumbs,
+    pb: &mut crate::playback::Playback,
+) {
+    let Some(sheet) = &pb.timeline else {
+        return;
+    };
+    let img = match pb.timeline_tex {
+        None => thumbs.get_sheet(&sheet.url),
+        Some(_) => thumbs.sheet_update(&sheet.url),
+    };
+    let Some(img) = img else {
+        return;
+    };
+    let full = [img.source_size.x as u32, img.source_size.y as u32];
+    let options = egui::TextureOptions::LINEAR;
+    match &mut pb.timeline_tex {
+        Some((tex, size)) => {
+            tex.set(egui::ImageData::Color(img), options);
+            *size = full;
+        }
+        None => {
+            let tex = ctx.load_texture("timeline-preview", egui::ImageData::Color(img), options);
+            pb.timeline_tex = Some((tex, full));
+        }
+    }
+}
+
 fn seek_bar(
     ui: &mut egui::Ui,
     width: f32,
     state: &mut super::UiState,
+    thumbs: &mut super::thumbs::Thumbs,
     pb: &mut crate::playback::Playback,
     actions: &mut Vec<Action>,
 ) {
     let duration = pb.player.duration().max(0.001);
+    load_timeline(ui.ctx(), thumbs, pb);
     let (rect, resp) = ui.allocate_exact_size(Vec2::new(width, 36.0), Sense::click_and_drag());
     let active = resp.hovered() || resp.dragged();
     let t = ui.ctx().animate_bool_with_time(resp.id, active, 0.12);
@@ -1042,11 +1077,48 @@ fn seek_bar(
         );
         let size = g.size() + Vec2::new(16.0, 8.0);
         let x = widgets::fit(p.x - size.x / 2.0, size.x, room.left(), room.right());
-        let bubble = egui::Rect::from_min_size(egui::pos2(x, track.top() - size.y - 10.0), size);
+        let mut bubble =
+            egui::Rect::from_min_size(egui::pos2(x, track.top() - size.y - 10.0), size);
         let top = ui.ctx().layer_painter(egui::LayerId::new(
             egui::Order::Tooltip,
             egui::Id::new("seek-time"),
         ));
+        // The feed's picture of this moment, above the time; not while the
+        // audio and subtitles picker covers the room above the bar.
+        if let Some(sheet) = &pb.timeline
+            && let Some((tex, [sw, sh])) = &pb.timeline_tex
+            && !state.tracks_open
+        {
+            let (sw, sh) = (*sw, *sh);
+            if let Some((tx, ty)) = sheet.tile_at(tm / duration, sw, sh) {
+                let uv = egui::Rect::from_min_max(
+                    egui::pos2(tx as f32 / sw as f32, ty as f32 / sh as f32),
+                    egui::pos2(
+                        (tx + sheet.tile_w) as f32 / sw as f32,
+                        (ty + sheet.tile_h) as f32 / sh as f32,
+                    ),
+                );
+                // The picture takes the room above the bar, up to the
+                // panel's top (the headroom over its body), 240 wide when
+                // it fits, with the time over its foot.
+                let bottom = track.top() - 8.0;
+                let ceiling = ui.ctx().screen_rect().top() + 4.0;
+                let aspect = sheet.tile_w as f32 / sheet.tile_h as f32;
+                let height = (240.0 / aspect).min(bottom - ceiling).max(1.0);
+                let pic = Vec2::new(height * aspect, height);
+                let px = widgets::fit(p.x - pic.x / 2.0, pic.x, room.left(), room.right());
+                let rect = egui::Rect::from_min_size(egui::pos2(px, bottom - pic.y), pic);
+                top.image(tex.id(), rect, uv, Color32::WHITE);
+                let bx = widgets::fit(
+                    rect.center().x - size.x / 2.0,
+                    size.x,
+                    room.left(),
+                    room.right(),
+                );
+                bubble =
+                    egui::Rect::from_min_size(egui::pos2(bx, rect.bottom() - size.y - 6.0), size);
+            }
+        }
         top.rect_filled(bubble, egui::CornerRadius::same(8), theme::TEXT);
         top.galley(bubble.min + Vec2::new(8.0, 4.0), g, theme::BG);
     }

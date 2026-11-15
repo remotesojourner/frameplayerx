@@ -402,7 +402,7 @@ impl App {
         let [my, mp] = self.offsets.main;
         let [ay, ap] = self.offsets.adjust;
         self.panels[MAIN].pose = place_below(anchor, my, mp, 1.5, BELOW_DEG);
-        self.panels[BAR].pose = place(bar_anchor, 0.0, 1.05, -0.32, 22.0);
+        self.panels[BAR].pose = bar_pose(bar_anchor, &self.panels[BAR]);
         self.panels[TRACKS].pose = above_bar(&self.panels[BAR], &self.panels[TRACKS]);
         self.panels[TOAST].pose = toast_pose(
             &self.panels[BAR],
@@ -467,6 +467,8 @@ impl App {
         let mut actions = Vec::new();
         if self.thumbs.poll(&self.panels[MAIN].ctx) {
             self.panels[MAIN].request_repaint();
+            // The seek preview's sheet is decoded here too.
+            self.panels[BAR].request_repaint();
         }
         // Paint the keyboard first so a pressed key's text reaches its target
         // panel and paints on the same frame.
@@ -746,12 +748,21 @@ pub(super) fn key(key: egui::Key) -> egui::Event {
     }
 }
 
+/// Where the control bar goes. Its panel is taller than its body by the
+/// headroom above it (ui::widgets::BAR_HEADROOM), which grows the panel
+/// about its centre; it is moved up by half of that, so the body is where a
+/// panel without headroom would put it.
+fn bar_pose(anchor: Mat4, bar: &Panel) -> Mat4 {
+    let head = bar.size.y * (ui::widgets::BAR_HEADROOM as f32 / bar.points().y);
+    place(anchor, 0.0, 1.05, -0.32, 22.0) * Mat4::from_translation(Vec3::new(0.0, head / 2.0, 0.0))
+}
+
 /// Where the audio and subtitles picker goes: on the control bar's plane,
 /// right on top of it, its right edge over the end of what the bar holds.
 /// Its bottom edge meets the top of the bar's body, so neither panel covers
 /// the other's controls.
 fn above_bar(bar: &Panel, picker: &Panel) -> Mat4 {
-    let room = ui::widgets::SHADOW_ROOM;
+    let room = ui::widgets::BAR_ROOM;
     // Metres per point of each.
     let b = bar.size.x / bar.points().x;
     let p = picker.size.x / picker.points().x;
@@ -765,7 +776,7 @@ fn above_bar(bar: &Panel, picker: &Panel) -> Mat4 {
 /// Centred above the control bar's body, and above the picker, `above` metres
 /// tall, when it is open.
 fn toast_pose(bar: &Panel, above: Option<f32>, toast: &Panel) -> Mat4 {
-    let room = ui::widgets::SHADOW_ROOM.top as f32 * bar.size.x / bar.points().x;
+    let room = ui::widgets::BAR_ROOM.top as f32 * bar.size.x / bar.points().x;
     let y = bar.size.y / 2.0 - room + above.unwrap_or(0.0) + toast.size.y / 2.0;
     bar.pose * Mat4::from_translation(Vec3::new(0.0, y, 0.0))
 }
@@ -823,10 +834,35 @@ mod tests {
     use super::*;
 
     #[test]
+    fn the_bar_body_stays_where_it_was_under_its_headroom() {
+        for scale in [0.8, 1.0, 1.4] {
+            let mut plain = growing_panel(BAR_PX, BAR_PX[0] as f32 * BAR_M_PER_PX, 1.25);
+            let mut bar = bar_panel();
+            plain.set_scale(scale);
+            bar.set_scale(scale);
+            plain.pose = place(Mat4::IDENTITY, 0.0, 1.05, -0.32, 22.0);
+            bar.pose = bar_pose(Mat4::IDENTITY, &bar);
+            let (p, b) = (plain.points(), bar.points());
+            let room = ui::widgets::SHADOW_ROOM;
+            let head = ui::widgets::BAR_HEADROOM as f32;
+            for (pp, bp) in [
+                (
+                    egui::pos2(p.x / 2.0, room.top as f32),
+                    egui::pos2(b.x / 2.0, room.top as f32 + head),
+                ),
+                (egui::pos2(0.0, p.y), egui::pos2(0.0, b.y)),
+            ] {
+                let off = plain.world_point(pp) - bar.world_point(bp);
+                assert!(off.length() < 1e-4, "{scale}: {off}");
+            }
+        }
+    }
+
+    #[test]
     fn a_toast_sits_above_the_bar_and_any_picker() {
-        let mut bar = growing_panel(BAR_PX, BAR_PX[0] as f32 * BAR_M_PER_PX, 1.25);
+        let mut bar = bar_panel();
         let mut toast = growing_panel([1100, 90], 1100.0 * BAR_M_PER_PX, 1.25);
-        bar.pose = place(Mat4::IDENTITY, 0.0, 1.05, -0.32, 22.0);
+        bar.pose = bar_pose(Mat4::IDENTITY, &bar);
         let height = |pose: Mat4| bar.pose.inverse().transform_point3(pose.w_axis.truncate());
         toast.pose = toast_pose(&bar, None, &toast);
         let alone = height(toast.pose);
@@ -844,7 +880,7 @@ mod tests {
         let half = |width: f32, distance: f32| (width / 2.0 / distance).atan().to_degrees();
         let library = floating_panel([1600, 1000], 1.8, 1.25);
         for scale in [0.8, 1.0, 1.5] {
-            let mut bar = growing_panel(BAR_PX, BAR_PX[0] as f32 * BAR_M_PER_PX, 1.25);
+            let mut bar = bar_panel();
             let mut perf = perf_panel();
             bar.set_scale(scale);
             perf.set_scale(scale);
@@ -862,13 +898,13 @@ mod tests {
     #[test]
     fn the_picker_sits_on_the_bar_without_covering_it() {
         for scale in [1.0, 1.4] {
-            let mut bar = growing_panel(BAR_PX, BAR_PX[0] as f32 * BAR_M_PER_PX, 1.25);
+            let mut bar = bar_panel();
             let mut picker = growing_panel([850, 560], 850.0 * BAR_M_PER_PX, 1.25);
             bar.set_scale(scale);
             picker.set_scale(scale);
-            bar.pose = place(Mat4::IDENTITY, 0.0, 1.05, -0.32, 22.0);
+            bar.pose = bar_pose(Mat4::IDENTITY, &bar);
             picker.pose = above_bar(&bar, &picker);
-            let room = ui::widgets::SHADOW_ROOM;
+            let room = ui::widgets::BAR_ROOM;
             let pts = bar.points();
             let bar_top = bar.world_point(egui::pos2(pts.x / 2.0, room.top as f32));
             let picker_pts = picker.points();

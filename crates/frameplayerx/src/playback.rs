@@ -112,6 +112,11 @@ pub struct Playback {
     colour_open: bool,
     pub heatmap: Option<Heatmap>,
     pub markers: Vec<Marker>,
+    /// The feed's seek-bar preview pictures, when it offers them.
+    pub timeline: Option<fp_core::source::TimelineSheet>,
+    /// [`Self::timeline`]'s picture, in the control bar's egui context, and
+    /// the sheet file's size in pixels (the picture may be smaller).
+    pub timeline_tex: Option<(egui::TextureHandle, [u32; 2])>,
     pub subtitle_files: Vec<SubtitleFile>,
     pub active_subtitle_file: Option<usize>,
     /// The subtitles Subtitles on / off last turned off, to turn back on.
@@ -665,6 +670,10 @@ pub fn open(
         .or_else(|| entry.as_ref().map(|e| e.name.clone()))
         .unwrap_or_else(|| title_from_name(&name));
     let markers = markers(&info, entry.as_ref(), record.as_ref(), library);
+    let timeline = entry
+        .as_ref()
+        .and_then(|e| e.timeline_preview.as_deref())
+        .and_then(fp_core::source::TimelineSheet::parse);
     let record_id = record.as_ref().map(|r| r.id);
     let session = record_id.and_then(|id| library.start_playback(id).ok());
     let watch = source.and_then(|src| {
@@ -704,6 +713,8 @@ pub fn open(
             settings_dirty: false,
             heatmap,
             markers,
+            timeline,
+            timeline_tex: None,
             subtitle_files: subs,
             active_subtitle_file,
             last_subtitles: None,

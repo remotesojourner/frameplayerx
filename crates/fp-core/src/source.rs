@@ -173,6 +173,10 @@ pub struct Entry {
     /// Named timestamps (chapters) the source provides.
     #[serde(default)]
     pub markers: Vec<(f64, String)>,
+    /// A sheet of seek-bar preview pictures a feed offers (DeoVR's
+    /// `timelinePreview`); see [`crate::source::TimelineSheet`].
+    #[serde(default)]
+    pub timeline_preview: Option<String>,
     /// Where the server says watching stopped, in seconds: Jellyfin and
     /// Emby keep it per user (0 when not started or watched to the end).
     #[serde(default)]
@@ -184,6 +188,48 @@ pub struct Entry {
     /// The source's tags for it.
     #[serde(default)]
     pub tags: Vec<String>,
+}
+
+/// A grid of equal pictures, one every so often through a video, that a
+/// feed offers for the seek bar. DeoVR names the tile size in the file:
+/// `4096_timelinePreview341x195.jpg` is 4096 pixels wide with 341×195 tiles,
+/// read left to right, top to bottom.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TimelineSheet {
+    pub url: String,
+    /// A tile's size, in pixels of the sheet file.
+    pub tile_w: u32,
+    pub tile_h: u32,
+}
+
+impl TimelineSheet {
+    /// Reads the tile size from `<width>_timelinePreview<w>x<h>.<ext>`;
+    /// `None` when the address doesn't say it.
+    pub fn parse(url: &str) -> Option<TimelineSheet> {
+        let path = url.split(['?', '#']).next()?;
+        let file = path.rsplit('/').next()?;
+        let size = file.split_once("timelinePreview")?.1;
+        let size = size.rsplit_once('.').map_or(size, |(s, _)| s);
+        let (w, h) = size.split_once('x')?;
+        let (tile_w, tile_h) = (w.parse::<u32>().ok()?, h.parse::<u32>().ok()?);
+        (tile_w > 0 && tile_h > 0).then(|| TimelineSheet {
+            url: url.to_string(),
+            tile_w,
+            tile_h,
+        })
+    }
+
+    /// Where the tile for `fraction` (0 to 1) of the video sits in a sheet
+    /// file of `sheet_w` × `sheet_h` pixels, as (x, y) of its top-left
+    /// corner in those pixels.
+    /// The video is spread over the whole grid.
+    pub fn tile_at(&self, fraction: f64, sheet_w: u32, sheet_h: u32) -> Option<(u32, u32)> {
+        let cols = sheet_w / self.tile_w;
+        let rows = sheet_h / self.tile_h;
+        let count = cols.checked_mul(rows).filter(|n| *n > 0)?;
+        let i = ((fraction.clamp(0.0, 1.0) * count as f64) as u32).min(count - 1);
+        Some(((i % cols) * self.tile_w, (i / cols) * self.tile_h))
+    }
 }
 
 /// A subtitle file belonging to a video.
@@ -213,6 +259,7 @@ impl Entry {
             scripts: Vec::new(),
             subtitles: Vec::new(),
             markers: Vec::new(),
+            timeline_preview: None,
             resume: None,
             description: None,
             tags: Vec::new(),
@@ -264,6 +311,19 @@ fn ext_in(name: &str, list: &[&str]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_timeline_sheet_names_its_tiles() {
+        let s =
+            TimelineSheet::parse("https://h/t/1/ab/4096_timelinePreview341x195.jpg?x=1").unwrap();
+        assert_eq!((s.tile_w, s.tile_h), (341, 195));
+        assert!(TimelineSheet::parse("https://h/t/other.jpg").is_none());
+        // 12 columns, 3 rows.
+        assert_eq!(s.tile_at(0.0, 4096, 585), Some((0, 0)));
+        assert_eq!(s.tile_at(0.5, 4096, 585), Some((6 * 341, 195)));
+        assert_eq!(s.tile_at(1.0, 4096, 585), Some((11 * 341, 2 * 195)));
+        assert_eq!(s.tile_at(0.5, 100, 100), None);
+    }
 
     #[test]
     fn memory_source_reads() {

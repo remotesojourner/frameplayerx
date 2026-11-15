@@ -66,6 +66,8 @@ pub struct SceneInfo {
     /// Named timestamps in seconds.
     pub markers: Vec<(f64, String)>,
     pub description: Option<String>,
+    /// Seek-bar preview sheet address (DeoVR's `timelinePreview`).
+    pub timeline_preview: Option<String>,
     /// Release date, Unix seconds.
     pub released: Option<i64>,
     /// When the server added it, Unix seconds.
@@ -152,6 +154,9 @@ impl SceneInfo {
         entry.scripts = self.scripts.clone();
         entry.subtitles = self.subtitles.clone();
         entry.markers = self.markers.clone();
+        if self.timeline_preview.is_some() {
+            entry.timeline_preview = self.timeline_preview.clone();
+        }
         if self.description.is_some() {
             entry.description = self.description.clone();
         }

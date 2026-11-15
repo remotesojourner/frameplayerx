@@ -178,11 +178,28 @@ pub const SHADOW_ROOM: egui::Margin = egui::Margin {
     bottom: 28,
 };
 
+/// Empty room above the control bar's body, in egui points, for the seek
+/// preview: it is the size of a feed's 341×195 tile at 240 wide, and a
+/// bit more.
+pub const BAR_HEADROOM: i8 = 100;
+
+/// The control bar's room round its body: [`SHADOW_ROOM`], with the
+/// headroom above.
+pub const BAR_ROOM: egui::Margin = egui::Margin {
+    top: SHADOW_ROOM.top + BAR_HEADROOM,
+    ..SHADOW_ROOM
+};
+
 /// Paints a panel's body as a raised slab, lit along its top edge and
 /// casting a soft shadow, under everything else in `ctx`; returns the
 /// body's rect (the panel less [`SHADOW_ROOM`]).
 pub fn panel_slab(ctx: &egui::Context, radius: f32) -> Rect {
-    let rect = ctx.screen_rect() - SHADOW_ROOM;
+    panel_slab_in(ctx, radius, SHADOW_ROOM)
+}
+
+/// [`panel_slab`] for a panel with `room` round its body.
+pub fn panel_slab_in(ctx: &egui::Context, radius: f32, room: egui::Margin) -> Rect {
+    let rect = ctx.screen_rect() - room;
     slab(ctx, rect, radius);
     rect
 }

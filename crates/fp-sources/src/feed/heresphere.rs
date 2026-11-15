@@ -83,6 +83,7 @@ pub fn parse_heresphere_video(v: &Value, base: &str) -> SceneInfo {
         subtitles: super::subtitle_files(v, base),
         markers,
         description: text(v, "description"),
+        timeline_preview: None,
         released: date_field(v, "dateReleased"),
         added: date_field(v, "dateAdded"),
         studio: meta.studio,

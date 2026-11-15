@@ -6,6 +6,11 @@ use fp_xr::Hand;
 use glam::{Mat4, Quat, Vec2, Vec3};
 use std::time::{Duration, Instant};
 
+/// Largest texture side a panel's egui takes: every Vulkan device makes
+/// images this large (`maxImageDimension2D` is at least 4096), and a feed's
+/// seek-preview sheet is this wide. egui's own default is 2048.
+pub const MAX_TEXTURE_SIDE: usize = 4096;
+
 /// A flat UI surface rendered with egui.
 pub struct Panel {
     pub ctx: egui::Context,
@@ -173,6 +178,7 @@ impl Panel {
             time: Some(time),
             events: std::mem::take(&mut self.events),
             focused: true,
+            max_texture_side: Some(MAX_TEXTURE_SIDE),
             ..Default::default()
         }
     }

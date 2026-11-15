@@ -866,7 +866,9 @@ picture. Play/pause and seeking are under either thumb.
 | Trigger | Click; on empty space, show or hide the controls | The same |
 
 On the control bar, point at the speaker for the volume slider above it;
-press the speaker to mute. What a controller shortcut changes, such as the
+press the speaker to mute. Pointing along the seek bar shows the time there,
+and a picture of that moment when a DeoVR feed offers preview pictures for
+the scene (its `timelinePreview`). What a controller shortcut changes, such as the
 volume or a minute's skip, shows for a moment in a small message above where
 the control bar sits.
 

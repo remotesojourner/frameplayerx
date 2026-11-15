@@ -226,9 +226,31 @@ fn panel(px: [u32; 2], width_m: f32, ppp: f32) -> Panel {
 /// keyboard), which grows with Settings › Interface size: its texture is
 /// fine enough for the largest size from the start.
 fn growing_panel(px: [u32; 2], width_m: f32, ppp: f32) -> Panel {
+    growing_panel_in(px, width_m, ppp, ui::widgets::SHADOW_ROOM)
+}
+
+fn growing_panel_in(px: [u32; 2], width_m: f32, ppp: f32, room: egui::Margin) -> Panel {
     let s = *UI_SCALES.end();
     let px = px.map(|n| (n as f32 * s).round() as u32);
-    floating_panel(px, width_m, ppp * s).growing()
+    floating_panel_in(px, width_m, ppp * s, room).growing()
+}
+
+/// The control bar: its body and the room round it, with headroom above for
+/// the seek preview. Only the body takes the pointer.
+fn bar_panel() -> Panel {
+    let mut bar = growing_panel_in(
+        BAR_PX,
+        BAR_PX[0] as f32 * BAR_M_PER_PX,
+        1.25,
+        ui::widgets::BAR_ROOM,
+    );
+    let pts = bar.points();
+    let head = ui::widgets::BAR_HEADROOM as f32;
+    bar.solid = Some(egui::Rect::from_min_max(
+        egui::pos2(0.0, head),
+        pts.to_pos2(),
+    ));
+    bar
 }
 
 /// Fine enough for the largest interface size, like the control bar.
@@ -241,10 +263,15 @@ fn perf_panel() -> Panel {
 }
 
 fn floating_panel(px: [u32; 2], width_m: f32, ppp: f32) -> Panel {
-    let room = ui::widgets::SHADOW_ROOM;
+    floating_panel_in(px, width_m, ppp, ui::widgets::SHADOW_ROOM)
+}
+
+fn floating_panel_in(px: [u32; 2], width_m: f32, ppp: f32, room: egui::Margin) -> Panel {
     let extra = [
-        ((room.left + room.right) as f32 * ppp).round() as u32,
-        ((room.top + room.bottom) as f32 * ppp).round() as u32,
+        // Summed as f32: the margin's fields are i8, and the bar's top and
+        // bottom together are more than an i8 holds.
+        ((room.left as f32 + room.right as f32) * ppp).round() as u32,
+        ((room.top as f32 + room.bottom as f32) * ppp).round() as u32,
     ];
     let full = [px[0] + extra[0], px[1] + extra[1]];
     panel(full, width_m * full[0] as f32 / px[0] as f32, ppp)
@@ -257,7 +284,7 @@ impl App {
         let thumbs = ui::thumbs::Thumbs::new(services.opener.clone(), services.images.clone());
         let mut panels = [
             floating_panel([1600, 1000], 1.8, 1.25),
-            growing_panel(BAR_PX, BAR_PX[0] as f32 * BAR_M_PER_PX, 1.25),
+            bar_panel(),
             floating_panel([900, 1020], 0.75, 1.25),
             growing_panel([1200, 456], 1.0, 1.25),
             // As fine as the bar it sits on, and growing with it.
