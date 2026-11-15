@@ -597,38 +597,19 @@ mod imp {
         nfs: u16,
     }
 
-    /// A path looked up before: its handle, and where it really is inside
-    /// its export once the links on the way are followed.
+    /// A path looked up: its handle, and where it really is inside its
+    /// export once the links on the way are followed.
     #[derive(Clone)]
     struct Known {
         fh: nfs_fh3,
         real: Vec<String>,
     }
 
-    /// One name still to look up while resolving a path, and the path asked
-    /// for that it completes, to remember once it is found.
-    struct Step {
-        name: String,
-        done: Option<String>,
-    }
-
-    /// Puts `names` in front of the steps still to take; the last carries
-    /// `done`. With no names, `done` is returned: it is found already.
-    fn prepend(
-        pending: &mut VecDeque<Step>,
-        names: Vec<String>,
-        done: Option<String>,
-    ) -> Option<String> {
-        let n = names.len();
-        if n == 0 {
-            return done;
+    /// Puts `names` in front of the names still to look up.
+    fn prepend(pending: &mut VecDeque<String>, names: Vec<String>) {
+        for name in names.into_iter().rev() {
+            pending.push_front(name);
         }
-        let mut done = done;
-        for (i, name) in names.into_iter().enumerate().rev() {
-            let done = if i == n - 1 { done.take() } else { None };
-            pending.push_front(Step { name, done });
-        }
-        None
     }
 
     /// An absolute path with `.` and `..` taken out (`..` at the root stays
@@ -665,9 +646,10 @@ mod imp {
         credential: opaque_auth<'static>,
         /// Root handle of each mounted export, by server path.
         roots: HashMap<String, nfs_fh3>,
-        /// Handles of folders and files under them, by the server path
-        /// asked for (which may go through links).
-        handles: HashMap<String, Known>,
+        /// Handles of folders and files under them, by their real server
+        /// path. Links are never kept: they can be pointed elsewhere at any
+        /// time, so each lookup through one reads it again.
+        handles: HashMap<String, nfs_fh3>,
         /// Largest READ the server takes.
         rtmax: u32,
     }
@@ -709,12 +691,13 @@ mod imp {
             Ok(self.resolve(export, rest, url).await?.fh)
         }
 
-        /// Looks up `rest` inside `export` from the longest part of it seen
-        /// before, following symbolic links the way the server's own system
-        /// would: a relative target from the link's folder, an absolute one
-        /// from the server's root. A target outside the export can't be
-        /// reached through it, so it is an error, as are links that go round
-        /// in circles.
+        /// Looks up `rest` inside `export`, following symbolic links the way
+        /// the server's own system would: a relative target from the link's
+        /// folder, an absolute one from the server's root. A target outside
+        /// the export can't be reached through it, so it is an error, as are
+        /// links that go round in circles. Folders and files come from the
+        /// cache when seen before; links are read from the server each time,
+        /// so one pointed somewhere else is followed to its new target.
         async fn resolve(
             &mut self,
             export: &[String],
@@ -727,35 +710,32 @@ mod imp {
                 fh: root.clone(),
                 real: Vec::new(),
             };
-            let mut start = 0;
-            for n in (1..=rest.len()).rev() {
-                if let Some(known) = self.handles.get(&key(&export_path, &rest[..n])) {
-                    at = known.clone();
-                    start = n;
-                    break;
-                }
-            }
-            let mut pending: VecDeque<Step> = (start..rest.len())
-                .map(|i| Step {
-                    name: rest[i].clone(),
-                    done: Some(key(&export_path, &rest[..=i])),
-                })
-                .collect();
+            let mut pending: VecDeque<String> = rest.iter().cloned().collect();
             let mut links = 0;
-            while let Some(step) = pending.pop_front() {
-                let mut done = step.done;
-                match step.name.as_str() {
+            while let Some(name) = pending.pop_front() {
+                match name.as_str() {
                     "" | "." => {}
                     ".." => {
                         if at.real.pop().is_none() {
                             return Err(Error::invalid(url, "a link leads outside the export"));
                         }
-                        // The folder above, looked up again from the root.
+                        // The folder above, walked to again from the root
+                        // (from the cache, as each step was seen on the way).
                         let real = std::mem::take(&mut at.real);
                         at.fh = root.clone();
-                        done = prepend(&mut pending, real, done);
+                        prepend(&mut pending, real);
                     }
                     name => {
+                        let mut real = at.real.clone();
+                        real.push(name.to_string());
+                        let real_key = key(&export_path, &real);
+                        if let Some(fh) = self.handles.get(&real_key) {
+                            at = Known {
+                                fh: fh.clone(),
+                                real,
+                            };
+                            continue;
+                        }
                         let (fh, attrs) = self.lookup(&at.fh, name, url).await?;
                         if attrs.type_ == ftype3::NF3LNK {
                             links += 1;
@@ -782,15 +762,12 @@ mod imp {
                             } else {
                                 path_segments(&target)
                             };
-                            done = prepend(&mut pending, names, done);
+                            prepend(&mut pending, names);
                         } else {
-                            at.fh = fh;
-                            at.real.push(name.to_string());
+                            self.remember(real_key, fh.clone());
+                            at = Known { fh, real };
                         }
                     }
-                }
-                if let Some(done) = done {
-                    self.remember(done, at.clone());
                 }
             }
             Ok(at)
@@ -857,11 +834,11 @@ mod imp {
             }
         }
 
-        fn remember(&mut self, path: String, known: Known) {
+        fn remember(&mut self, real_path: String, fh: nfs_fh3) {
             if self.handles.len() >= MAX_HANDLES {
                 self.handles.clear();
             }
-            self.handles.insert(path, known);
+            self.handles.insert(real_path, fh);
         }
 
         /// Lists the folder `rest` inside `export`.
@@ -902,25 +879,32 @@ mod imp {
                         continue;
                     }
                     let child = [rest, std::slice::from_ref(&name)].concat();
+                    let real_key = key(
+                        &export_path,
+                        &[&dir.real[..], std::slice::from_ref(&name)].concat(),
+                    );
                     let attrs = match entry.name_attributes {
                         Nfs3Option::Some(attrs) if attrs.type_ != ftype3::NF3LNK => {
                             if let Nfs3Option::Some(fh) = entry.name_handle {
-                                let mut real = dir.real.clone();
-                                real.push(name.clone());
-                                self.remember(key(&export_path, &child), Known { fh, real });
+                                self.remember(real_key, fh);
                             }
                             attrs
                         }
-                        // A link is listed as what it leads to; a broken
-                        // one, or one leading out of the export, can't be
-                        // opened, so it isn't.
-                        _ => match self.attributes(export, &child, url).await {
-                            Ok(attrs) => attrs,
-                            Err(e) => {
-                                log::debug!("{url}: skipping {name}: {e}");
-                                continue;
+                        // A link is listed as what it leads to, read again
+                        // in case it now points elsewhere; a broken one, or
+                        // one leading out of the export, can't be opened, so
+                        // it isn't.
+                        _ => {
+                            // What was here may have been replaced by a link.
+                            self.handles.remove(&real_key);
+                            match self.attributes(export, &child, url).await {
+                                Ok(attrs) => attrs,
+                                Err(e) => {
+                                    log::debug!("{url}: skipping {name}: {e}");
+                                    continue;
+                                }
                             }
-                        },
+                        }
                     };
                     // Devices, sockets and the like aren't media.
                     let is_dir = match attrs.type_ {

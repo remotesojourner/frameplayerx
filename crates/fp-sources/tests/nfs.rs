@@ -9,28 +9,47 @@ use nfs3_server::tcp::{NFSTcp, NFSTcpListener};
 use nfs3_server::vfs::{
     DirEntryPlus, FileHandleU64, NextResult, NfsReadFileSystem, ReadDirPlusIterator,
 };
+use std::sync::{Arc, RwLock};
 
 /// Serves `fs` on a free local port, exporting it as `/export`, until the
 /// test ends; returns the port.
 fn serve(fs: MemFsConfig) -> u16 {
-    serve_with_links(fs, &[])
+    serve_with_links(fs, &[]).0
 }
 
 /// Handles of symbolic links start here, well past the in-memory ones.
 const LINK_BASE: u64 = 1 << 48;
 
+/// The links of a [`LinkFs`]: the folder's handle, the link's name and its
+/// target. Shared with the test, which can point a link elsewhere.
+#[derive(Clone, Default)]
+struct Links(Arc<RwLock<Vec<(u64, String, String)>>>);
+
+impl Links {
+    /// Points the link `name` at `target`, as `ln -sfn` would.
+    fn repoint(&self, name: &str, target: &str) {
+        let mut links = self.0.write().unwrap();
+        let link = links.iter_mut().find(|(_, n, _)| n == name).unwrap();
+        link.2 = target.to_string();
+    }
+}
+
 /// An in-memory file system (which has no symbolic links of its own) with
 /// links added: each in a folder, by name, pointing at a target.
 struct LinkFs {
     inner: MemFs,
-    /// The folder's handle, the link's name and its target.
-    links: Vec<(u64, String, String)>,
+    links: Links,
 }
 
 impl LinkFs {
-    fn link(&self, id: &FileHandleU64) -> Option<&(u64, String, String)> {
+    fn link(&self, id: &FileHandleU64) -> Option<(u64, String, String)> {
         let id = id.as_u64().checked_sub(LINK_BASE)?;
-        self.links.get(usize::try_from(id).ok()?)
+        self.links
+            .0
+            .read()
+            .unwrap()
+            .get(usize::try_from(id).ok()?)
+            .cloned()
     }
 
     fn link_attrs(id: u64, target: &str) -> fattr3 {
@@ -84,6 +103,9 @@ impl NfsReadFileSystem for LinkFs {
     ) -> Result<FileHandleU64, nfsstat3> {
         let found = self
             .links
+            .0
+            .read()
+            .unwrap()
             .iter()
             .position(|(d, n, _)| *d == dir.as_u64() && n.as_bytes() == name.as_ref());
         match found {
@@ -94,7 +116,7 @@ impl NfsReadFileSystem for LinkFs {
 
     async fn getattr(&self, id: &FileHandleU64) -> Result<fattr3, nfsstat3> {
         match self.link(id) {
-            Some((_, _, target)) => Ok(Self::link_attrs(id.as_u64(), target)),
+            Some((_, _, target)) => Ok(Self::link_attrs(id.as_u64(), &target)),
             None => self.inner.getattr(id).await,
         }
     }
@@ -121,8 +143,9 @@ impl NfsReadFileSystem for LinkFs {
         } else {
             (Some(self.inner.readdirplus(dir, cookie).await?), None)
         };
+        let links = self.links.0.read().unwrap().clone();
         let extra: Vec<_> = (0u64..)
-            .zip(&self.links)
+            .zip(&links)
             .filter(|(i, (d, _, _))| *d == dir.as_u64() && after.is_none_or(|a| *i > a))
             .map(|(i, (_, name, target))| DirEntryPlus {
                 fileid: LINK_BASE + i,
@@ -146,12 +169,15 @@ impl NfsReadFileSystem for LinkFs {
     }
 }
 
-/// Like [`serve`], with symbolic links: (folder, name, target).
-fn serve_with_links(fs: MemFsConfig, links: &[(&str, &str, &str)]) -> u16 {
+/// Like [`serve`], with symbolic links: (folder, name, target). Returns the
+/// port and the links, to point elsewhere while the server runs.
+fn serve_with_links(fs: MemFsConfig, links: &[(&str, &str, &str)]) -> (u16, Links) {
     let links: Vec<(String, String, String)> = links
         .iter()
         .map(|(d, n, t)| (d.to_string(), n.to_string(), t.to_string()))
         .collect();
+    let shared = Links::default();
+    let served = shared.clone();
     let (port_tx, port_rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
         let rt = tokio::runtime::Builder::new_multi_thread()
@@ -161,14 +187,13 @@ fn serve_with_links(fs: MemFsConfig, links: &[(&str, &str, &str)]) -> u16 {
             .unwrap();
         rt.block_on(async move {
             let inner = MemFs::new(fs).unwrap();
-            let mut resolved = Vec::new();
             for (dir, name, target) in links {
                 let dir = inner.lookup_by_path(&dir).await.unwrap().as_u64();
-                resolved.push((dir, name, target));
+                served.0.write().unwrap().push((dir, name, target));
             }
             let fs = LinkFs {
                 inner,
-                links: resolved,
+                links: served,
             };
             let mut listener = NFSTcpListener::bind_ro("127.0.0.1:0", fs).await.unwrap();
             listener.with_export_name("export");
@@ -176,7 +201,7 @@ fn serve_with_links(fs: MemFsConfig, links: &[(&str, &str, &str)]) -> u16 {
             listener.handle_forever().await.unwrap();
         });
     });
-    port_rx.recv().unwrap()
+    (port_rx.recv().unwrap(), shared)
 }
 
 fn config(port: u16, export: &str) -> SourceConfig {
@@ -312,7 +337,7 @@ fn symbolic_links_are_listed_and_open_as_what_they_point_to() {
     fs.add_file("/vr/real.mp4", video.clone());
     fs.add_dir("/movies");
     fs.add_file("/movies/m.mp4", movie.clone());
-    let port = serve_with_links(
+    let (port, _) = serve_with_links(
         fs,
         &[
             ("/vr", "relative.mp4", "real.mp4"),
@@ -390,7 +415,7 @@ fn links_in_a_folder_source_reach_the_rest_of_its_export() {
     fs.add_file("/videos/own.mp4", b"own".to_vec());
     fs.add_dir("/other-folder");
     fs.add_file("/other-folder/other-video.mp4", movie.clone());
-    let port = serve_with_links(
+    let (port, _) = serve_with_links(
         fs,
         &[
             ("/videos", "relative.mp4", "../other-folder/other-video.mp4"),
@@ -446,4 +471,61 @@ fn links_in_a_folder_source_reach_the_rest_of_its_export() {
         source.open(&outside).err().unwrap(),
         Error::InvalidLocation { .. }
     ));
+}
+
+#[test]
+fn a_link_pointed_elsewhere_is_followed_to_its_new_target() {
+    let first = pattern(4321);
+    let second = pattern(9876);
+    let mut fs = MemFsConfig::default();
+    fs.add_dir("/videos");
+    fs.add_dir("/other");
+    fs.add_file("/other/first.mp4", first.clone());
+    fs.add_file("/other/second.mp4", second.clone());
+    fs.add_dir("/season1");
+    fs.add_file("/season1/episode.mp4", first.clone());
+    fs.add_dir("/season2");
+    fs.add_file("/season2/episode.mp4", second.clone());
+    let (port, links) = serve_with_links(
+        fs,
+        &[
+            ("/videos", "latest.mp4", "../other/first.mp4"),
+            ("/videos", "Current", "../season1"),
+        ],
+    );
+    let source = build(&config(port, "/export/videos")).unwrap();
+    let read = |location: &str| {
+        let file = source.open(location).unwrap();
+        let mut buf = vec![0; 10_000];
+        let n = file.read_at(0, &mut buf).unwrap();
+        buf.truncate(n);
+        buf
+    };
+    let size_of = |list: &[fp_core::source::Entry], name: &str| {
+        list.iter().find(|e| e.name == name).unwrap().size
+    };
+
+    let list = source.list(None).unwrap();
+    let latest = list.iter().find(|e| e.name == "latest.mp4").unwrap();
+    let latest = latest.location.clone();
+    let current = list.iter().find(|e| e.name == "Current").unwrap();
+    let current = current.location.clone();
+    assert_eq!(size_of(&list, "latest.mp4"), Some(first.len() as u64));
+    assert_eq!(read(&latest), first);
+    let inside = source.list(Some(&current)).unwrap();
+    let episode = inside[0].location.clone();
+    assert_eq!(size_of(&inside, "episode.mp4"), Some(first.len() as u64));
+    assert_eq!(read(&episode), first);
+
+    links.repoint("latest.mp4", "../other/second.mp4");
+    links.repoint("Current", "/export/season2");
+
+    // Opened again without a refresh, the links lead to their new targets.
+    assert_eq!(read(&latest), second);
+    assert_eq!(read(&episode), second);
+    // And a refresh lists what they point to now.
+    let list = source.list(None).unwrap();
+    assert_eq!(size_of(&list, "latest.mp4"), Some(second.len() as u64));
+    let inside = source.list(Some(&current)).unwrap();
+    assert_eq!(size_of(&inside, "episode.mp4"), Some(second.len() as u64));
 }
