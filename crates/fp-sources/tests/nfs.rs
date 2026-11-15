@@ -529,3 +529,48 @@ fn a_link_pointed_elsewhere_is_followed_to_its_new_target() {
     let inside = source.list(Some(&current)).unwrap();
     assert_eq!(size_of(&inside, "episode.mp4"), Some(second.len() as u64));
 }
+
+#[test]
+fn dot_dot_in_a_link_target_goes_up_from_where_earlier_links_lead() {
+    let right = pattern(4321);
+    let wrong = pattern(1234);
+    let mut fs = MemFsConfig::default();
+    fs.add_dir("/a");
+    fs.add_dir("/a/b");
+    fs.add_file("/a/clip.mp4", right.clone());
+    fs.add_file("/clip.mp4", wrong.clone());
+    let (port, _) = serve_with_links(
+        fs,
+        &[
+            // `dir/..` is `a`, not the export's root.
+            ("/", "dir", "a/b"),
+            ("/", "absolute.mp4", "/export/dir/../clip.mp4"),
+            ("/", "relative.mp4", "dir/../clip.mp4"),
+            // Above the export and back in again.
+            ("/", "round.mp4", "/export/../export/dir/../clip.mp4"),
+            ("/", "up-and-in.mp4", "../export/a/clip.mp4"),
+            // Ending above the export, or in another folder there.
+            ("/", "above.mp4", "/export/.."),
+            ("/", "sibling.mp4", "/export/../other/clip.mp4"),
+            ("/", "dir-above.mp4", "/export/dir/../../../clip.mp4"),
+        ],
+    );
+    let source = build(&config(port, "/export")).unwrap();
+    let root = format!("nfs://127.0.0.1:{port}/export/");
+    for name in ["absolute.mp4", "relative.mp4", "round.mp4", "up-and-in.mp4"] {
+        let mut buf = vec![0; 10_000];
+        let n = source
+            .open(&format!("{root}{name}"))
+            .unwrap_or_else(|e| panic!("{name}: {e:?}"))
+            .read_at(0, &mut buf)
+            .unwrap();
+        assert_eq!(&buf[..n], &right[..], "{name}");
+    }
+    for name in ["above.mp4", "sibling.mp4", "dir-above.mp4"] {
+        let err = source.open(&format!("{root}{name}")).err().unwrap();
+        assert!(
+            matches!(err, Error::InvalidLocation { .. }),
+            "{name}: {err:?}"
+        );
+    }
+}

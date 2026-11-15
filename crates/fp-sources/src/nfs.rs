@@ -612,22 +612,6 @@ mod imp {
         }
     }
 
-    /// An absolute path with `.` and `..` taken out (`..` at the root stays
-    /// there, as it does on the server).
-    fn normalize(path: &str) -> Vec<String> {
-        let mut out: Vec<String> = Vec::new();
-        for seg in super::segments(path) {
-            match seg {
-                "." => {}
-                ".." => {
-                    out.pop();
-                }
-                seg => out.push(seg.to_string()),
-            }
-        }
-        out
-    }
-
     /// The cache key of `rest` inside the export at `export_path`.
     fn key(export_path: &str, rest: &[String]) -> String {
         let mut out = export_path.trim_end_matches('/').to_string();
@@ -693,9 +677,12 @@ mod imp {
 
         /// Looks up `rest` inside `export`, following symbolic links the way
         /// the server's own system would: a relative target from the link's
-        /// folder, an absolute one from the server's root. A target outside
-        /// the export can't be reached through it, so it is an error, as are
-        /// links that go round in circles. Folders and files come from the
+        /// folder, an absolute one from the server's root, each name in turn.
+        /// The walk may pass above the export (`/export/../export/x`), but
+        /// a target that ends outside it can't be reached through it, so it
+        /// is an error, as are links that go round in circles. Folders above
+        /// the export are taken to be plain folders, as they can't be looked
+        /// up. Folders and files come from the
         /// cache when seen before; links are read from the server each time,
         /// so one pointed somewhere else is followed to its new target.
         async fn resolve(
@@ -712,12 +699,38 @@ mod imp {
             };
             let mut pending: VecDeque<String> = rest.iter().cloned().collect();
             let mut links = 0;
+            // The server path while the walk is above the export, where
+            // nothing can be looked up: it goes by name alone until it comes
+            // back into the export.
+            let mut outside: Option<Vec<String>> = None;
             while let Some(name) = pending.pop_front() {
+                if let Some(path) = &mut outside {
+                    match name.as_str() {
+                        "" | "." => {}
+                        ".." => {
+                            path.pop();
+                        }
+                        name => path.push(name.to_string()),
+                    }
+                    if path.as_slice() == export {
+                        outside = None;
+                        at = Known {
+                            fh: root.clone(),
+                            real: Vec::new(),
+                        };
+                    }
+                    continue;
+                }
                 match name.as_str() {
                     "" | "." => {}
                     ".." => {
                         if at.real.pop().is_none() {
-                            return Err(Error::invalid(url, "a link leads outside the export"));
+                            // Above the export's root; the server's root has
+                            // no parent.
+                            if let Some((_, above)) = export.split_last() {
+                                outside = Some(above.to_vec());
+                            }
+                            continue;
                         }
                         // The folder above, walked to again from the root
                         // (from the cache, as each step was seen on the way).
@@ -746,29 +759,28 @@ mod imp {
                                 ));
                             }
                             let target = self.readlink(&fh, url).await?;
-                            let names = if target.starts_with('/') {
-                                let absolute = normalize(&target);
-                                let inside = absolute
-                                    .strip_prefix(export)
-                                    .ok_or_else(|| {
-                                        Error::invalid(url, "a link leads outside the export")
-                                    })?
-                                    .to_vec();
+                            // Each name of the target is followed in turn, `..`
+                            // included: one after a link leads up from where
+                            // the link points, not from its name.
+                            if target.starts_with('/') {
                                 at = Known {
                                     fh: root.clone(),
                                     real: Vec::new(),
                                 };
-                                inside
-                            } else {
-                                path_segments(&target)
-                            };
-                            prepend(&mut pending, names);
+                                if !export.is_empty() {
+                                    outside = Some(Vec::new());
+                                }
+                            }
+                            prepend(&mut pending, path_segments(&target));
                         } else {
                             self.remember(real_key, fh.clone());
                             at = Known { fh, real };
                         }
                     }
                 }
+            }
+            if outside.is_some() {
+                return Err(Error::invalid(url, "a link leads outside the export"));
             }
             Ok(at)
         }
