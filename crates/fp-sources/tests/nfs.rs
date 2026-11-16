@@ -210,6 +210,48 @@ fn serve_links_as(fs: MemFsConfig, links: &[(&str, &str, &str)], name: &str) -> 
     (port_rx.recv().unwrap(), shared)
 }
 
+/// Serves `fs` as `/{name}` on `port` (0 for any free one) until the
+/// returned sender is dropped; returns the port and the server's thread,
+/// which ends once its connections are closed.
+fn serve_stoppable(
+    fs: MemFsConfig,
+    name: &str,
+    port: u16,
+) -> (
+    u16,
+    std::sync::mpsc::Sender<()>,
+    std::thread::JoinHandle<()>,
+) {
+    let name = name.to_string();
+    let (port_tx, port_rx) = std::sync::mpsc::channel();
+    let (stop_tx, stop_rx) = std::sync::mpsc::channel::<()>();
+    let thread = std::thread::spawn(move || {
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async move {
+            let fs = LinkFs {
+                inner: MemFs::new(fs).unwrap(),
+                links: Links::default(),
+            };
+            let mut listener = NFSTcpListener::bind_ro(&format!("127.0.0.1:{port}"), fs)
+                .await
+                .unwrap();
+            listener.with_export_name(&name);
+            port_tx.send(listener.get_listen_port()).unwrap();
+            let server = tokio::spawn(async move {
+                let _ = listener.handle_forever().await;
+            });
+            let _ = tokio::task::spawn_blocking(move || stop_rx.recv()).await;
+            server.abort();
+        });
+        // Dropping the runtime closes the connections still open.
+    });
+    (port_rx.recv().unwrap(), stop_tx, thread)
+}
+
 fn config(port: u16, export: &str) -> SourceConfig {
     SourceConfig::Nfs(NfsConfig {
         id: "nfs".into(),
@@ -675,4 +717,20 @@ fn the_export_root_can_be_a_source_of_its_own() {
     assert!(check(port, "/"));
     let other = serve(MemFsConfig::default());
     assert!(!check(other, "/"), "exports only /export");
+}
+
+#[test]
+fn refreshing_a_whole_servers_list_asks_it_again() {
+    let (port, stop, thread) = serve_stoppable(MemFsConfig::default(), "first", 0);
+    let source = build(&config(port, "")).unwrap();
+    let names = || -> Vec<String> {
+        let list = source.list(None).unwrap();
+        list.into_iter().map(|e| e.name).collect()
+    };
+    assert_eq!(names(), ["/first"]);
+    // The server comes back with other exports.
+    drop(stop);
+    thread.join().unwrap();
+    let (_, _stop, _thread) = serve_stoppable(MemFsConfig::default(), "second", port);
+    assert_eq!(names(), ["/second"], "listed again, not from before");
 }

@@ -1246,11 +1246,18 @@ mod imp {
             }
         }
 
-        /// The server's exports, longest first, asked once.
+        /// The server's exports, longest first: as last asked, or asked now
+        /// if never.
         fn exports(&self) -> Result<Vec<Vec<String>>> {
             if let Some(known) = &*lock(&self.exports) {
                 return Ok(known.clone());
             }
+            self.fetch_exports()
+        }
+
+        /// The server's exports, longest first, asked of it now; kept for
+        /// [`Client::exports`].
+        fn fetch_exports(&self) -> Result<Vec<Vec<String>>> {
             let ports = self.ports()?;
             let credential = credential(&self.config);
             let root = &self.root;
@@ -1264,8 +1271,9 @@ mod imp {
                     .map(|node| path_segments(&String::from_utf8_lossy(node.ex_dir.0.as_ref())))
                     .collect())
             })?;
-            exports.sort_by_key(|e| std::cmp::Reverse(e.len()));
+            exports.sort();
             exports.dedup();
+            exports.sort_by_key(|e| std::cmp::Reverse(e.len()));
             *lock(&self.exports) = Some(exports.clone());
             Ok(exports)
         }
@@ -1315,8 +1323,10 @@ mod imp {
     }
 
     impl NfsSource {
+        /// The server's exports, asked of it each time, so a refresh shows
+        /// exports added or taken away since.
         pub(super) fn list_exports(&self) -> Result<Vec<Vec<String>>> {
-            let mut exports = self.client.exports()?;
+            let mut exports = self.client.fetch_exports()?;
             exports.sort();
             Ok(exports)
         }
@@ -1782,11 +1792,18 @@ mod tests {
         let s = NfsSource::new(&c).unwrap();
         s.client.set_exports(&["/", "/srv"]);
         let key = |l: &str| crate::location::decode(l).unwrap().key;
-        let exports = s.list(None).unwrap();
-        let names: Vec<_> = exports.iter().map(|e| e.name.as_str()).collect();
-        assert_eq!(names, ["/", "/srv"]);
-        assert_eq!(key(&exports[0].location), "%2F/");
-        assert_eq!(key(&exports[1].location), "%2Fsrv/");
+        // Where the list's entries for the two exports lead (listing it asks
+        // the server, which this test has none of).
+        let exports: Vec<String> = ["nfs://nas.local/", "nfs://nas.local/%2Fsrv/"]
+            .into_iter()
+            .map(|url| s.canonical_location(url).unwrap())
+            .collect();
+        assert_eq!(key(&exports[0]), "%2F/");
+        assert_eq!(key(&exports[1]), "%2Fsrv/");
+        let exports: Vec<Entry> = exports
+            .into_iter()
+            .map(|location| dir_entry("", location, None))
+            .collect();
         // The export `/` and the list are different places.
         assert!(s.is_export_list(&NfsLocation::parse("nfs://nas.local").unwrap()));
         assert!(!s.is_export_list(&NfsLocation::parse("nfs://nas.local/").unwrap()));
