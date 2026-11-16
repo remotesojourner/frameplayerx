@@ -525,7 +525,6 @@ mod imp {
     };
     use nfs3_client::nfs3_types::rpc::{auth_stat, auth_unix, opaque_auth};
     use nfs3_client::nfs3_types::xdr_codec::Opaque;
-    use nfs3_client::tokio::TokioIo;
     use nfs3_client::{MountClient, MountError, Nfs3Client, PortmapperClient, RpcError};
     use std::collections::{HashMap, VecDeque};
     use std::io;
@@ -548,8 +547,43 @@ mod imp {
     const RETRY_EXPORTS: Duration = Duration::from_secs(60);
     /// Symbolic links followed in one path before giving up, as Linux does.
     const MAX_LINKS: u32 = 40;
+    /// How long a session may sit unused before it is replaced instead of
+    /// used: servers close idle connections (Linux after 6 minutes), and a
+    /// connection lost without a word would cost a [`TIMEOUT`] to find out.
+    const IDLE: Duration = Duration::from_secs(3 * 60);
 
-    type Io = TokioIo<TcpStream>;
+    type Io = Conn;
+
+    /// A TCP connection to the server, for nfs3_client. A connection the
+    /// server closed (as servers do with idle ones) is an error here: its
+    /// own read loop would wait for more forever, until [`TIMEOUT`].
+    struct Conn(TcpStream);
+
+    impl nfs3_client::io::AsyncRead for Conn {
+        async fn async_read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+            let n = tokio::io::AsyncReadExt::read(&mut self.0, buf).await?;
+            if n == 0 && !buf.is_empty() {
+                return Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "the server closed the connection",
+                ));
+            }
+            Ok(n)
+        }
+    }
+
+    impl nfs3_client::io::AsyncWrite for Conn {
+        async fn async_write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            let n = tokio::io::AsyncWriteExt::write(&mut self.0, buf).await?;
+            if n == 0 && !buf.is_empty() {
+                return Err(io::Error::new(
+                    io::ErrorKind::WriteZero,
+                    "the server closed the connection",
+                ));
+            }
+            Ok(n)
+        }
+    }
 
     /// Set once binding a privileged port was refused: the system doesn't
     /// let this process, so it isn't tried again.
@@ -664,7 +698,7 @@ mod imp {
                     Err(e) => return Err(io_err(e, what)),
                 }
                 match socket.connect(addr).await {
-                    Ok(stream) => return Ok(TokioIo::new(stream)),
+                    Ok(stream) => return Ok(Conn(stream)),
                     Err(e)
                         if matches!(
                             e.kind(),
@@ -679,7 +713,7 @@ mod imp {
         }
         TcpStream::connect(addr)
             .await
-            .map(TokioIo::new)
+            .map(Conn)
             .map_err(|e| io_err(e, what))
     }
 
@@ -1111,7 +1145,8 @@ mod imp {
     pub(super) struct Client {
         config: NfsConfig,
         root: String,
-        current: Mutex<Option<Arc<Mutex<Session>>>>,
+        /// The session, and when it was last handed out.
+        current: Mutex<Option<(Arc<Mutex<Session>>, Instant)>>,
         exports: Mutex<Option<Vec<Vec<String>>>>,
         /// What to mount for the configured folder, and when to ask again
         /// if the server wouldn't say.
@@ -1197,11 +1232,21 @@ mod imp {
             })
         }
 
-        /// The current session, connecting if there is none.
-        fn session(&self) -> Result<Arc<Mutex<Session>>> {
+        /// The current session, connecting if there is none or it sat
+        /// unused for longer than [`IDLE`]; and whether it was used before.
+        fn session(&self) -> Result<(Arc<Mutex<Session>>, bool)> {
             let mut current = lock(&self.current);
-            if let Some(s) = &*current {
-                return Ok(s.clone());
+            if let Some((s, used)) = &mut *current {
+                if used.elapsed() < IDLE {
+                    *used = Instant::now();
+                    return Ok((s.clone(), true));
+                }
+                log::info!(
+                    "{}: idle for {:?}; connecting again",
+                    self.root,
+                    used.elapsed()
+                );
+                *current = None;
             }
             log::info!("connecting to {}", self.root);
             let ports = self.ports()?;
@@ -1223,14 +1268,27 @@ mod imp {
                 handles: HashMap::new(),
                 rtmax: 64 * 1024,
             }));
-            *current = Some(session.clone());
-            Ok(session)
+            *current = Some((session.clone(), Instant::now()));
+            Ok((session, false))
         }
 
-        /// Runs `op` with the current session; after a connection-level
-        /// failure the session is dropped so the next call connects again.
-        fn with_session<T>(&self, op: impl FnOnce(&Arc<Mutex<Session>>) -> Result<T>) -> Result<T> {
-            let session = self.session()?;
+        /// Runs `op` with the current session. After a connection-level
+        /// failure the session is dropped; if it had been used before (its
+        /// connection may have been closed or lost since), `op` runs once
+        /// more on a new one. Every request here only reads, so repeating
+        /// one is safe.
+        fn with_session<T>(&self, op: impl Fn(&Arc<Mutex<Session>>) -> Result<T>) -> Result<T> {
+            let (session, reused) = self.session()?;
+            let r = op(&session);
+            let Err(Error::Nfs(e)) = &r else {
+                return r;
+            };
+            self.discard(&session);
+            if !reused {
+                return r;
+            }
+            log::info!("{}: {e}; trying again on a new connection", self.root);
+            let (session, _) = self.session()?;
             let r = op(&session);
             if let Err(Error::Nfs(_)) = &r {
                 self.discard(&session);
@@ -1241,7 +1299,7 @@ mod imp {
         /// Forgets `stale` unless it was already replaced.
         fn discard(&self, stale: &Arc<Mutex<Session>>) {
             let mut current = lock(&self.current);
-            if current.as_ref().is_some_and(|s| Arc::ptr_eq(s, stale)) {
+            if current.as_ref().is_some_and(|(s, _)| Arc::ptr_eq(s, stale)) {
                 *current = None;
             }
         }

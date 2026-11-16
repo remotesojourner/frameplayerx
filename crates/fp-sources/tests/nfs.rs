@@ -734,3 +734,31 @@ fn refreshing_a_whole_servers_list_asks_it_again() {
     let (_, _stop, _thread) = serve_stoppable(MemFsConfig::default(), "second", port);
     assert_eq!(names(), ["/second"], "listed again, not from before");
 }
+
+#[test]
+fn a_connection_the_server_closed_is_replaced_at_once() {
+    let files = || {
+        let mut fs = MemFsConfig::default();
+        fs.add_dir("/videos");
+        fs.add_file("/videos/clip.mp4", pattern(4321));
+        fs
+    };
+    let (port, stop, thread) = serve_stoppable(files(), "srv", 0);
+    let source = build(&config(port, "")).unwrap();
+    let exports = source.list(None).unwrap();
+    let export = exports[0].location.clone();
+    assert_eq!(source.list(Some(&export)).unwrap().len(), 1);
+    // The server closes every connection, as one does with idle ones, and
+    // is there again.
+    drop(stop);
+    thread.join().unwrap();
+    let (_, _stop, _thread) = serve_stoppable(files(), "srv", port);
+    let started = std::time::Instant::now();
+    let listed = source.list(Some(&export));
+    assert_eq!(listed.map(|l| l.len()).unwrap(), 1);
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(5),
+        "took {:?}",
+        started.elapsed()
+    );
+}
