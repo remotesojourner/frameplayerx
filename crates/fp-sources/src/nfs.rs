@@ -23,7 +23,9 @@
 //! left out of listings.
 //!
 //! Listed locations retain the source ID and the path relative to the
-//! source's root; the host comes from the current configuration. Files are
+//! source's root; the host comes from the current configuration. A whole
+//! server's locations also name the export they are in, so its list of
+//! exports and an export `/` are different places. Files are
 //! read through the shared block cache with read-ahead.
 
 use crate::config::{NfsConfig, SourceKind};
@@ -34,7 +36,9 @@ use fp_core::source::{ByteSource, Entry};
 use std::sync::Arc;
 
 /// Builds `nfs://host[:port]/path` with every segment percent-encoded.
-/// `path` is `/`-separated and may be empty (the whole server).
+/// `path` is `/`-separated: empty for the whole server, whose root lists its
+/// exports (`nfs://host`), or `/` for the server's export `/`
+/// (`nfs://host/`).
 pub fn nfs_url(host: &str, port: Option<u16>, path: &str) -> String {
     let host = if host.contains(':') && !host.starts_with('[') {
         format!("[{host}]") // IPv6 literal
@@ -45,10 +49,29 @@ pub fn nfs_url(host: &str, port: Option<u16>, path: &str) -> String {
     if let Some(p) = port {
         out.push_str(&format!(":{p}"));
     }
-    out.push('/');
-    let segments: Vec<String> = segments(path).map(encode_segment).collect();
-    out.push_str(&segments.join("/"));
+    if !path.is_empty() {
+        out.push('/');
+        let segments: Vec<String> = segments(path).map(encode_segment).collect();
+        out.push_str(&segments.join("/"));
+    }
     out
+}
+
+/// `url` as a folder's: ending in `/`.
+fn dir_url(mut url: String) -> String {
+    if !url.ends_with('/') {
+        url.push('/');
+    }
+    url
+}
+
+/// Whether the server of `config` exports `/`, as its list of exports says.
+/// Blocking: asks the server. An error when the list can't be had.
+pub fn exports_root(config: &NfsConfig) -> Result<bool> {
+    let mut server = config.clone();
+    server.export.clear();
+    let source = NfsSource::new(&server)?;
+    Ok(source.list_exports()?.iter().any(Vec::is_empty))
 }
 
 /// The non-empty segments of a `/`-separated path.
@@ -62,15 +85,24 @@ fn path_segments(path: &str) -> Vec<String> {
 }
 
 /// A location split into host and decoded path segments. Which leading
-/// segments are the export only the server knows.
+/// segments are the export only the server knows, unless the location names
+/// it: as its first segment, the whole export path encoded as one
+/// (`nfs://host/%2Fvolume1%2Fvideos/clip.mp4`, `nfs://host/%2F/clip.mp4` in
+/// the export `/`). Locations in a whole-server source name it, so the
+/// export `/` isn't the server's list of exports, and a folder in it isn't
+/// an export further down that has the same path.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NfsLocation {
     /// Host name or address (IPv6 without brackets).
     pub host: String,
     /// TCP port of the NFS service, when given.
     pub port: Option<u16>,
-    /// Decoded path segments on the server; empty for the server itself.
+    /// Decoded path segments on the server, export included; empty for the
+    /// server itself (or the export `/`).
     pub path: Vec<String>,
+    /// How many leading segments of `path` are the export, when the
+    /// location names it.
+    pub export: Option<usize>,
 }
 
 impl NfsLocation {
@@ -82,7 +114,10 @@ impl NfsLocation {
             .map(|_| &location[6..])
             .ok_or_else(|| Error::invalid(location, "expected an nfs:// URL"))?;
         let rest = rest.split(['?', '#']).next().unwrap_or("");
-        let (authority, path) = rest.split_once('/').unwrap_or((rest, ""));
+        let (authority, path, slash) = match rest.split_once('/') {
+            Some((authority, path)) => (authority, path, true),
+            None => (rest, "", false),
+        };
         let authority = authority.rsplit_once('@').map_or(authority, |(_, h)| h);
         let (host, port) = if let Some(v6) = authority.strip_prefix('[') {
             let (h, after) = v6
@@ -105,19 +140,47 @@ impl NfsLocation {
         if host.is_empty() {
             return Err(Error::invalid(location, "no host"));
         }
-        let path: Vec<String> = segments(path).map(percent_decode).collect();
+        let mut path: Vec<String> = segments(path).map(percent_decode).collect();
+        // The export, named as the first segment.
+        let export = match path.first() {
+            Some(first) if first.starts_with('/') => {
+                let export = path_segments(first);
+                path.splice(..1, export.iter().cloned());
+                Some(export.len())
+            }
+            // `nfs://host/` is the export `/`; `nfs://host`, the server.
+            None if slash => Some(0),
+            _ => None,
+        };
         if path
             .iter()
             .any(|s| matches!(s.as_str(), "." | "..") || s.contains(['/', '\0']))
         {
             return Err(Error::invalid(location, "path escapes the export"));
         }
-        Ok(NfsLocation { host, port, path })
+        Ok(NfsLocation {
+            host,
+            port,
+            path,
+            export,
+        })
     }
 
     /// Back to an `nfs://` URL.
     pub fn to_url(&self) -> String {
-        nfs_url(&self.host, self.port, &self.path.join("/"))
+        let Some(n) = self.export.filter(|n| *n <= self.path.len()) else {
+            return nfs_url(&self.host, self.port, &self.path.join("/"));
+        };
+        if self.path.is_empty() {
+            return nfs_url(&self.host, self.port, "/");
+        }
+        let mut out = nfs_url(&self.host, self.port, "/");
+        out.push_str(&encode_segment(&format!("/{}", self.path[..n].join("/"))));
+        for name in &self.path[n..] {
+            out.push('/');
+            out.push_str(&encode_segment(name));
+        }
+        out
     }
 }
 
@@ -127,8 +190,11 @@ pub struct NfsSource {
     name: String,
     config: NfsConfig,
     root: String,
-    /// The configured export's segments; empty for the whole server.
+    /// The configured export's segments; empty for the whole server and for
+    /// the export `/`.
     export: Vec<String>,
+    /// Whether the source is the whole server, whose root lists its exports.
+    whole: bool,
     #[cfg(feature = "nfs")]
     client: Arc<imp::Client>,
 }
@@ -159,7 +225,12 @@ impl NfsSource {
         if export.iter().any(|s| matches!(s.as_str(), "." | "..")) {
             return Err(Error::Config("NFS export path escapes the export".into()));
         }
-        let root = nfs_url(&config.host, config.port, &export.join("/"));
+        let whole = config.export.trim().is_empty();
+        let root = if whole {
+            nfs_url(&config.host, config.port, "")
+        } else {
+            nfs_url(&config.host, config.port, &format!("/{}", export.join("/")))
+        };
         Ok(NfsSource {
             id: config.id.clone(),
             name: config.name.clone(),
@@ -167,6 +238,7 @@ impl NfsSource {
             client: Arc::new(imp::Client::new(config, &root)),
             root,
             export,
+            whole,
             config: config.clone(),
         })
     }
@@ -176,9 +248,15 @@ impl NfsSource {
         &self.root
     }
 
-    /// A source for the whole server (`nfs://host/`).
+    /// A source for the whole server (`nfs://host`).
     fn whole_server(&self) -> bool {
-        self.export.is_empty()
+        self.whole
+    }
+
+    /// Whether `loc` is a whole server's list of exports: its root, with no
+    /// export named (`nfs://host`, not the export `/` at `nfs://host/`).
+    fn is_export_list(&self, loc: &NfsLocation) -> bool {
+        self.whole_server() && loc.path.is_empty() && loc.export.is_none()
     }
 
     /// Checks that `loc` is on this source's server and under its root.
@@ -208,7 +286,17 @@ impl NfsSource {
                 "invalid relative path",
             ));
         }
-        let relative: Vec<String> = segments(&value.key).map(percent_decode).collect();
+        let mut relative: Vec<String> = segments(&value.key).map(percent_decode).collect();
+        let mut current = NfsLocation::parse(&self.root)?;
+        // A whole server's locations start with the export they are in.
+        if self.whole_server()
+            && let Some(first) = relative.first()
+            && first.starts_with('/')
+        {
+            let export = path_segments(first);
+            current.export = Some(export.len());
+            relative.splice(..1, export);
+        }
         if relative
             .iter()
             .any(|s| matches!(s.as_str(), "." | "..") || s.contains(['/', '\\', '\0']))
@@ -218,7 +306,9 @@ impl NfsSource {
                 "invalid path segment",
             ));
         }
-        let mut current = NfsLocation::parse(&self.root)?;
+        if !self.whole_server() && !relative.is_empty() {
+            current.export = None;
+        }
         current.path.extend(relative);
         let mut url = current.to_url();
         if value.key.ends_with('/') && !url.ends_with('/') {
@@ -269,11 +359,24 @@ impl Source for NfsSource {
         {
             return None;
         }
-        let mut key = rest
-            .iter()
-            .map(|s| encode_segment(s))
-            .collect::<Vec<_>>()
-            .join("/");
+        let mut key = if self.whole_server() {
+            // The server path, starting with its export when named.
+            let mut parts = Vec::new();
+            let from = match loc.export {
+                Some(n) => {
+                    parts.push(encode_segment(&format!("/{}", loc.path[..n].join("/"))));
+                    n
+                }
+                None => 0,
+            };
+            parts.extend(loc.path[from..].iter().map(|s| encode_segment(s)));
+            parts.join("/")
+        } else {
+            rest.iter()
+                .map(|s| encode_segment(s))
+                .collect::<Vec<_>>()
+                .join("/")
+        };
         if url.ends_with('/') && !key.is_empty() {
             key.push('/');
         }
@@ -284,11 +387,12 @@ impl Source for NfsSource {
         let loc = NfsLocation::parse(&self.current_url(location.unwrap_or(&self.root))?)?;
         self.check_owned(&loc)?;
         let mut out = Vec::new();
-        if self.whole_server() && loc.path.is_empty() {
+        if self.is_export_list(&loc) {
             for export in self.list_exports()? {
                 let mut child = loc.clone();
+                child.export = Some(export.len());
                 child.path = export.clone();
-                let url = format!("{}/", child.to_url());
+                let url = dir_url(child.to_url());
                 let url = self.canonical_location(&url).unwrap_or(url);
                 out.push(dir_entry(format!("/{}", export.join("/")), url, None));
             }
@@ -317,7 +421,11 @@ impl Source for NfsSource {
     fn open(&self, location: &str) -> Result<Arc<dyn ByteSource>> {
         let loc = NfsLocation::parse(&self.current_url(location)?)?;
         self.check_owned(&loc)?;
-        if loc.path.len() <= self.export.len() {
+        let export_root = match loc.export {
+            Some(n) if self.whole_server() => loc.path.len() <= n,
+            _ => loc.path.len() <= self.export.len(),
+        };
+        if export_root {
             return Err(Error::invalid(
                 location,
                 "an export or server cannot be opened as a file",
@@ -326,30 +434,43 @@ impl Source for NfsSource {
         self.open_file(&loc)
     }
 
-    /// `nfs://host/folder/sub-folder`, with names as they are on the server.
+    /// `nfs://host/folder/sub-folder`, with names as they are on the server:
+    /// `nfs://host` for a whole server's list of exports, `nfs://host/` for
+    /// the export `/`.
     fn display_location(&self, location: Option<&str>) -> Option<String> {
         let loc =
             NfsLocation::parse(&self.current_url(location.unwrap_or(&self.root)).ok()?).ok()?;
         self.check_owned(&loc).ok()?;
         let mut out = nfs_url(&loc.host, loc.port, "");
-        out.push_str(&loc.path.join("/"));
+        if !self.is_export_list(&loc) {
+            out.push('/');
+            out.push_str(&loc.path.join("/"));
+        }
         Some(out)
     }
 
     fn parent(&self, location: &str) -> Option<String> {
         let mut loc = NfsLocation::parse(&self.current_url(location).ok()?).ok()?;
         self.check_owned(&loc).ok()?;
-        if loc.path.len() <= self.export.len() {
-            return None;
-        }
         // An export's root goes up to the server's list of exports, when
         // the source is the whole server.
-        if self.whole_server() && self.is_export(&loc.path) {
-            loc.path.clear();
-            return self.canonical_location(&loc.to_url());
+        let export_root = if self.whole_server() {
+            match loc.export {
+                Some(n) => loc.path.len() <= n,
+                None if loc.path.is_empty() => return None,
+                None => self.is_export(&loc.path),
+            }
+        } else if loc.path.len() <= self.export.len() {
+            return None;
+        } else {
+            false
+        };
+        if export_root {
+            let list = nfs_url(&loc.host, loc.port, "");
+            return self.canonical_location(&list);
         }
         loc.path.pop();
-        self.canonical_location(&format!("{}/", loc.to_url()))
+        self.canonical_location(&dir_url(loc.to_url()))
     }
 
     fn sidecars(&self, video: &Entry) -> Result<crate::Sidecars> {
@@ -1213,11 +1334,25 @@ mod imp {
         /// Splits a server path into the export to mount and the path inside
         /// it: the longest of the server's exports the path is in (for a
         /// source on one folder, the export holding that folder).
-        pub(super) fn split<'a>(&self, path: &'a [String]) -> Result<(Vec<String>, &'a [String])> {
+        pub(super) fn split<'a>(
+            &self,
+            loc: &'a NfsLocation,
+        ) -> Result<(Vec<String>, &'a [String])> {
+            let path = loc.path.as_slice();
             if !self.whole_server() {
                 let export = self.client.mount_point(&self.export);
                 let n = export.len();
                 return Ok((export, &path[n..]));
+            }
+            // Named by the location: no need to guess from its path.
+            if let Some(n) = loc.export.filter(|n| *n <= path.len()) {
+                return Ok((path[..n].to_vec(), &path[n..]));
+            }
+            if path.is_empty() {
+                return Err(Error::invalid(
+                    &loc.to_url(),
+                    "the server's list of exports",
+                ));
             }
             let exports = self.client.exports()?;
             exports
@@ -1237,7 +1372,7 @@ mod imp {
 
         pub(super) fn list_dir(&self, loc: &NfsLocation) -> Result<Vec<DirItem>> {
             let url = loc.to_url();
-            let (export, rest) = self.split(&loc.path)?;
+            let (export, rest) = self.split(loc)?;
             self.client.with_session(|session| {
                 let mut s = lock(session);
                 run(&url, s.list(&export, rest, &url))
@@ -1246,7 +1381,7 @@ mod imp {
 
         pub(super) fn open_file(&self, loc: &NfsLocation) -> Result<Arc<dyn ByteSource>> {
             let url = loc.to_url();
-            let (export, rest) = self.split(&loc.path)?;
+            let (export, rest) = self.split(loc)?;
             let file = OpenFile::open(&self.client, &export, rest, &url, 0)?;
             let net = Arc::new(NetCounters::default());
             let fetcher = NfsFetcher {
@@ -1401,7 +1536,9 @@ mod tests {
 
     #[test]
     fn urls_roundtrip() {
-        assert_eq!(nfs_url("nas", None, ""), "nfs://nas/");
+        // The whole server, and its export `/`.
+        assert_eq!(nfs_url("nas", None, ""), "nfs://nas");
+        assert_eq!(nfs_url("nas", None, "/"), "nfs://nas/");
         assert_eq!(
             nfs_url("nas", Some(2049), "/volume1/My Videos/Clip #1.mp4"),
             "nfs://nas:2049/volume1/My%20Videos/Clip%20%231.mp4"
@@ -1479,7 +1616,7 @@ mod tests {
         let whole = NfsSource::new(&whole).unwrap();
         assert_eq!(
             whole.display_location(None).as_deref(),
-            Some("nfs://nas.local:2049/")
+            Some("nfs://nas.local:2049")
         );
         let mut bad = config();
         bad.host.clear();
@@ -1533,7 +1670,7 @@ mod tests {
         let mut c = config();
         c.export.clear();
         let s = NfsSource::new(&c).unwrap();
-        assert_eq!(s.root(), "nfs://nas.local/");
+        assert_eq!(s.root(), "nfs://nas.local");
         assert!(s.describe().starts_with("NFS server"));
         s.client.set_exports(&["/volume1/videos", "/volume1"]);
         let stable = s
@@ -1555,23 +1692,126 @@ mod tests {
             s.parent("nfs://nas.local/volume1/other/"),
             Some(crate::location::encode("n", "nfs", "volume1/"))
         );
-        assert_eq!(s.parent("nfs://nas.local/"), None);
-        assert!(matches!(
-            s.open("nfs://nas.local/"),
-            Err(Error::InvalidLocation { .. })
-        ));
+        assert_eq!(s.parent("nfs://nas.local"), None);
+        // `nfs://nas.local/` is the export `/`, whose parent is the list.
+        assert_eq!(
+            s.parent("nfs://nas.local/"),
+            Some(crate::location::encode("n", "nfs", ""))
+        );
+        for url in ["nfs://nas.local", "nfs://nas.local/"] {
+            assert!(
+                matches!(s.open(url), Err(Error::InvalidLocation { .. })),
+                "{url}"
+            );
+        }
         // The longest export a path is in is the one mounted.
-        let path = path_segments("/volume1/videos/a.mp4");
-        let (export, rest) = s.split(&path).unwrap();
+        let loc = NfsLocation::parse("nfs://nas.local/volume1/videos/a.mp4").unwrap();
+        let (export, rest) = s.split(&loc).unwrap();
         assert_eq!(
             (export.join("/"), rest.join("/")),
             ("volume1/videos".into(), "a.mp4".into())
         );
-        let path = path_segments("/volume1/music/a.mp3");
-        let (export, rest) = s.split(&path).unwrap();
+        let loc = NfsLocation::parse("nfs://nas.local/volume1/music/a.mp3").unwrap();
+        let (export, rest) = s.split(&loc).unwrap();
         assert_eq!(
             (export.join("/"), rest.join("/")),
             ("volume1".into(), "music/a.mp3".into())
+        );
+    }
+
+    #[test]
+    fn the_export_root_is_a_source_of_its_own() {
+        let mut c = config();
+        c.export = "/".into();
+        let s = NfsSource::new(&c).unwrap();
+        assert_eq!(s.root(), "nfs://nas.local/");
+        assert!(s.describe().starts_with("NFS export"));
+        let key = |l: &str| crate::location::decode(l).unwrap().key;
+        assert_eq!(
+            s.display_location(None).as_deref(),
+            Some("nfs://nas.local/")
+        );
+        let folder = s.canonical_location("nfs://nas.local/videos/").unwrap();
+        assert_eq!(key(&folder), "videos/");
+        assert_eq!(s.current_url(&folder).unwrap(), "nfs://nas.local/videos/");
+        assert_eq!(
+            s.display_location(Some(&folder)).as_deref(),
+            Some("nfs://nas.local/videos")
+        );
+        assert_eq!(s.parent(&folder).map(|l| key(&l)), Some(String::new()));
+        assert_eq!(
+            s.parent(&s.canonical_location("nfs://nas.local/").unwrap()),
+            None
+        );
+        assert!(s.open("nfs://nas.local/").is_err());
+        // The address the form shows for it, and for the whole server.
+        let address = |export: &str| {
+            let mut c = c.clone();
+            c.export = export.into();
+            crate::SourceConfig::Nfs(c).address()
+        };
+        assert_eq!(address("/"), "nfs://nas.local/");
+        assert_eq!(address(""), "nfs://nas.local");
+    }
+
+    #[test]
+    fn locations_can_name_their_export() {
+        let l = NfsLocation::parse("nfs://nas/%2Fvolume1%2Fvideos/My%20Films/a.mp4").unwrap();
+        assert_eq!(l.path, ["volume1", "videos", "My Films", "a.mp4"]);
+        assert_eq!(l.export, Some(2));
+        assert_eq!(l.to_url(), "nfs://nas/%2Fvolume1%2Fvideos/My%20Films/a.mp4");
+        let root = NfsLocation::parse("nfs://nas/%2F/").unwrap();
+        assert_eq!((root.path.len(), root.export), (0, Some(0)));
+        assert_eq!(root.to_url(), "nfs://nas/");
+        assert_eq!(NfsLocation::parse("nfs://nas/").unwrap(), root);
+        let list = NfsLocation::parse("nfs://nas").unwrap();
+        assert_eq!((list.path.len(), list.export), (0, None));
+        assert_eq!(list.to_url(), "nfs://nas");
+        let in_root = NfsLocation::parse("nfs://nas/%2F/videos").unwrap();
+        assert_eq!(in_root.to_url(), "nfs://nas/%2F/videos");
+        // Only the first segment can name the export.
+        assert!(NfsLocation::parse("nfs://nas/srv/%2Fetc").is_err());
+        assert!(NfsLocation::parse("nfs://nas/%2Fsrv%2F..%2Fetc/x").is_err());
+    }
+
+    #[cfg(feature = "nfs")]
+    #[test]
+    fn a_whole_servers_root_export_is_apart_from_its_list_and_other_exports() {
+        let mut c = config();
+        c.export.clear();
+        let s = NfsSource::new(&c).unwrap();
+        s.client.set_exports(&["/", "/srv"]);
+        let key = |l: &str| crate::location::decode(l).unwrap().key;
+        let exports = s.list(None).unwrap();
+        let names: Vec<_> = exports.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(names, ["/", "/srv"]);
+        assert_eq!(key(&exports[0].location), "%2F/");
+        assert_eq!(key(&exports[1].location), "%2Fsrv/");
+        // The export `/` and the list are different places.
+        assert!(s.is_export_list(&NfsLocation::parse("nfs://nas.local").unwrap()));
+        assert!(!s.is_export_list(&NfsLocation::parse("nfs://nas.local/").unwrap()));
+        let root = NfsLocation::parse(&s.current_url(&exports[0].location).unwrap()).unwrap();
+        assert!(!s.is_export_list(&root));
+        assert_eq!(
+            s.parent(&exports[0].location),
+            Some(crate::location::encode("n", "nfs", ""))
+        );
+        // The folder `srv` in the export `/` stays there, apart from the
+        // export `/srv`; up from it is the export `/`, not the list.
+        let folder = s.canonical_location("nfs://nas.local/%2F/srv/").unwrap();
+        assert_eq!(key(&folder), "%2F/srv/");
+        let loc = NfsLocation::parse(&s.current_url(&folder).unwrap()).unwrap();
+        let (export, rest) = s.split(&loc).unwrap();
+        assert_eq!((export.len(), rest.join("/")), (0, "srv".into()));
+        assert_eq!(s.parent(&folder).map(|l| key(&l)), Some("%2F/".into()));
+        let export = s.canonical_location("nfs://nas.local/%2Fsrv/").unwrap();
+        let loc = NfsLocation::parse(&s.current_url(&export).unwrap()).unwrap();
+        let (export_path, rest) = s.split(&loc).unwrap();
+        assert_eq!((export_path.join("/"), rest.len()), ("srv".into(), 0));
+        assert_eq!(s.parent(&export).map(|l| key(&l)), Some(String::new()));
+        assert_eq!(
+            s.display_location(Some(&folder)).as_deref(),
+            Some("nfs://nas.local/srv")
         );
     }
 

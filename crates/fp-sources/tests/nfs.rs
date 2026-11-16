@@ -172,6 +172,12 @@ impl NfsReadFileSystem for LinkFs {
 /// Like [`serve`], with symbolic links: (folder, name, target). Returns the
 /// port and the links, to point elsewhere while the server runs.
 fn serve_with_links(fs: MemFsConfig, links: &[(&str, &str, &str)]) -> (u16, Links) {
+    serve_links_as(fs, links, "export")
+}
+
+/// Like [`serve_with_links`], exporting the file system as `/{name}`.
+fn serve_links_as(fs: MemFsConfig, links: &[(&str, &str, &str)], name: &str) -> (u16, Links) {
+    let name = name.to_string();
     let links: Vec<(String, String, String)> = links
         .iter()
         .map(|(d, n, t)| (d.to_string(), n.to_string(), t.to_string()))
@@ -196,7 +202,7 @@ fn serve_with_links(fs: MemFsConfig, links: &[(&str, &str, &str)]) -> (u16, Link
                 links: served,
             };
             let mut listener = NFSTcpListener::bind_ro("127.0.0.1:0", fs).await.unwrap();
-            listener.with_export_name("export");
+            listener.with_export_name(&name);
             port_tx.send(listener.get_listen_port()).unwrap();
             listener.handle_forever().await.unwrap();
         });
@@ -573,4 +579,100 @@ fn dot_dot_in_a_link_target_goes_up_from_where_earlier_links_lead() {
             "{name}: {err:?}"
         );
     }
+}
+
+#[test]
+fn a_servers_root_export_is_not_its_list_of_exports() {
+    let video = pattern(4321);
+    let mut fs = MemFsConfig::default();
+    fs.add_dir("/videos");
+    fs.add_file("/videos/clip.mp4", video.clone());
+    fs.add_file("/top.mp4", video.clone());
+    // The server exports `/`; the source is the whole server.
+    let (port, _) = serve_links_as(fs, &[], "");
+    let source = build(&config(port, "")).unwrap();
+    let exports = source.list(None).unwrap();
+    assert_eq!(exports.len(), 1);
+    assert_eq!(exports[0].name, "/");
+    assert_eq!(
+        source.display_location(None).as_deref(),
+        Some(format!("nfs://127.0.0.1:{port}").as_str())
+    );
+    assert_eq!(exports[0].kind, EntryKind::Directory);
+
+    // Opening the export `/` shows what is in it, not the exports again.
+    let root = source.list(Some(&exports[0].location)).unwrap();
+    let names: Vec<_> = root.iter().map(|e| e.name.as_str()).collect();
+    assert_eq!(names, ["videos", "top.mp4"]);
+    assert_eq!(
+        source
+            .display_location(Some(&exports[0].location))
+            .as_deref(),
+        Some(format!("nfs://127.0.0.1:{port}/").as_str())
+    );
+    let videos = &root[0];
+    let inside = source.list(Some(&videos.location)).unwrap();
+    assert_eq!(inside.len(), 1);
+    let mut buf = vec![0; 10_000];
+    let n = source
+        .open(&inside[0].location)
+        .unwrap()
+        .read_at(0, &mut buf)
+        .unwrap();
+    assert_eq!(&buf[..n], &video[..]);
+
+    // Up from a file at the top is the export `/`; up from that, the list.
+    let top = root.iter().find(|e| e.name == "top.mp4").unwrap();
+    assert_eq!(
+        source.parent(&top.location).as_deref(),
+        Some(exports[0].location.as_str())
+    );
+    assert_eq!(
+        source.parent(&videos.location).as_deref(),
+        Some(exports[0].location.as_str())
+    );
+    let list = source.parent(&exports[0].location).unwrap();
+    assert_ne!(list, exports[0].location);
+    assert_eq!(source.list(Some(&list)).unwrap().len(), 1);
+    assert!(source.open(&exports[0].location).is_err());
+    assert!(source.open(&list).is_err());
+}
+
+#[test]
+fn the_export_root_can_be_a_source_of_its_own() {
+    let video = pattern(4321);
+    let mut fs = MemFsConfig::default();
+    fs.add_dir("/videos");
+    fs.add_file("/videos/clip.mp4", video.clone());
+    let (port, _) = serve_links_as(fs, &[], "");
+    // `nfs://host/`: the export `/` itself, not the server's exports.
+    let source = build(&config(port, "/")).unwrap();
+    assert_eq!(
+        source.display_location(None).as_deref(),
+        Some(format!("nfs://127.0.0.1:{port}/").as_str())
+    );
+    let root = source.list(None).unwrap();
+    assert_eq!(root.len(), 1);
+    assert_eq!(root[0].name, "videos");
+    assert_eq!(
+        source.display_location(Some(&root[0].location)).as_deref(),
+        Some(format!("nfs://127.0.0.1:{port}/videos").as_str())
+    );
+    let inside = source.list(Some(&root[0].location)).unwrap();
+    let mut buf = vec![0; 10_000];
+    let n = source
+        .open(&inside[0].location)
+        .unwrap()
+        .read_at(0, &mut buf)
+        .unwrap();
+    assert_eq!(&buf[..n], &video[..]);
+
+    // Whether a server has the export `/`, to tell when adding a source.
+    let check = |port, export: &str| match config(port, export) {
+        SourceConfig::Nfs(c) => fp_sources::nfs::exports_root(&c).unwrap(),
+        _ => unreachable!(),
+    };
+    assert!(check(port, "/"));
+    let other = serve(MemFsConfig::default());
+    assert!(!check(other, "/"), "exports only /export");
 }

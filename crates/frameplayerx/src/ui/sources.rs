@@ -1533,7 +1533,9 @@ pub fn build_config(f: &SourceForm, id: String) -> Result<SourceConfig, String> 
             SourceConfig::Nfs(fp_sources::NfsConfig {
                 id,
                 name,
-                export: if loc.path.is_empty() {
+                // `nfs://nas` is the whole server, `nfs://nas/` (and
+                // `nas:/`) its export `/`.
+                export: if loc.path.is_empty() && loc.export.is_none() {
                     String::new()
                 } else {
                     format!("/{}", loc.path.join("/"))
@@ -1722,7 +1724,23 @@ mod tests {
                 other => panic!("{other:?}"),
             }
         }
-        f.address = "nfs://nas/".into();
+        // `nfs://nas/` and `nas:/` are the export `/`, `nfs://nas` the
+        // whole server; each shows again as it was typed.
+        for (address, export, shown) in [
+            ("nfs://nas/", "/", "nfs://nas/"),
+            ("nas:/", "/", "nfs://nas/"),
+            ("nfs://nas", "", "nfs://nas"),
+        ] {
+            f.address = address.into();
+            match build_config(&f, "x".into()).unwrap() {
+                SourceConfig::Nfs(c) => {
+                    assert_eq!(c.export, export, "{address}");
+                    assert_eq!(edit_form(&SourceConfig::Nfs(c)).address, shown);
+                }
+                other => panic!("{other:?}"),
+            }
+        }
+        f.address = "nfs://nas".into();
         f.nfs_uid = "1026".into();
         f.nfs_gid = "100".into();
         match build_config(&f, "x".into()).unwrap() {
@@ -1730,7 +1748,7 @@ mod tests {
                 assert!(c.export.is_empty());
                 assert_eq!((c.uid, c.gid), (Some(1026), Some(100)));
                 let form = edit_form(&SourceConfig::Nfs(c.clone()));
-                assert_eq!(form.address, "nfs://nas/");
+                assert_eq!(form.address, "nfs://nas");
                 assert_eq!(
                     (form.nfs_uid.as_str(), form.nfs_gid.as_str()),
                     ("1026", "100")

@@ -366,17 +366,69 @@ impl App {
     // ---- editing sources ----
 
     pub(super) fn add_source(&mut self, cfg: fp_sources::SourceConfig) {
+        // `nfs://host/` is the server's export `/`: asked of the server first,
+        // as one without it is added as the whole server (`nfs://host`).
+        if let fp_sources::SourceConfig::Nfs(c) = &cfg
+            && c.export == "/"
+        {
+            let c = c.clone();
+            self.jobs.spawn("nfs_root_export", move || {
+                let r = fp_sources::nfs::exports_root(&c).map_err(|e| ui::errors::source(&e));
+                Job::NfsRootChecked(Box::new(c), r)
+            });
+            return;
+        }
+        self.insert_source(cfg);
+    }
+
+    /// Adds an NFS source for the export `/` once the server has said
+    /// whether it has one; if not, the whole server instead. A server that
+    /// can't be asked keeps the address as typed.
+    pub(super) fn nfs_root_checked(
+        &mut self,
+        mut c: fp_sources::NfsConfig,
+        exported: Result<bool, String>,
+    ) {
+        let whole = match exported {
+            Ok(true) => false,
+            Ok(false) => true,
+            Err(e) => {
+                log::info!("{}: exports not listed ({e}); adding the export /", c.host);
+                false
+            }
+        };
+        if whole {
+            c.export.clear();
+        }
+        let cfg = fp_sources::SourceConfig::Nfs(c);
+        if self.insert_source(cfg.clone()) && whole {
+            self.ui.toast(tr!(
+                "source-added-nfs-server",
+                name = cfg.name(),
+                address = cfg.address()
+            ));
+        }
+    }
+
+    /// Adds `cfg` to the sources and opens it; true when it was added and
+    /// saved.
+    fn insert_source(&mut self, cfg: fp_sources::SourceConfig) -> bool {
         let mut list = self.services.source_configs.clone();
         list.push(cfg.clone());
         let change = self.services.set_sources(list);
         match change.errors.into_iter().find(|e| e.id == cfg.id()) {
-            Some(e) => self.ui.toast(e.to_string()),
+            Some(e) => {
+                self.ui.toast(e.to_string());
+                false
+            }
             None => {
+                let saved = change.save_error.is_none();
                 self.ui.toast(match change.save_error {
                     Some(e) => tr!("source-added-unsaved", name = cfg.name(), error = e),
                     None => tr!("source-added", name = cfg.name()),
                 });
                 self.open_source(cfg.id().to_string(), Screen::Sources);
+                saved
             }
         }
     }
