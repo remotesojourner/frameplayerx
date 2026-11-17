@@ -1063,8 +1063,11 @@ fn drag_list(ui: &Ui, key: egui::Id, axis: usize) {
     let press_id = egui::Id::new(LIST_PRESS);
     let mut press = ctx.data(|d| d.get_temp::<ListPress>(press_id).unwrap_or_default());
     if pressed {
+        // On its own layer, as egui's wheel scrolling: a drawer's list
+        // takes a press on it, not the page under the drawer.
+        let layer = ui.layer_id();
         g.armed = g.max > 0.0
-            && origin.is_some_and(|o| g.rect.contains(o))
+            && origin.is_some_and(|o| g.rect.contains(o) && ctx.layer_id_at(o) == Some(layer))
             && !over_slider(ctx)
             && ctx.dragged_id().is_none();
         // The first list in the pass starts the press afresh.

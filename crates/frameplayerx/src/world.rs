@@ -1178,6 +1178,83 @@ mod tests {
     }
 
     #[test]
+    fn a_press_on_a_drawer_scrolls_the_drawer_not_the_page_under_it() {
+        let mut p = panel_in_front();
+        let mut ptr = Pointer::default();
+        let mut hands = [Hand::default(), Hand::default()];
+        hands[1].active = true;
+        let mut time = 0.0;
+        let (mut page, mut drawer) = (0.0, 0.0);
+        let mut frame = |p: &mut Panel, ptr: &mut Pointer, hands: &[Hand; 2]| {
+            pass(p, ptr, hands, &mut time, |ui| {
+                // A page that scrolls down, across the whole panel.
+                let out = egui::ScrollArea::vertical()
+                    .auto_shrink(false)
+                    .show_list(ui, |ui| {
+                        ui.allocate_exact_size(egui::vec2(800.0, 2000.0), egui::Sense::hover());
+                    });
+                page = out.state.offset.y;
+                // Over its right half, as `page::drawer`: a list of its own.
+                egui::Area::new(egui::Id::new("drawer"))
+                    .order(egui::Order::Foreground)
+                    .fixed_pos(egui::pos2(400.0, 0.0))
+                    .show(ui.ctx(), |ui| {
+                        ui.set_min_size(egui::vec2(400.0, 400.0));
+                        let out = egui::ScrollArea::vertical()
+                            .max_height(400.0)
+                            .auto_shrink(false)
+                            .show_list(ui, |ui| {
+                                ui.allocate_exact_size(
+                                    egui::vec2(400.0, 2000.0),
+                                    egui::Sense::hover(),
+                                );
+                            });
+                        drawer = out.state.offset.y;
+                    });
+            });
+            (page, drawer)
+        };
+        hands[1].aim = at(600.0, 350.0);
+        for _ in 0..3 {
+            frame(&mut p, &mut ptr, &hands);
+        }
+        hands[1].trigger = 1.0;
+        frame(&mut p, &mut ptr, &hands);
+        for y in [320.0, 290.0, 260.0, 230.0, 200.0, 170.0, 150.0] {
+            hands[1].aim = at(600.0, y);
+            frame(&mut p, &mut ptr, &hands);
+        }
+        for _ in 0..15 {
+            frame(&mut p, &mut ptr, &hands);
+        }
+        hands[1].trigger = 0.0;
+        frame(&mut p, &mut ptr, &hands);
+        // It takes the press 30 points up, with that step, and follows it
+        // the rest of the 200.
+        let (page, drawer) = frame(&mut p, &mut ptr, &hands);
+        assert_eq!(page, 0.0);
+        assert!((drawer - 200.0).abs() < 0.5, "{drawer}");
+
+        // Beside the drawer, the page takes it.
+        hands[1].aim = at(200.0, 350.0);
+        frame(&mut p, &mut ptr, &hands);
+        hands[1].trigger = 1.0;
+        frame(&mut p, &mut ptr, &hands);
+        for y in [320.0, 290.0, 260.0] {
+            hands[1].aim = at(200.0, y);
+            frame(&mut p, &mut ptr, &hands);
+        }
+        for _ in 0..15 {
+            frame(&mut p, &mut ptr, &hands);
+        }
+        hands[1].trigger = 0.0;
+        frame(&mut p, &mut ptr, &hands);
+        let (page2, drawer2) = frame(&mut p, &mut ptr, &hands);
+        assert!((page2 - 90.0).abs() < 0.5, "{page2}");
+        assert_eq!(drawer2, drawer);
+    }
+
+    #[test]
     fn a_press_on_a_slider_moves_the_slider_not_its_list() {
         let mut p = panel_in_front();
         let mut ptr = Pointer::default();
