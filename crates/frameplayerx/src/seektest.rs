@@ -204,6 +204,10 @@ impl ByteSource for ReadProbe {
         self.src.remote()
     }
 
+    fn efficient_random_access(&self) -> bool {
+        self.src.efficient_random_access()
+    }
+
     fn net(&self) -> Option<Arc<fp_core::NetCounters>> {
         self.src.net()
     }

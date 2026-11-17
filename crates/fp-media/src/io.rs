@@ -67,6 +67,13 @@ impl IoContext {
     pub fn as_ptr(&self) -> *mut ff::AVIOContext {
         self.ctx
     }
+
+    /// The source this context reads.
+    pub(crate) fn source(&self) -> Arc<dyn ByteSource> {
+        // SAFETY: the state lives until Drop. FFmpeg's callbacks only borrow
+        // it during calls into the demuxer, and the demuxer's thread is here.
+        unsafe { (*self.state).src.clone() }
+    }
 }
 
 impl Drop for IoContext {

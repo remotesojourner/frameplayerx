@@ -35,6 +35,7 @@ pub mod subtitle;
 pub mod thumb;
 #[cfg(test)]
 pub(crate) mod ts_fixture;
+pub(crate) mod unlisted_keys;
 pub(crate) mod v4l2;
 
 pub use decode::{

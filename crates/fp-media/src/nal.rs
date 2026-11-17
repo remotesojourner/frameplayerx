@@ -8,10 +8,11 @@ use crate::mvc::bits::{Reader, unescape};
 use fp_core::format::StereoLayout;
 use fp_ffmpeg_sys as ff;
 
-/// H.264's SEI NAL unit type, HEVC's prefix SEI, and the SEI message that says
-/// how a picture holds two eyes.
+/// H.264's SEI NAL unit type, HEVC's prefix SEI, and the SEI messages that
+/// say where a picture can be decoded from and how it holds two eyes.
 const H264_SEI: u8 = 6;
 const HEVC_SEI: u8 = 39;
+const RECOVERY_POINT: usize = 6;
 const FRAME_PACKING: usize = 45;
 
 /// Reads the NAL units in one stream's packets.
@@ -87,6 +88,39 @@ impl NalReader {
         })
     }
 
+    /// Whether decoding can start at a packet: at an HEVC IDR, CRA or BLA
+    /// picture, or an H.264 IDR, or an H.264 I picture that a recovery point
+    /// message says is whole at once. Only the first picture counts, so the
+    /// start of a packet is enough.
+    pub(crate) fn random_access(&self, data: &[u8]) -> bool {
+        let mut recovers = false;
+        for nal in units(data, self.length_size) {
+            let Some(&h0) = nal.first() else {
+                continue;
+            };
+            if self.hevc {
+                let kind = (h0 >> 1) & 0x3f;
+                if kind < 32 {
+                    return (16..=21).contains(&kind);
+                }
+                continue;
+            }
+            match h0 & 0x1f {
+                5 => return true,
+                1 => return recovers && i_slice(nal),
+                2..=4 => return false,
+                H264_SEI => {
+                    recovers |= sei_messages(&unescape(&nal[1..])).any(|(kind, payload)| {
+                        kind == RECOVERY_POINT
+                            && Reader::new(payload, 0).ue().is_ok_and(|frames| frames == 0)
+                    });
+                }
+                _ => {}
+            }
+        }
+        false
+    }
+
     /// Whether a packet holds only pictures no other picture is decoded
     /// from, and no parameter sets. SPSs on the way are noted.
     pub(crate) fn disposable(&mut self, data: &[u8]) -> bool {
@@ -140,8 +174,8 @@ pub(crate) enum Packing {
     FrameSequential,
 }
 
-/// Finds the frame packing message among an SEI RBSP's messages.
-fn sei_frame_packing(mut rbsp: &[u8]) -> Option<(Packing, bool)> {
+/// The type and payload of each message in an SEI RBSP.
+fn sei_messages(mut rbsp: &[u8]) -> impl Iterator<Item = (usize, &[u8])> {
     // Each is its type and size, in bytes of 255 and a last one that add up.
     fn number(rest: &mut &[u8]) -> Option<usize> {
         let mut n = 0;
@@ -154,15 +188,26 @@ fn sei_frame_packing(mut rbsp: &[u8]) -> Option<(Packing, bool)> {
             }
         }
     }
-    loop {
+    std::iter::from_fn(move || {
         let kind = number(&mut rbsp)?;
         let size = number(&mut rbsp)?;
         let payload = rbsp.get(..size)?;
-        if kind == FRAME_PACKING {
-            return frame_packing_message(payload);
-        }
         rbsp = &rbsp[size..];
-    }
+        Some((kind, payload))
+    })
+}
+
+/// Finds the frame packing message among an SEI RBSP's messages.
+fn sei_frame_packing(rbsp: &[u8]) -> Option<(Packing, bool)> {
+    let (_, payload) = sei_messages(rbsp).find(|&(kind, _)| kind == FRAME_PACKING)?;
+    frame_packing_message(payload)
+}
+
+/// Whether an H.264 slice NAL unit is an I or SI slice.
+fn i_slice(nal: &[u8]) -> bool {
+    let header = unescape(&nal[1..nal.len().min(8)]);
+    let mut r = Reader::new(&header, 0);
+    r.ue().is_ok() && r.ue().is_ok_and(|kind| matches!(kind % 5, 2 | 4))
 }
 
 fn frame_packing_message(payload: &[u8]) -> Option<(Packing, bool)> {
@@ -560,6 +605,41 @@ mod tests {
         assert!(!r.disposable(&prefixed(&[&[0x01, 0x9a], &[0x21, 0x9a]])));
         assert!(!r.disposable(&prefixed(&[&[0x06, 5]])), "no picture");
         assert!(!r.disposable(&[]));
+    }
+
+    #[test]
+    fn decoding_can_start_at_idr_cra_and_recovery_points() {
+        let r = NalReader::new(ff::AV_CODEC_ID_H264, &AVCC).unwrap();
+        let idr: &[u8] = &[0x65, 0x88];
+        let i: &[u8] = &[0x61, 0x88];
+        let p: &[u8] = &[0x41, 0x9a];
+        // recovery_frame_cnt 0, then 1.
+        let at_once: &[u8] = &[0x06, 6, 1, 0x80, 0x80];
+        let later: &[u8] = &[0x06, 6, 1, 0x40, 0x80];
+        assert!(r.random_access(&prefixed(&[&[0x09, 0x10], idr])));
+        assert!(r.random_access(&prefixed(&[at_once, i])));
+        assert!(!r.random_access(&prefixed(&[i])), "no recovery point");
+        assert!(!r.random_access(&prefixed(&[later, i])));
+        assert!(!r.random_access(&prefixed(&[at_once, p])));
+        assert!(!r.random_access(&prefixed(&[p, idr])), "first picture");
+        assert!(!r.random_access(&[]));
+
+        let r = NalReader::new(ff::AV_CODEC_ID_HEVC, &hvcc(0)).unwrap();
+        let vps: &[u8] = &[32 << 1, 1, 0x0c];
+        for kind in [16u8, 19, 20, 21] {
+            assert!(
+                r.random_access(&prefixed(&[vps, &[kind << 1, 1, 0xaf]])),
+                "{kind}"
+            );
+        }
+        assert!(
+            !r.random_access(&prefixed(&[&[1 << 1, 1, 0xaf]])),
+            "TRAIL_R"
+        );
+        assert!(!r.random_access(&prefixed(&[&[8 << 1, 1, 0xaf]])), "RASL");
+        let mut cut = prefixed(&[&[21 << 1, 1, 0xaf, 0xff, 0xff]]);
+        cut.truncate(7);
+        assert!(r.random_access(&cut), "cut short");
     }
 
     #[test]

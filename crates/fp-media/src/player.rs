@@ -984,7 +984,9 @@ fn demux_thread(
                         sh.demux_eof.store(true, Ordering::Release);
                     }
                 }
-            } else if let Err(e) = input.seek(req.target) {
+            } else if let Err(e) =
+                input.seek_playback(req.target, video_index, || jump_aborted(&sh))
+            {
                 log::warn!("seek to {:.2}: {e}", req.target);
             }
             for (_, d) in subs.0.iter_mut() {
