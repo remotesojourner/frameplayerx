@@ -982,6 +982,201 @@ mod tests {
         assert_eq!(frame(&mut p, &mut ptr, &hands), (0.0, 1));
     }
 
+    /// A page that scrolls down: `above` points of header, then a 208 points
+    /// tall row of six cards (256 wide) that scrolls sideways, as Home's,
+    /// then 1000 more. The page's and the row's offsets, and clicked cards.
+    fn page_with_rail(
+        ui: &mut egui::Ui,
+        above: f32,
+        page: &mut f32,
+        rail: &mut f32,
+        clicks: &mut u32,
+    ) {
+        let out = egui::ScrollArea::vertical()
+            .auto_shrink(false)
+            .show_list(ui, |ui| {
+                ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
+                ui.allocate_exact_size(egui::vec2(800.0, above), egui::Sense::hover());
+                // As `page::carousel`: room for a lifted card.
+                egui::Frame::new()
+                    .outer_margin(egui::Margin {
+                        left: -16,
+                        right: -16,
+                        top: -8,
+                        bottom: 0,
+                    })
+                    .show(ui, |ui| {
+                        let out = egui::ScrollArea::horizontal()
+                            .id_salt("rail")
+                            .scroll_bar_visibility(
+                                egui::scroll_area::ScrollBarVisibility::AlwaysHidden,
+                            )
+                            .show_rail(ui, |ui| {
+                                egui::Frame::new()
+                                    .inner_margin(egui::Margin {
+                                        left: 16,
+                                        right: 16,
+                                        top: 8,
+                                        bottom: 0,
+                                    })
+                                    .show(ui, |ui| {
+                                        ui.horizontal(|ui| {
+                                            ui.spacing_mut().item_spacing.x = 20.0;
+                                            for _ in 0..6 {
+                                                let size = egui::vec2(256.0, 200.0);
+                                                if ui
+                                                    .allocate_exact_size(size, egui::Sense::click())
+                                                    .1
+                                                    .clicked()
+                                                {
+                                                    *clicks += 1;
+                                                }
+                                            }
+                                        });
+                                    });
+                            });
+                        *rail = out.state.offset.x;
+                    });
+                ui.allocate_exact_size(egui::vec2(800.0, 1000.0), egui::Sense::hover());
+            });
+        *page = out.state.offset.y;
+    }
+
+    /// Presses on [`page_with_rail`], each from its first point through the
+    /// rest, then held still (so as not to flick) and let go: the page's and
+    /// the row's offsets after each, and the cards clicked.
+    fn presses_on_page_with_rail(
+        above: f32,
+        presses: &[Vec<(f32, f32)>],
+    ) -> (Vec<(f32, f32)>, u32) {
+        let mut p = panel_in_front();
+        let mut ptr = Pointer::default();
+        let mut hands = [Hand::default(), Hand::default()];
+        hands[1].active = true;
+        let mut time = 0.0;
+        let (mut page, mut rail, mut clicks) = (0.0, 0.0, 0);
+        let mut frame = |p: &mut Panel, ptr: &mut Pointer, hands: &[Hand; 2]| {
+            pass(p, ptr, hands, &mut time, |ui| {
+                page_with_rail(ui, above, &mut page, &mut rail, &mut clicks);
+            });
+            (page, rail)
+        };
+        let mut after = Vec::new();
+        for path in presses {
+            let (x, y) = path[0];
+            hands[1].aim = at(x, y);
+            for _ in 0..3 {
+                frame(&mut p, &mut ptr, &hands);
+            }
+            hands[1].trigger = 1.0;
+            frame(&mut p, &mut ptr, &hands);
+            for &(x, y) in &path[1..] {
+                hands[1].aim = at(x, y);
+                frame(&mut p, &mut ptr, &hands);
+            }
+            for _ in 0..15 {
+                frame(&mut p, &mut ptr, &hands);
+            }
+            hands[1].trigger = 0.0;
+            for _ in 0..5 {
+                frame(&mut p, &mut ptr, &hands);
+            }
+            after.push(frame(&mut p, &mut ptr, &hands));
+        }
+        (after, clicks)
+    }
+
+    /// From `from` to `to` in `steps` even steps, `from` first.
+    fn sweep(from: (f32, f32), to: (f32, f32), steps: usize) -> Vec<(f32, f32)> {
+        (0..=steps)
+            .map(|i| {
+                let t = i as f32 / steps as f32;
+                (from.0 + (to.0 - from.0) * t, from.1 + (to.1 - from.1) * t)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_row_in_a_page_scrolls_sideways() {
+        // The row's cards are at 100 to 300. It takes the press at the step
+        // past its reach, 30 points along, and follows it from there.
+        let (after, clicks) =
+            presses_on_page_with_rail(100.0, &[sweep((400.0, 200.0), (250.0, 200.0), 10)]);
+        let (page, rail) = after[0];
+        assert_eq!(page, 0.0);
+        assert!((rail - 135.0).abs() < 0.5, "{rail}");
+        assert_eq!(clicks, 0);
+    }
+
+    #[test]
+    fn a_row_below_the_pages_first_view_scrolls_sideways() {
+        // Below the panel's 400 points until the page is scrolled 330 down,
+        // which brings its cards to 120 to 320.
+        let (after, clicks) = presses_on_page_with_rail(
+            450.0,
+            &[
+                sweep((400.0, 380.0), (400.0, 50.0), 11),
+                sweep((400.0, 250.0), (250.0, 250.0), 10),
+            ],
+        );
+        let (page, rail) = after[0];
+        assert!((page - 330.0).abs() < 0.5, "{page}");
+        assert_eq!(rail, 0.0);
+        let (page2, rail2) = after[1];
+        assert_eq!(page2, page);
+        assert!((rail2 - 135.0).abs() < 0.5, "{rail2}");
+        assert_eq!(clicks, 0);
+    }
+
+    #[test]
+    fn a_row_takes_a_press_on_it_only() {
+        // Near the page's top, the row was offered all of the view below it.
+        let (after, clicks) =
+            presses_on_page_with_rail(100.0, &[sweep((400.0, 360.0), (250.0, 360.0), 10)]);
+        assert_eq!(after[0], (0.0, 0.0));
+        assert_eq!(clicks, 0);
+    }
+
+    #[test]
+    fn a_sideways_drag_on_a_row_leaves_the_page_still() {
+        // A wrist's sweep arcs: 150 points sideways, 60 up.
+        let (after, _) =
+            presses_on_page_with_rail(100.0, &[sweep((400.0, 200.0), (250.0, 140.0), 10)]);
+        let (page, rail) = after[0];
+        assert_eq!(page, 0.0);
+        assert!(rail > 100.0, "{rail}");
+    }
+
+    #[test]
+    fn a_drag_up_on_a_row_scrolls_the_page_not_the_row_until_let_go() {
+        // Up with some sideways wander, then sideways while still held.
+        let mut path = sweep((400.0, 280.0), (370.0, 120.0), 8);
+        path.extend(sweep((370.0, 120.0), (200.0, 120.0), 8));
+        let (after, clicks) =
+            presses_on_page_with_rail(100.0, &[path, sweep((400.0, 80.0), (250.0, 80.0), 10)]);
+        let (page, rail) = after[0];
+        assert!((page - 140.0).abs() < 0.5, "{page}");
+        assert_eq!(rail, 0.0);
+        // The next press, on the cards the page moved up to -40 to 160, is
+        // free to go sideways.
+        let (page2, rail2) = after[1];
+        assert_eq!(page2, page);
+        assert!(rail2 > 100.0, "{rail2}");
+        assert_eq!(clicks, 0);
+    }
+
+    #[test]
+    fn a_diagonal_drag_goes_the_way_it_went_further() {
+        // Both reaches passed in one step: 40 sideways, 30 up.
+        let (after, _) = presses_on_page_with_rail(
+            100.0,
+            &[vec![(400.0, 200.0), (360.0, 170.0), (300.0, 170.0)]],
+        );
+        let (page, rail) = after[0];
+        assert_eq!(page, 0.0);
+        assert!(rail > 50.0, "{rail}");
+    }
+
     #[test]
     fn a_press_on_a_slider_moves_the_slider_not_its_list() {
         let mut p = panel_in_front();

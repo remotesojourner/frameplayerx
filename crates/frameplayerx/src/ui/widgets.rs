@@ -1011,6 +1011,20 @@ const COAST_STOP: f32 = 20.0;
 
 const LIST_TOOK_PRESS: &str = "list-took-press";
 
+const LIST_PRESS: &str = "list-press";
+
+/// The lists a press is on, shared by them all: one press scrolls one list,
+/// along one axis, until it lets go.
+#[derive(Clone, Copy, Default)]
+struct ListPress {
+    /// The pass the press began in.
+    pass: u64,
+    /// A list along each axis (sideways, up and down) could take it.
+    armed: [bool; 2],
+    /// The list that took it.
+    holder: Option<egui::Id>,
+}
+
 /// What a list keeps from pass to pass to follow a press.
 #[derive(Clone, Copy)]
 struct ListGrip {
@@ -1046,22 +1060,44 @@ fn drag_list(ui: &Ui, key: egui::Id, axis: usize) {
             i.stable_dt,
         )
     });
+    let press_id = egui::Id::new(LIST_PRESS);
+    let mut press = ctx.data(|d| d.get_temp::<ListPress>(press_id).unwrap_or_default());
     if pressed {
         g.armed = g.max > 0.0
             && origin.is_some_and(|o| g.rect.contains(o))
             && !over_slider(ctx)
             && ctx.dragged_id().is_none();
+        // The first list in the pass starts the press afresh.
+        let pass = ctx.cumulative_pass_nr();
+        if press.pass != pass {
+            press = ListPress {
+                pass,
+                ..Default::default()
+            };
+        }
+        press.armed[axis] |= g.armed;
+        ctx.data_mut(|d| d.insert_temp(press_id, press));
     }
     let mut by = 0.0;
     if down {
         g.velocity = 0.0;
         if g.armed
             && !g.scrolling
+            && press.holder.is_none()
             && let (Some(o), Some(p)) = (origin, pos)
-            && (p - o)[axis].abs() > LIST_REACH
         {
-            g.scrolling = true;
-            ctx.data_mut(|d| d.insert_temp(egui::Id::new(LIST_TOOK_PRESS), true));
+            let (along, across) = ((p - o)[axis].abs(), (p - o)[1 - axis].abs());
+            // Past both reaches at once, the press goes the way it went
+            // further, if a list lies that way.
+            let other_way = press.armed[1 - axis] && across > along;
+            if along > LIST_REACH && !other_way {
+                g.scrolling = true;
+                press.holder = Some(key);
+                ctx.data_mut(|d| {
+                    d.insert_temp(press_id, press);
+                    d.insert_temp(egui::Id::new(LIST_TOOK_PRESS), true);
+                });
+            }
         }
         if g.scrolling {
             by = delta;
@@ -1108,7 +1144,17 @@ fn show_list_along<R>(
         })
         .show(ui, add);
     let max = (out.content_size[axis] - out.inner_rect.size()[axis]).max(0.0);
-    let (id, rect) = (out.id, out.inner_rect);
+    // egui's `inner_rect` is the room the area was offered: a row's height
+    // there is what was left of its page's view below it, none for a row
+    // further down the page, all of the view (and the rows under it) for one
+    // near its top. The row is as tall as its cards. And only the part on
+    // show takes a press.
+    let mut rect = out.inner_rect;
+    if axis == 0 {
+        rect.set_height(out.content_size.y);
+    }
+    let rect = rect.intersect(ui.clip_rect());
+    let id = out.id;
     ui.data_mut(|d| {
         let last = d.get_temp::<ListGrip>(key);
         d.insert_temp(
@@ -1129,7 +1175,9 @@ fn show_list_along<R>(
 /// Scroll areas that scroll by their bar, the thumbstick and a press past
 /// [`LIST_REACH`] along them, which they follow point for point until it lets
 /// go. egui's own drag scrolling starts with the press, so every click would
-/// nudge the list.
+/// nudge the list. A press scrolls one list: the first to take it, so a row
+/// dragged sideways in a page leaves the page still, and one dragged up and
+/// down scrolls the page and not the row.
 pub trait ListArea {
     /// Shows a list that scrolls up and down.
     fn show_list<R>(
