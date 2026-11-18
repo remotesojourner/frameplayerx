@@ -558,7 +558,7 @@ sources-add = Add source
 sources-heading = On this device and your network
 # Short: a button.
 sources-unlock = Unlock
-# A tooltip.
+# A tooltip on Remove source.
 sources-remove = Remove (and forget its unwatched videos)
 # A tooltip.
 sources-edit = Edit
@@ -595,6 +595,10 @@ source-rebuild-thumbnails = Rebuild thumbnails
 source-rebuild-thumbnails-desc = Reads every video again.
 # Short: a button.
 source-rebuild = Rebuild
+# A button on a source's Edit page: removes the source, after asking.
+source-remove = Remove source
+# Short: the button asks again before removing the source.
+source-remove-confirm = Confirm removal
 source-retry-unreadable = Retry videos that couldn't be read
 # Short: a button.
 source-retry = Retry

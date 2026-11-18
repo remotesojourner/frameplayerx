@@ -261,12 +261,6 @@ fn list_row(ui: &mut egui::Ui, v: &mut View, row: Row) {
                         return;
                     }
                     if !builtin {
-                        if widgets::icon_button(ui, icons::TRASH, 44.0, false)
-                            .tip(tr!("sources-remove"))
-                            .clicked()
-                        {
-                            v.actions.push(Action::RemoveSource(id.clone()));
-                        }
                         if widgets::icon_button(ui, icons::PENCIL_SIMPLE, 44.0, false)
                             .tip(tr!("sources-edit"))
                             .clicked()
@@ -627,6 +621,13 @@ fn add_form(ui: &mut egui::Ui, v: &mut View) {
     } else {
         server_form(ui, f, id, editing.as_ref(), v.actions)
     };
+    if f.remove_confirmed
+        && let Some(old) = &editing
+    {
+        v.actions.push(Action::RemoveSource(old.id().to_string()));
+        v.state.source_form = None;
+        return;
+    }
     let save = save.zip(form_play_all_limit(f).ok());
     if let Some(old) = &editing {
         pin_rows(ui, v, old.id(), old.name(), pins.contains_key(old.id()));
@@ -639,6 +640,37 @@ fn add_form(ui: &mut egui::Ui, v: &mut View) {
         v.state.source_form = None;
     } else if cancel {
         v.state.source_form = None;
+    }
+}
+
+/// Remove source, beside Save when editing a source, which asks again:
+/// pressed once it turns red as "Confirm removal" for 4 seconds, and a
+/// second press sets [`SourceForm::remove_confirmed`].
+pub(super) fn remove_button(ui: &mut egui::Ui, f: &mut SourceForm) {
+    if f.editing.is_none() {
+        return;
+    }
+    let armed = f
+        .remove_armed
+        .is_some_and(|at| at.elapsed().as_secs_f32() < 4.0);
+    let (label, kind) = if armed {
+        (tr!("source-remove-confirm"), Kind::Danger)
+    } else {
+        (tr!("source-remove"), Kind::Secondary)
+    };
+    let pressed = widgets::button(ui, Some(icons::TRASH), label, kind)
+        .tip(tr!("sources-remove"))
+        .clicked();
+    if armed {
+        ui.ctx()
+            .request_repaint_after(std::time::Duration::from_millis(500));
+    }
+    if pressed {
+        if armed {
+            f.remove_confirmed = true;
+        } else {
+            f.remove_armed = Some(std::time::Instant::now());
+        }
     }
 }
 
@@ -794,11 +826,13 @@ fn library_form(
             {
                 save = Some(cfg);
             }
+            remove_button(ui, f);
         }
         Err(e) => {
             ui.add_enabled_ui(false, |ui| {
                 widgets::button(ui, Some(icons::CHECK), tr!("common-save"), Kind::Primary)
             });
+            remove_button(ui, f);
             if !f.address.is_empty() {
                 ui.label(RichText::new(e).color(theme::WARN));
             }
@@ -856,11 +890,13 @@ fn dlna_edit_form(ui: &mut egui::Ui, f: &mut SourceForm, id: String) -> Option<S
             {
                 save = Some(cfg);
             }
+            remove_button(ui, f);
         }
         Err(e) => {
             ui.add_enabled_ui(false, |ui| {
                 widgets::button(ui, Some(icons::CHECK), tr!("common-save"), Kind::Primary)
             });
+            remove_button(ui, f);
             if !f.address.is_empty() {
                 ui.label(RichText::new(e).color(theme::WARN));
             }
@@ -1040,11 +1076,13 @@ fn server_form(
             {
                 save = Some(cfg);
             }
+            remove_button(ui, f);
         }
         Err(e) => {
             ui.add_enabled_ui(false, |ui| {
                 widgets::button(ui, Some(icons::CHECK), tr!("common-save"), Kind::Primary)
             });
+            remove_button(ui, f);
             if !f.address.is_empty() {
                 ui.label(RichText::new(e).color(theme::WARN));
             }

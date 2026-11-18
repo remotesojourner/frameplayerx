@@ -1,6 +1,6 @@
 //! Plex source setup: account linking, server choice and a tested manual token.
 
-use super::sources::{address_hint, name_hint, text_field};
+use super::sources::{address_hint, name_hint, remove_button, text_field};
 use super::theme::{self, Weight};
 use super::widgets::{self, Kind};
 use super::{Action, SourceForm};
@@ -375,26 +375,35 @@ pub fn form(
         f.plex.connection.apply(&mut cfg);
         cfg.insecure_tls = f.insecure_tls;
         cfg.parallel_downloads = f.parallel_downloads;
-        if widgets::button(
-            ui,
-            Some(super::icons::CHECK),
-            tr!("common-save"),
-            Kind::Primary,
-        )
-        .clicked()
-        {
+        let saved = ui
+            .horizontal(|ui| {
+                let saved = widgets::button(
+                    ui,
+                    Some(super::icons::CHECK),
+                    tr!("common-save"),
+                    Kind::Primary,
+                )
+                .clicked();
+                remove_button(ui, f);
+                saved
+            })
+            .inner;
+        if saved {
             return Some(fp_sources::SourceConfig::Plex(cfg));
         }
     } else {
-        ui.add_enabled_ui(false, |ui| {
-            widgets::button(
-                ui,
-                Some(super::icons::CHECK),
-                tr!("common-save"),
-                Kind::Primary,
-            )
+        ui.horizontal(|ui| {
+            ui.add_enabled_ui(false, |ui| {
+                widgets::button(
+                    ui,
+                    Some(super::icons::CHECK),
+                    tr!("common-save"),
+                    Kind::Primary,
+                )
+            });
+            remove_button(ui, f);
+            ui.label(egui::RichText::new(tr!("plex-test-required")).color(theme::TEXT_3));
         });
-        ui.label(egui::RichText::new(tr!("plex-test-required")).color(theme::TEXT_3));
     }
     None
 }

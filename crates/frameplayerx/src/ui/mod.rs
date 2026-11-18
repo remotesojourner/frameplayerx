@@ -714,6 +714,11 @@ pub struct SourceForm {
     pub use_quick_connect: bool,
     pub quick_connect: QuickConnect,
     pub plex: plex::Connect,
+    /// When Remove source was pressed once: a second press within 4 seconds
+    /// removes it.
+    pub remove_armed: Option<std::time::Instant>,
+    /// Remove source was pressed twice: the source is to be removed.
+    pub remove_confirmed: bool,
 }
 
 /// Signing in to a Jellyfin/Emby server with Quick Connect.
@@ -759,6 +764,8 @@ impl Default for SourceForm {
             use_quick_connect: true,
             quick_connect: QuickConnect::Idle,
             plex: plex::Connect::default(),
+            remove_armed: None,
+            remove_confirmed: false,
         }
     }
 }
