@@ -760,7 +760,12 @@ fn details(ui: &mut egui::Ui, v: &mut View, id: fp_library::MediaId) {
                 format = super::format_label(&shown.format),
                 evidence = super::evidence_label(shown.evidence)
             );
-            let location = crate::libraries::display_location(&r.location);
+            let location = v
+                .services
+                .opener
+                .source(&r.source_id)
+                .and_then(|s| s.display_location(Some(&r.location)))
+                .unwrap_or_else(|| crate::libraries::display_location(&r.location));
             widgets::rows(ui, |rows| {
                 rows.row(tr!("adjust-format"), Some(&format), |ui| {
                     if widgets::button(

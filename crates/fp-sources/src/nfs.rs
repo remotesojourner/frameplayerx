@@ -479,12 +479,14 @@ impl Source for NfsSource {
         let loc =
             NfsLocation::parse(&self.current_url(location.unwrap_or(&self.root)).ok()?).ok()?;
         self.check_owned(&loc).ok()?;
-        let mut out = nfs_url(&loc.host, loc.port, "");
-        if !self.is_export_list(&loc) {
-            out.push('/');
-            out.push_str(&loc.path.join("/"));
-        }
-        Some(out)
+        let path = if self.is_export_list(&loc) {
+            String::new()
+        } else {
+            format!("/{}", loc.path.join("/"))
+        };
+        Some(crate::urlutil::display_url(&nfs_url(
+            &loc.host, loc.port, &path,
+        )))
     }
 
     fn parent(&self, location: &str) -> Option<String> {

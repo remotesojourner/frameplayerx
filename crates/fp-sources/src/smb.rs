@@ -293,6 +293,15 @@ impl Source for SmbSource {
         Some(crate::location::encode(&self.id, "smb", &key))
     }
 
+    /// `smb://host/share/folder`, with names as they are on the server.
+    fn display_location(&self, location: Option<&str>) -> Option<String> {
+        let location = location.unwrap_or(&self.root);
+        self.canonical_location(location)?;
+        Some(crate::urlutil::display_url(
+            &self.current_url(location).ok()?,
+        ))
+    }
+
     fn list(&self, location: Option<&str>) -> Result<Vec<Entry>> {
         let loc = SmbLocation::parse(&self.current_url(location.unwrap_or(&self.root))?)?;
         self.check_same_share(&loc)?;
@@ -871,6 +880,25 @@ mod tests {
         assert!(SmbLocation::parse("http://nas/s").is_err());
         assert!(SmbLocation::parse("smb://nas/s/../x").is_err());
         assert!(SmbLocation::parse("smb://nas:x/s").is_err());
+    }
+
+    #[cfg(feature = "smb")]
+    #[test]
+    fn display_location_names_folders_and_files_on_the_server() {
+        let s = SmbSource::new(&config()).unwrap();
+        assert_eq!(
+            s.display_location(None).as_deref(),
+            Some("smb://nas.local/media/vr/new")
+        );
+        let file = s
+            .canonical_location("smb://nas.local/media/vr/new/a%20b/c.mp4")
+            .unwrap();
+        assert_eq!(
+            s.display_location(Some(&file)).as_deref(),
+            Some("smb://nas.local/media/vr/new/a b/c.mp4")
+        );
+        let other = crate::location::encode("other", "smb", "c.mp4");
+        assert_eq!(s.display_location(Some(&other)), None);
     }
 
     fn config() -> SmbConfig {

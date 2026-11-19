@@ -320,3 +320,34 @@ fn deletion_respects_allow_media_deletion_and_invalidates_metadata_cache() {
         ));
     }
 }
+
+#[test]
+fn display_location_is_the_servers_address_then_the_items() {
+    let config = |id: &str| PlexConfig {
+        id: id.into(),
+        name: "Plex".into(),
+        url: "https://plex.local:32400".into(),
+        machine_identifier: "machine".into(),
+        access_token: "secret".into(),
+        connections: Vec::new(),
+        auth: None,
+        insecure_tls: false,
+        parallel_downloads: false,
+        max_height: None,
+        local_only: false,
+        allow_relay: false,
+    };
+    let s = PlexSource::new(&config("source")).unwrap();
+    let other = PlexSource::new(&config("other")).unwrap();
+    assert_eq!(
+        s.display_location(None).as_deref(),
+        Some("https://plex.local:32400")
+    );
+    let item = s.location("metadata", "42", Some("7"));
+    assert_eq!(
+        s.display_location(Some(&item)).as_deref(),
+        Some("https://plex.local:32400 · 42")
+    );
+    assert_eq!(other.display_location(Some(&item)), None);
+    assert!(!s.display_location(Some(&item)).unwrap().contains("secret"));
+}

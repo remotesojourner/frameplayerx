@@ -364,6 +364,18 @@ impl Source for SftpSource {
         Some(self.location(&segments, value.ends_with('/')))
     }
 
+    /// `sftp://host/folder/sub-folder`, with names as they are on the server.
+    fn display_location(&self, location: Option<&str>) -> Option<String> {
+        let segments = self.segments(location).ok()?;
+        let mut out = crate::urlutil::display_url(&self.url());
+        if !segments.is_empty() {
+            out.truncate(out.trim_end_matches('/').len());
+            out.push('/');
+            out.push_str(&segments.join("/"));
+        }
+        Some(out)
+    }
+
     fn folder_identity(&self, location: Option<&str>) -> Option<String> {
         self.real_path(&self.segments(location).ok()?).ok()
     }
@@ -1096,6 +1108,35 @@ mod imp {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(feature = "sftp")]
+    #[test]
+    fn display_location_names_folders_and_files_on_the_server() {
+        let s = SftpSource::new(&SftpConfig {
+            id: "sf".into(),
+            name: "PC".into(),
+            host: "pc.local".into(),
+            port: Some(2222),
+            path: "/srv/vr".into(),
+            credentials: Some(crate::config::Credentials::new("me", "pw")),
+            key_file: None,
+            key_passphrase: String::new(),
+            host_key: None,
+        })
+        .unwrap();
+        let root = s.display_location(None).unwrap();
+        assert!(
+            !root.contains("pw") && root.starts_with("sftp://pc.local:2222/"),
+            "{root}"
+        );
+        let file = s.location(&["a b".into(), "c.mp4".into()], false);
+        assert_eq!(
+            s.display_location(Some(&file)),
+            Some(format!("{}/a b/c.mp4", root.trim_end_matches('/')))
+        );
+        let other = crate::location::encode("other", "sftp", "c.mp4");
+        assert_eq!(s.display_location(Some(&other)), None);
+    }
 
     #[test]
     fn addresses_name_the_home_folder_a_folder_in_it_or_any_other() {

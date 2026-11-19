@@ -36,6 +36,23 @@ pub fn percent_decode(s: &str) -> String {
         .into_owned()
 }
 
+/// `url` for people to read: `scheme://host[:port]/path` with names as they
+/// are (decoded), and no credentials, query or fragment.
+pub fn display_url(url: &str) -> String {
+    let Ok(parsed) = url::Url::parse(url) else {
+        return redact(url);
+    };
+    let mut out = format!("{}://", parsed.scheme());
+    if let Some(host) = parsed.host_str() {
+        out.push_str(host);
+    }
+    if let Some(port) = parsed.port() {
+        out.push_str(&format!(":{port}"));
+    }
+    out.push_str(&percent_decode(parsed.path()));
+    out
+}
+
 /// Appends a child name to a directory URL, encoding it. Directories get a
 /// trailing slash.
 pub fn join_child(dir_url: &str, name: &str, is_dir: bool) -> String {
@@ -386,6 +403,18 @@ pub fn natural_cmp(a: &str, b: &str) -> Ordering {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn display_url_reads_as_names_without_secrets() {
+        assert_eq!(
+            display_url("https://bob:hunter2@nas:8443/vr/My%20Film%C3%A9.mkv?apikey=K#t"),
+            "https://nas:8443/vr/My Filmé.mkv"
+        );
+        assert_eq!(
+            display_url("smb://nas/media/a%20b/"),
+            "smb://nas/media/a b/"
+        );
+    }
 
     #[test]
     fn encodes_awkward_names() {

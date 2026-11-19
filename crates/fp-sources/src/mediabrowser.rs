@@ -1111,6 +1111,12 @@ impl Source for MediaBrowserSource {
         format!("MediaBrowser server {}", redact(&self.base_url))
     }
 
+    /// The server's address, then the item's.
+    fn display_location(&self, location: Option<&str>) -> Option<String> {
+        let base = crate::urlutil::display_url(&self.base_url);
+        crate::location::display_opaque(self, &base, location)
+    }
+
     fn canonical_location(&self, location: &str) -> Option<String> {
         if crate::is_source_location(location) {
             let reference = crate::location::decode(location)?;
@@ -1612,6 +1618,33 @@ mod tests {
     use crate::media_identity::movie_hash;
     use crate::test_server::{TestServer, resp, serve_bytes};
     use serde_json::json;
+
+    #[test]
+    fn display_location_is_the_servers_address_then_the_items() {
+        let s = MediaBrowserSource::new(&MediaBrowserConfig {
+            id: "jf".into(),
+            name: "Jellyfin".into(),
+            url: "https://bob:hunter2@media.local:8920/jellyfin/".into(),
+            credentials: None,
+            insecure_tls: false,
+            parallel_downloads: false,
+            max_height: None,
+            access_token: Some("secret-token".into()),
+            user_id: Some("u".into()),
+        })
+        .unwrap();
+        assert_eq!(
+            s.display_location(None).as_deref(),
+            Some("https://media.local:8920/jellyfin")
+        );
+        let item = crate::location::encode("jf", "mb", "item=abc");
+        assert_eq!(
+            s.display_location(Some(&item)).as_deref(),
+            Some("https://media.local:8920/jellyfin · item=abc")
+        );
+        let other = crate::location::encode("other", "mb", "item=abc");
+        assert_eq!(s.display_location(Some(&other)), None);
+    }
 
     #[test]
     fn fingerprints_only_the_permitted_selected_original() {

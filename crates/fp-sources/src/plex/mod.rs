@@ -557,6 +557,17 @@ impl Source for PlexSource {
         format!("Plex {}", redact(&lock(&self.config).url))
     }
 
+    /// The server's address, then the item's. Plex locations are its own
+    /// `plex://` kind, not `source://`.
+    fn display_location(&self, location: Option<&str>) -> Option<String> {
+        let base = crate::urlutil::display_url(&lock(&self.config).url);
+        let base = base.trim_end_matches('/');
+        match location {
+            None => Some(base.to_string()),
+            Some(l) => Some(format!("{base} · {}", self.parse_location(l).ok()?.id)),
+        }
+    }
+
     fn list(&self, location: Option<&str>) -> Result<Vec<Entry>> {
         match location {
             None => Ok(self

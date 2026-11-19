@@ -712,6 +712,12 @@ impl Source for FeedSource {
         format!("{} {}", self.protocol.label(), redact(&self.url))
     }
 
+    /// The feed's address, then the scene's.
+    fn display_location(&self, location: Option<&str>) -> Option<String> {
+        let base = crate::urlutil::display_url(&self.url);
+        crate::location::display_opaque(self, &base, location)
+    }
+
     fn list(&self, location: Option<&str>) -> Result<Vec<Entry>> {
         let resolved = location
             .map(|location| self.resolved_location(location))
@@ -1007,6 +1013,31 @@ mod tests {
             crate::transcode::with_query(&t[0].id, "start", "61.500"),
             "https://vr/scene/1/stream.mp4?resolution=FOUR_K&start=61.500"
         );
+    }
+
+    #[test]
+    fn display_location_is_the_feeds_address_then_the_scenes() {
+        let d = FeedSource::deovr(&FeedConfig {
+            id: "f".into(),
+            name: "Feed".into(),
+            url: "http://u:pwx9@vr:9999/deovr?apikey=SECRETKEY".into(),
+            credentials: None,
+            insecure_tls: false,
+            parallel_downloads: false,
+            max_height: None,
+        })
+        .unwrap();
+        assert_eq!(
+            d.display_location(None).as_deref(),
+            Some("http://vr:9999/deovr")
+        );
+        let scene = crate::location::encode("f", "deovr-id", "7");
+        assert_eq!(
+            d.display_location(Some(&scene)).as_deref(),
+            Some("http://vr:9999/deovr · 7")
+        );
+        let other = crate::location::encode("g", "deovr-id", "7");
+        assert_eq!(d.display_location(Some(&other)), None);
     }
 
     #[test]
