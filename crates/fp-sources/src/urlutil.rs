@@ -37,7 +37,8 @@ pub fn percent_decode(s: &str) -> String {
 }
 
 /// `url` for people to read: `scheme://host[:port]/path` with names as they
-/// are (decoded), and no credentials, query or fragment.
+/// are (decoded), and no credentials, query, fragment or trailing `/`, so a
+/// server's top level is `scheme://host`.
 pub fn display_url(url: &str) -> String {
     let Ok(parsed) = url::Url::parse(url) else {
         return redact(url);
@@ -49,7 +50,7 @@ pub fn display_url(url: &str) -> String {
     if let Some(port) = parsed.port() {
         out.push_str(&format!(":{port}"));
     }
-    out.push_str(&percent_decode(parsed.path()));
+    out.push_str(percent_decode(parsed.path()).trim_end_matches('/'));
     out
 }
 
@@ -410,10 +411,12 @@ mod tests {
             display_url("https://bob:hunter2@nas:8443/vr/My%20Film%C3%A9.mkv?apikey=K#t"),
             "https://nas:8443/vr/My Filmé.mkv"
         );
-        assert_eq!(
-            display_url("smb://nas/media/a%20b/"),
-            "smb://nas/media/a b/"
-        );
+        // No trailing slash, a server's top level included.
+        assert_eq!(display_url("smb://nas/media/a%20b/"), "smb://nas/media/a b");
+        assert_eq!(display_url("https://nas/dav//"), "https://nas/dav");
+        assert_eq!(display_url("http://nas:8080/"), "http://nas:8080");
+        assert_eq!(display_url("smb://nas/"), "smb://nas");
+        assert_eq!(display_url("nfs://nas"), "nfs://nas");
     }
 
     #[test]

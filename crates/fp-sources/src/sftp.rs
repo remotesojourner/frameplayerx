@@ -1131,6 +1131,12 @@ mod tests {
             !root.contains("pw") && root.starts_with("sftp://pc.local:2222/"),
             "{root}"
         );
+        assert!(!root.ends_with('/'), "{root}");
+        let folder = s.location(&["a b".into()], true);
+        assert_eq!(
+            s.display_location(Some(&folder)),
+            Some(format!("{root}/a b"))
+        );
         let file = s.location(&["a b".into(), "c.mp4".into()], false);
         assert_eq!(
             s.display_location(Some(&file)),

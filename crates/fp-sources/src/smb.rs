@@ -892,6 +892,13 @@ mod tests {
             s.display_location(None).as_deref(),
             Some("smb://nas.local/media/vr/new")
         );
+        let folder = s
+            .canonical_location("smb://nas.local/media/vr/new/a%20b/")
+            .unwrap();
+        assert_eq!(
+            s.display_location(Some(&folder)).as_deref(),
+            Some("smb://nas.local/media/vr/new/a b")
+        );
         let file = s
             .canonical_location("smb://nas.local/media/vr/new/a%20b/c.mp4")
             .unwrap();
@@ -901,6 +908,14 @@ mod tests {
         );
         let other = crate::location::encode("other", "smb", "c.mp4");
         assert_eq!(s.display_location(Some(&other)), None);
+        let mut whole = config();
+        whole.share.clear();
+        whole.path.clear();
+        let whole = SmbSource::new(&whole).unwrap();
+        assert_eq!(
+            whole.display_location(None).as_deref(),
+            Some("smb://nas.local")
+        );
     }
 
     fn config() -> SmbConfig {

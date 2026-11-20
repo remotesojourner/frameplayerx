@@ -359,7 +359,14 @@ mod tests {
         .unwrap();
         assert_eq!(
             s.display_location(None).as_deref(),
-            Some("https://nas.local/dav/")
+            Some("https://nas.local/dav")
+        );
+        let folder = s
+            .canonical_location("https://nas.local/dav/My%20Films/")
+            .unwrap();
+        assert_eq!(
+            s.display_location(Some(&folder)).as_deref(),
+            Some("https://nas.local/dav/My Films")
         );
         let file = s
             .canonical_location("https://nas.local/dav/My%20Films/a%C3%A9.mp4")

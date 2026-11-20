@@ -500,7 +500,12 @@ mod tests {
             parallel_downloads: false,
         })
         .unwrap();
-        assert_eq!(s.display_location(None).as_deref(), Some("http://nas/vr/"));
+        assert_eq!(s.display_location(None).as_deref(), Some("http://nas/vr"));
+        let folder = s.canonical_location("http://nas/vr/a%20b/").unwrap();
+        assert_eq!(
+            s.display_location(Some(&folder)).as_deref(),
+            Some("http://nas/vr/a b")
+        );
         let file = s.canonical_location("http://nas/vr/a%20b/c.mp4").unwrap();
         assert_eq!(
             s.display_location(Some(&file)).as_deref(),
@@ -508,6 +513,19 @@ mod tests {
         );
         let other = location::encode("other", "http", "c.mp4");
         assert_eq!(s.display_location(Some(&other)), None);
+        let top = HttpDirSource::new(&HttpConfig {
+            id: "h".into(),
+            name: "H".into(),
+            url: "http://nas:8080/".into(),
+            credentials: None,
+            insecure_tls: false,
+            parallel_downloads: false,
+        })
+        .unwrap();
+        assert_eq!(
+            top.display_location(None).as_deref(),
+            Some("http://nas:8080")
+        );
     }
 
     #[test]

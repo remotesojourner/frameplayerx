@@ -480,14 +480,19 @@ impl Source for NfsSource {
         let loc =
             NfsLocation::parse(&self.current_url(location.unwrap_or(&self.root)).ok()?).ok()?;
         self.check_owned(&loc).ok()?;
-        let path = if self.is_export_list(&loc) {
+        let export_list = self.is_export_list(&loc);
+        let path = if export_list {
             String::new()
         } else {
             format!("/{}", loc.path.join("/"))
         };
-        Some(crate::urlutil::display_url(&nfs_url(
-            &loc.host, loc.port, &path,
-        )))
+        let mut out = crate::urlutil::display_url(&nfs_url(&loc.host, loc.port, &path));
+        // The export `/` keeps its slash, which is all that tells it from
+        // the server's list of exports (`nfs://host`).
+        if !export_list && loc.path.is_empty() {
+            out.push('/');
+        }
+        Some(out)
     }
 
     fn parent(&self, location: &str) -> Option<String> {
