@@ -426,6 +426,8 @@ pub enum Action {
     TogglePassthrough,
     /// Settings › General › Screen follows you.
     ToggleFollow,
+    /// Hands-free navigation, from its key at the top of the library.
+    ToggleHandsFree,
     /// The video playing starts again when it ends.
     ToggleLoopVideo,
     /// Up next plays through.
@@ -437,6 +439,8 @@ pub enum Action {
     /// Hide the player controls (the trigger on empty space brings them
     /// back).
     HideControls,
+    /// Bring the player controls back.
+    ShowControls,
     Quit,
     /// Quit and start again, to run an installed update.
     Restart,

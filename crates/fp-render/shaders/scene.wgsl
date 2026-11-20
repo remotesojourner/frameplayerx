@@ -58,9 +58,10 @@ struct Params {
     // chroma: x first-row step, y rows, z the plane's rows, w count
     tp10: vec4<f32>,
     tp10_uv: vec4<f32>,
-    // Comfort focus (src/focus.rs): x, y the aim's longitude and latitude in
-    // the room frame; z the eyes' turn apart about the head's up, which
-    // fs_focus leaves out; w the distance in focus, metres (0: none)
+    // Comfort focus (src/focus.rs): x, y the aim's angles about the cameras'
+    // baseline, as fs_focus lays its lattice out; z the eyes' turn apart
+    // about the head's up, which fs_focus leaves out; w the distance in
+    // focus, metres (0: none)
     focus: vec4<f32>,
     // Each eye's offset from its camera, in the video's frame, for
     // re-projecting at the distance in focus
@@ -71,6 +72,19 @@ struct Params {
     // the rest (a cinema's screen); zw: in a cinema, the depth each eye draws
     // it at, so the room in front of the screen hides it
     fill: vec4<f32>,
+    // Screen glow (src/glow.rs): x its brightness beside the edge, as a share
+    // of the edge's light; y how far it reaches, metres; z, w the black bars
+    // found at the sides and at the top and bottom, shares of the picture
+    glow: vec4<f32>,
+    // The picture's edge colours clockwise from its top left corner, each a
+    // u32 of 8-bit square roots of linear red, green and blue (`glow_colour`):
+    // GLOW_ZONES softened a little, as the light is beside the screen; then
+    // spread further over their neighbours as it is halfway out, half as
+    // many; then as at the edge of its reach, a quarter as many. Spread light
+    // holds little detail. On the Frame, with the glow on, 10-bit 4K video
+    // took 1.6 ms more GPU time a frame with 192 vec4s here, about 1 ms with
+    // 112, and 0.6 ms packed like this
+    glow_colours: array<vec4<u32>, 28>,
 };
 
 struct PushConstants {
@@ -252,6 +266,42 @@ fn flat_uv(origin: vec3<f32>, d: vec3<f32>) -> vec2<f32> {
     return picture;
 }
 
+// Where the ray meets the flat screen's surface, which runs on past its
+// edges, for screen glow: xy across the screen from 0 to 1 (beyond that,
+// off it), z 1 where the ray meets it at all and 0 where it doesn't. It
+// repeats `flat_uv`'s sums rather than sharing them: with `flat_uv` built
+// on it, 10-bit flat video took about a quarter more GPU time on the Frame.
+fn flat_surface(origin: vec3<f32>, d: vec3<f32>) -> vec3<f32> {
+    let o = (params.screen_inv * vec4<f32>(origin, 1.0)).xyz;
+    let dir = normalize((params.screen_inv * vec4<f32>(d, 0.0)).xyz);
+    let w = params.screen.x; let h = params.screen.y; let arc = params.screen.z;
+    var p: vec3<f32>;
+    var u: f32;
+    if (arc < 1e-3) {
+        if (dir.z >= -1e-6) { return vec3<f32>(0.0); }
+        let t = -o.z / dir.z;
+        if (t <= 0.0) { return vec3<f32>(0.0); }
+        p = o + t * dir;
+        u = p.x / w + 0.5;
+    } else {
+        // Concave cylinder of radius R centred at (0, 0, R), screen centre at origin.
+        let r = w / arc;
+        let oc = vec2<f32>(o.x, o.z - r);
+        let dd = vec2<f32>(dir.x, dir.z);
+        let qa = dot(dd, dd);
+        let qb = 2.0 * dot(oc, dd);
+        let qc = dot(oc, oc) - r * r;
+        let disc = qb * qb - 4.0 * qa * qc;
+        if (disc < 0.0) { return vec3<f32>(0.0); }
+        let t = (-qb + sqrt(disc)) / (2.0 * qa);
+        if (t <= 0.0) { return vec3<f32>(0.0); }
+        p = o + t * dir;
+        let phi = atan2(p.x, r - p.z);
+        u = 0.5 + phi * r / w;
+    }
+    return vec3<f32>(u, 0.5 - p.y / h, 1.0);
+}
+
 fn to_eye_rect(uv: vec2<f32>, eye: u32) -> vec2<f32> {
     let slot = f32(eye ^ params.mode.z);
     switch params.mode.y {
@@ -369,16 +419,24 @@ fn srgb_to_linear(c: vec3<f32>) -> vec3<f32> {
 
 @fragment
 fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
-    return shade(in, false);
+    return shade(in, false, false);
 }
 
 // The eye passes with comfort focus (src/focus.rs).
 @fragment
 fn fs_main_comfort(in: VsOut) -> @location(0) vec4<f32> {
-    return shade(in, true);
+    return shade(in, true, false);
 }
 
-fn shade(in: VsOut, comfort: bool) -> vec4<f32> {
+// The eye passes with screen glow round a flat screen (src/glow.rs).
+@fragment
+fn fs_main_glow(in: VsOut) -> @location(0) vec4<f32> {
+    return shade(in, false, true);
+}
+
+// `comfort` and `glow` are constants in each caller, so each pipeline
+// compiles only its own case.
+fn shade(in: VsOut, comfort: bool, glow: bool) -> vec4<f32> {
     let eye = pc.eye;
     let near = params.inv_view_proj[eye] * vec4<f32>(in.ndc, 0.0, 1.0);
     let far = params.inv_view_proj[eye] * vec4<f32>(in.ndc, 1.0, 1.0);
@@ -392,6 +450,12 @@ fn shade(in: VsOut, comfort: bool) -> vec4<f32> {
     var uv: vec2<f32>;
     if (params.mode.x == 0u) {
         uv = flat_uv(origin, world_dir);
+        if (glow && uv.x == INVALID.x) {
+            let s = flat_surface(origin, world_dir);
+            if (s.z > 0.0) {
+                return glow_round(s.xy);
+            }
+        }
     } else {
         let dir = (params.anchor_inv * vec4<f32>(world_dir, 0.0)).xyz;
         uv = video_uv(dir, eye, comfort);
@@ -438,6 +502,13 @@ fn shade(in: VsOut, comfort: bool) -> vec4<f32> {
         rgb += vec3<f32>((yc - blur) * params.extra.x * 2.0);
     }
 
+    let col = shown(rgb);
+    // Over the (premultiplied) background: keyed-out pixels show it.
+    return vec4<f32>(col * alpha + params.bg_color.rgb * (1.0 - alpha), alpha + params.bg_color.a * (1.0 - alpha));
+}
+
+// The video's colour `rgb` as the screen shows it, linear.
+fn shown(rgb: vec3<f32>) -> vec3<f32> {
     // HDR: to BT.709 nits, into its gamut, then the tone curve, which also
     // keeps every channel within the screen's white.
     var lin: vec3<f32>;
@@ -461,35 +532,169 @@ fn shade(in: VsOut, comfort: bool) -> vec4<f32> {
     let luma = dot(g, vec3<f32>(0.2126, 0.7152, 0.0722));
     g = mix(vec3<f32>(luma), g, params.picture.z);
     g = pow(max(g, vec3<f32>(0.0)), vec3<f32>(1.0 / max(params.picture.w, 0.05)));
-    let col = srgb_to_linear(clamp(g, vec3<f32>(0.0), vec3<f32>(1.0)));
-    // Over the (premultiplied) background: keyed-out pixels show it.
-    return vec4<f32>(col * alpha + params.bg_color.rgb * (1.0 - alpha), alpha + params.bg_color.a * (1.0 - alpha));
+    return srgb_to_linear(clamp(g, vec3<f32>(0.0), vec3<f32>(1.0)));
+}
+
+// Screen glow (src/glow.rs), laid out as an LED strip behind a television
+// is for HyperHDR: GLOW_ACROSS colours along the top and the bottom and
+// GLOW_DOWN down each side, going round the picture clockwise from its top
+// left corner.
+const GLOW_ACROSS: u32 = 20u;
+const GLOW_DOWN: u32 = 12u;
+const GLOW_ZONES: u32 = 64u;
+// The deepest bar the black border search looks for, a share of the picture.
+const GLOW_BAR_MAX: f32 = 0.25;
+
+// The background at `uv`, off the flat screen on its surface: lit by the
+// picture's edge colours where the edge is nearest, mixing with its
+// neighbours' further out as the light spreads, and fading out over
+// params.glow.y metres.
+fn glow_round(uv: vec2<f32>) -> vec4<f32> {
+    let edge = clamp(uv, vec2<f32>(0.0), vec2<f32>(1.0));
+    let off = length((uv - edge) * params.screen.xy);
+    let reach = max(params.glow.y, 1e-4);
+    let fade = 1.0 - smoothstep(0.0, reach, off);
+    let across = f32(GLOW_ACROSS);
+    let down = f32(GLOW_DOWN);
+    // How far round the edge `edge` is, in zones.
+    var pos: f32;
+    if (edge.y <= 0.0) {
+        pos = edge.x * across;
+    } else if (edge.x >= 1.0) {
+        pos = across + edge.y * down;
+    } else if (edge.y >= 1.0) {
+        pos = across + down + (1.0 - edge.x) * across;
+    } else {
+        pos = 2.0 * across + down + (1.0 - edge.y) * down;
+    }
+    // Between the colours as measured, at the edge, and as spread at the
+    // edge of the reach.
+    let out = clamp(off / reach, 0.0, 1.0) * 2.0;
+    let level = u32(min(floor(out), 1.0));
+    let light = mix(glow_line(level, pos), glow_line(level + 1u, pos), out - f32(level));
+    let bg = params.bg_color;
+    return vec4<f32>(min(bg.rgb + light * (params.glow.x * fade), vec3<f32>(bg.a)), bg.a);
+}
+
+// The colour `pos` zones round the edge in `level` of params.glow_colours,
+// whose colours each cover 2^level zones: between the two either side of
+// it, each at its middle. The colours come softened over their neighbours
+// (src/glow.rs), so the light changes gently from one to the next.
+fn glow_line(level: u32, pos: f32) -> vec3<f32> {
+    let count = GLOW_ZONES >> level;
+    let base = 2u * (GLOW_ZONES - count);
+    let at = pos / f32(1u << level) - 0.5;
+    let i = floor(at);
+    let a = u32(i + f32(count)) & (count - 1u);
+    let b = (a + 1u) & (count - 1u);
+    return mix(glow_colour(base + a), glow_colour(base + b), at - i);
+}
+
+// Colour `n` of params.glow_colours, linear.
+fn glow_colour(n: u32) -> vec3<f32> {
+    let c = unpack4x8unorm(params.glow_colours[n / 4u][n % 4u]).rgb;
+    return c * c;
+}
+
+// Where in zone `zone`'s strip a sample goes: `along` (0 to 1) along the
+// edge, `inset` in from it, in the picture's coordinates.
+fn glow_zone_point(zone: u32, along: f32, inset: f32) -> vec2<f32> {
+    let a = f32(GLOW_ACROSS);
+    let d = f32(GLOW_DOWN);
+    let z = f32(zone);
+    if (zone < GLOW_ACROSS) {
+        return vec2<f32>((z + along) / a, inset);
+    }
+    if (zone < GLOW_ACROSS + GLOW_DOWN) {
+        return vec2<f32>(1.0 - inset, (z - a + along) / d);
+    }
+    if (zone < 2u * GLOW_ACROSS + GLOW_DOWN) {
+        return vec2<f32>(1.0 - (z - a - d + along) / a, 1.0 - inset);
+    }
+    return vec2<f32>(inset, 1.0 - (z - 2.0 * a - d + along) / d);
+}
+
+// How deep the black bar is along `side` (top, bottom, left, right), a share
+// of the picture: rows or columns in from that edge until one has a sample
+// brighter than 5%, HyperHDR's black border threshold, up to GLOW_BAR_MAX.
+fn glow_bar(side: u32) -> f32 {
+    let steps = 50u;
+    for (var i = 0u; i < steps; i++) {
+        let depth = (f32(i) + 0.5) / f32(steps) * GLOW_BAR_MAX;
+        for (var j = 0u; j < 8u; j++) {
+            let along = (f32(j) + 0.5) / 8.0;
+            var uv: vec2<f32>;
+            switch side {
+                case 0u: { uv = vec2<f32>(along, depth); }
+                case 1u: { uv = vec2<f32>(along, 1.0 - depth); }
+                case 2u: { uv = vec2<f32>(depth, along); }
+                default: { uv = vec2<f32>(1.0 - depth, along); }
+            }
+            if (max3(sample_yuv(stored_uv(to_eye_rect(uv, 0u)))) > 0.05) {
+                return f32(i) / f32(steps) * GLOW_BAR_MAX;
+            }
+        }
+    }
+    return GLOW_BAR_MAX;
+}
+
+// Screen glow's measurements, drawn with the eye passes' bindings into a
+// (GLOW_ZONES + 4) x 1 target. First each zone's colour as the eye passes
+// show it, linear: the mean of 6 x 4 samples over its strip from 1% to 10%
+// in from the edge, inside the black bars found before (params.glow.zw), of
+// both eyes of a 3D video. Then the bars now, top, bottom, left and right,
+// in red as shares of GLOW_BAR_MAX.
+@fragment
+fn fs_glow_colours(in: VsOut) -> @location(0) vec4<f32> {
+    let texel = u32(in.pos.x);
+    if (texel >= GLOW_ZONES) {
+        return vec4<f32>(glow_bar(texel - GLOW_ZONES) / GLOW_BAR_MAX, 0.0, 0.0, 1.0);
+    }
+    let bars = params.glow.zw;
+    let eyes = select(1u, 2u, params.mode.y != 0u);
+    var sum = vec3<f32>(0.0);
+    for (var j = 0u; j < 6u; j++) {
+        for (var i = 0u; i < 4u; i++) {
+            let at = glow_zone_point(texel, (f32(j) + 0.5) / 6.0, 0.01 + f32(i) * 0.03);
+            let uv = bars + at * (1.0 - 2.0 * bars);
+            for (var e = 0u; e < eyes; e++) {
+                sum += shown(sample_yuv(stored_uv(to_eye_rect(uv, e))));
+            }
+        }
+    }
+    return vec4<f32>(sum / f32(24u * eyes), 1.0);
 }
 
 // Comfort focus's samples (src/focus.rs, matched by focus.wgsl), drawn into a
 // small float target with the eye passes' own bindings, so any frame they
 // can read is measured too. For each patch of a 3 x 3 cluster round the aim,
-// a strip of each eye's luma on a lattice of the video's own longitude and
-// latitude FOCUS_STEP apart, its Position corrections undone: the cameras
-// sit side by side there, so a disparity is a shift along the rows, of
-// cos(lat) of its angle (`ComfortFocus::ingest`). Each sample is the mean of 2 x 2 taps over its cell, a box
-// filter so the comparison sees the same detail in both pictures. Rows: patch
+// a strip of each eye's luma on a lattice of angles about the cameras'
+// baseline FOCUS_STEP apart (`lattice`): along a row, a disparity is a
+// shift by its own angle, wherever the aim is. Each sample is the mean of
+// 2 x 2 taps over its cell, a box filter so the comparison sees the same
+// detail in both pictures. Rows: patch
 // after patch, FOCUS_ROWS each; columns: the left eye's strip, then the
 // right's, FOCUS_COLS each. A sample off the picture is -1.
 const FOCUS_STEP: f32 = 0.0035;
-const FOCUS_COLS: u32 = 53u;
+const FOCUS_COLS: u32 = 117u;
 const FOCUS_ROWS: u32 = 19u;
 // The lattice column each strip starts at: its shifts reach these.
 const FOCUS_LEFT0: i32 = -12;
-const FOCUS_RIGHT0: i32 = -39;
+const FOCUS_RIGHT0: i32 = -103;
 const FOCUS_GRID_X: f32 = 0.06;
 const FOCUS_GRID_Y: f32 = 0.05;
 
-// A lattice direction in the video's own frame, where its cameras sit side
-// by side, turned back by its Position corrections into the frame
-// `video_uv` takes: the rows run along the video's disparity.
-fn lattice(lon: f32, lat: f32) -> vec3<f32> {
-    let v = vec3<f32>(cos(lat) * sin(lon), sin(lat), -cos(lat) * cos(lon));
+// A lattice direction in the video's own frame, where its cameras sit on
+// the x axis, turned back by its Position corrections into the frame
+// `video_uv` takes. A point and the two cameras span a plane through that
+// axis: `tilt` is the plane's turn about it (0 straight ahead, up
+// positive) and `along` the angle within the plane from straight ahead
+// towards +x. Both cameras see a point at the same tilt, so each row is
+// the line both pictures show it on, and they differ only along it, by
+// the angle the cameras' baseline spans at the point
+// (`focus::nearness`).
+fn lattice(along: f32, tilt: f32) -> vec3<f32> {
+    let v = vec3<f32>(sin(along), cos(along) * sin(tilt), -cos(along) * cos(tilt));
     let c = params.correction;
     return transpose(mat3x3<f32>(c[0].xyz, c[1].xyz, c[2].xyz)) * v;
 }
@@ -505,12 +710,12 @@ fn fs_focus(in: VsOut) -> @location(0) vec4<f32> {
     let col = i32(px.x % FOCUS_COLS) + select(FOCUS_LEFT0, FOCUS_RIGHT0, eye == 1u);
     let row = i32(px.y % FOCUS_ROWS) - i32(FOCUS_ROWS / 2u);
     // Row 0 of the cluster is on top.
-    let lon = params.focus.x + (f32(cell % 3u) - 1.0) * FOCUS_GRID_X + f32(col) * FOCUS_STEP;
-    let lat = params.focus.y + (1.0 - f32(cell / 3u)) * FOCUS_GRID_Y - f32(row) * FOCUS_STEP;
+    let along = params.focus.x + (f32(cell % 3u) - 1.0) * FOCUS_GRID_X + f32(col) * FOCUS_STEP;
+    let tilt = params.focus.y + (1.0 - f32(cell / 3u)) * FOCUS_GRID_Y - f32(row) * FOCUS_STEP;
     var sum = 0.0;
     for (var t = 0u; t < 4u; t++) {
         let o = (vec2<f32>(f32(t % 2u), f32(t / 2u)) - 0.5) * (0.5 * FOCUS_STEP);
-        let uv = video_uv(lattice(lon + o.x, lat - o.y), eye, false);
+        let uv = video_uv(lattice(along + o.x, tilt - o.y), eye, false);
         if (uv.x < 0.0) {
             return vec4<f32>(-1.0, 0.0, 0.0, 0.0);
         }

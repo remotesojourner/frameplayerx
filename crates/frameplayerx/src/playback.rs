@@ -112,6 +112,7 @@ pub struct Playback {
     colour_open: bool,
     pub heatmap: Option<Heatmap>,
     pub markers: Vec<Marker>,
+    pub(crate) trickplay: Option<crate::trickplay::Preview>,
     pub subtitle_files: Vec<SubtitleFile>,
     pub active_subtitle_file: Option<usize>,
     pub managed_subtitles: Vec<fp_library::UserSubtitle>,
@@ -740,6 +741,10 @@ pub fn open(
     let markers = markers(&info, entry.as_ref(), record.as_ref(), library);
     let record_id = record.as_ref().map(|r| r.id);
     let session = record_id.and_then(|id| library.start_playback(id).ok());
+    let trickplay = source
+        .as_ref()
+        .zip(entry.as_ref())
+        .and_then(|(source, video)| crate::trickplay::Preview::new(source.clone(), video));
     let watch = source.and_then(|src| {
         let video = entry
             .clone()
@@ -777,6 +782,7 @@ pub fn open(
             settings_dirty: false,
             heatmap,
             markers,
+            trickplay,
             subtitle_files: subs,
             active_subtitle_file,
             managed_subtitles,
@@ -1598,6 +1604,7 @@ impl Playback {
     /// froze the headset's frame loop (quitting while a 10-bit file over
     /// SMB was buffering hung the app).
     pub fn close(mut self, library: &Library) {
+        self.trickplay = None;
         self.save_progress(library, true);
         self.save_key(library, true);
         if let Some(w) = self.watch.take() {

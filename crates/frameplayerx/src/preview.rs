@@ -12,6 +12,8 @@
 //! | `look YAW PITCH [ROLL]` | head direction (and roll, to lie on your side) in degrees |
 //! | `recenter` | recenter on where the head faces |
 //! | `gaze YAW PITCH` / `gaze off` | where the eyes look, in degrees from where the head faces (simulated eye tracking) |
+//! | `hands-free on/off` | set Settings › Controller › Hands-free navigation |
+//! | `look-at PANEL X Y` | turn the head to a panel's fractional X, Y: with hands-free navigation, its dot goes there |
 //! | `foveation off/low/high` | set Settings › General › Display › Foveated rendering |
 //! | `environment classic/luxe/dark` | set the global flat-video background |
 //! | `video-environment classic/luxe/dark/global` | set the open video's background |
@@ -101,6 +103,7 @@ impl Sim {
                 time: self.start.elapsed().as_secs_f64(),
                 dt,
                 head,
+                head_aim: head,
                 hands,
                 passthrough_available: true,
                 layers: false,
@@ -590,6 +593,23 @@ impl Sim {
             Some("look") => {
                 let roll = num(3).unwrap_or(0.0).to_radians();
                 self.head = dir_quat(num(1)?, num(2)?) * Quat::from_rotation_z(roll);
+            }
+            Some("hands-free") => {
+                self.app.settings.hands_free = match parts.get(1).copied() {
+                    Some("on") => true,
+                    Some("off") => false,
+                    _ => return Err("hands-free needs on or off".into()),
+                };
+                self.run_frames(2)?;
+            }
+            Some("look-at") => {
+                let name = parts.get(1).copied().unwrap_or("main");
+                let target = self
+                    .app
+                    .panel_point(name, num(2)?, num(3)?)
+                    .ok_or(format!("panel {name} is not visible"))?;
+                let dir = (target - self.head_pos()).normalize();
+                self.head = Quat::from_rotation_arc(Vec3::NEG_Z, dir);
             }
             Some("gaze") => {
                 self.gaze = match parts.get(1) {
@@ -1114,6 +1134,9 @@ pub fn run(args: &Args, out: &Path) -> Result<(), Error> {
     }
     println!("{} frames rendered", sim.frames);
     if let Some(line) = sim.gpu_ms.take_line() {
+        println!("{line}");
+    }
+    if let Some(line) = sim.renderer.focus_line() {
         println!("{line}");
     }
     let Sim {

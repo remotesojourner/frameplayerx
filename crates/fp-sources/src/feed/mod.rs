@@ -328,6 +328,12 @@ impl FeedSource {
         }
     }
 
+    fn listed_entry(&self, location: &str) -> Option<Entry> {
+        let links = lock(&self.scene_links);
+        let key = links.by_url.get(location).map_or(location, String::as_str);
+        links.entries.get(key).cloned()
+    }
+
     /// Fetches a document; `Ok(None)` when the server answered with
     /// something that is not JSON (a media stream), without downloading it.
     /// `with_media` asks a HereSphere video document for its media sources.
@@ -550,9 +556,16 @@ impl SceneFeed for FeedSource {
             self.fetch(&resolved, Some(with_media))?
         };
         let info = match document {
-            Some(v) => self.parse_scene(&v, &resolved),
+            Some(v) => {
+                let mut info = self.parse_scene(&v, &resolved);
+                if self.protocol == Protocol::DeoVr && info.trickplay_url.is_none() {
+                    info.trickplay_url =
+                        self.listed_entry(url).and_then(|entry| entry.trickplay_url);
+                }
+                info
+            }
             None => {
-                let entry = lock(&self.scene_links).entries.get(url).cloned();
+                let entry = self.listed_entry(url);
                 SceneInfo {
                     title: entry
                         .as_ref()
@@ -560,6 +573,7 @@ impl SceneFeed for FeedSource {
                         .unwrap_or_default(),
                     duration: entry.as_ref().and_then(|entry| entry.duration),
                     thumbnail_url: entry.as_ref().and_then(|entry| entry.thumbnail_url.clone()),
+                    trickplay_url: entry.and_then(|entry| entry.trickplay_url),
                     sources: vec![MediaSource {
                         url: resolved.clone(),
                         ..Default::default()
@@ -712,6 +726,12 @@ impl Source for FeedSource {
         format!("{} {}", self.protocol.label(), redact(&self.url))
     }
 
+    /// The feed's address, then the scene's.
+    fn display_location(&self, location: Option<&str>) -> Option<String> {
+        let base = crate::urlutil::display_url(&self.url);
+        crate::location::display_opaque(self, &base, location)
+    }
+
     fn list(&self, location: Option<&str>) -> Result<Vec<Entry>> {
         let resolved = location
             .map(|location| self.resolved_location(location))
@@ -785,10 +805,8 @@ impl Source for FeedSource {
     fn details(&self, entry: &Entry) -> Result<Entry> {
         let resolved = self.resolved_location(&entry.location)?;
         if entry.kind != EntryKind::Video || is_direct_file(&resolved) {
-            let mut entry = lock(&self.scene_links)
-                .entries
-                .get(&entry.location)
-                .cloned()
+            let mut entry = self
+                .listed_entry(&entry.location)
                 .unwrap_or_else(|| entry.clone());
             self.stable_entry(&mut entry);
             return Ok(entry);
@@ -797,6 +815,39 @@ impl Source for FeedSource {
         self.scene(&entry.location, true)?.apply_to(&mut e);
         self.stable_entry(&mut e);
         Ok(e)
+    }
+
+    fn has_trickplay(&self, entry: &Entry) -> bool {
+        self.protocol == Protocol::DeoVr
+            && entry.kind == EntryKind::Video
+            && entry
+                .trickplay_url
+                .as_deref()
+                .and_then(deovr::timeline_tile_size)
+                .is_some()
+    }
+
+    fn trickplay(&self, entry: &Entry) -> Result<Option<crate::Trickplay>> {
+        if self.protocol != Protocol::DeoVr || entry.kind != EntryKind::Video {
+            return Ok(None);
+        }
+        let Some((url, tile)) = entry
+            .trickplay_url
+            .as_ref()
+            .and_then(|url| deovr::timeline_tile_size(url).map(|tile| (url.clone(), tile)))
+        else {
+            return Ok(None);
+        };
+        let client = self.client.clone();
+        Ok(Some(crate::Trickplay::new(
+            crate::TrickplayTiming::EvenlySpaced { tile },
+            move |index, cancelled| {
+                if index != 0 {
+                    return Err(Error::NotFound("DeoVR timeline preview sheet".into()));
+                }
+                client.get_trickplay_sheet(&url, cancelled)
+            },
+        )))
     }
 
     fn sidecars(&self, video: &Entry) -> Result<Sidecars> {
@@ -896,6 +947,92 @@ mod tests {
     use super::*;
     use crate::test_server;
     use serde_json::json;
+
+    #[test]
+    fn deovr_seek_previews_are_lazy_and_use_source_scoped_credentials() {
+        // A test password made at run time from no string literal, so code
+        // scanning doesn't take it for a real one.
+        let password = std::process::id().to_string();
+        let file = "/images/4096_timelinePreview341x195.jpg";
+        let cdn = test_server::TestServer::start(|_| {
+            test_server::resp(
+                200,
+                b"external image bytes",
+                &[("Content-Type", "image/jpeg")],
+            )
+        });
+        let inline_sheet = cdn.url(file);
+        let server = test_server::TestServer::start(move |r| match r.path() {
+            "/feed" => test_server::resp(
+                200,
+                json!({"scenes": [{"name": "All", "list": [
+                    {"id": 1, "title": "Detail", "video_url": "/scene/1"},
+                    {"id": 2, "title": "Inline", "video_url": "/movie.mp4",
+                     "timelinePreview": inline_sheet}
+                ]}]})
+                .to_string(),
+                &[("Content-Type", "application/json")],
+            ),
+            "/scene/1" => test_server::resp(
+                200,
+                json!({"title": "Detail", "videoUrl": "/movie.mp4",
+                       "timelinePreview": format!("{file}?signature=1")})
+                .to_string(),
+                &[("Content-Type", "application/json")],
+            ),
+            p if p == file => {
+                test_server::resp(200, b"image bytes", &[("Content-Type", "image/jpeg")])
+            }
+            _ => test_server::resp(404, Vec::new(), &[]),
+        });
+        let feed = FeedSource::deovr(&FeedConfig {
+            id: "deo".into(),
+            name: "DeoVR".into(),
+            url: server.url("/feed"),
+            credentials: Some(Credentials::new("test", password)),
+            insecure_tls: false,
+            parallel_downloads: false,
+            max_height: None,
+        })
+        .unwrap();
+        let from_history = |id| {
+            Entry::new(
+                "Saved",
+                crate::location::encode("deo", "deovr-id", id),
+                EntryKind::Video,
+            )
+        };
+        let detailed = feed.details(&from_history("1")).unwrap();
+        assert!(feed.has_trickplay(&detailed));
+        assert!(
+            !serde_json::to_string(&detailed)
+                .unwrap()
+                .contains("signature")
+        );
+        let preview = feed.trickplay(&detailed).unwrap().unwrap();
+        assert_eq!(
+            preview.timing,
+            crate::TrickplayTiming::EvenlySpaced { tile: [341, 195] }
+        );
+        assert!(preview.fetch_sheet(0, &|| true).is_err());
+        assert!(preview.fetch_sheet(1, &|| false).is_err());
+        assert_eq!(server.requests().len(), 2);
+        assert_eq!(preview.fetch_sheet(0, &|| false).unwrap(), b"image bytes");
+        let requests = server.requests();
+        assert_eq!(requests[2].url, format!("{file}?signature=1"));
+        assert_eq!(requests[2].method, "GET");
+        assert!(requests[2].header("Authorization").is_some());
+
+        let inline = feed.details(&from_history("2")).unwrap();
+        assert!(feed.has_trickplay(&inline));
+        let preview = feed.trickplay(&inline).unwrap().unwrap();
+        assert!(cdn.requests().is_empty());
+        assert_eq!(
+            preview.fetch_sheet(0, &|| false).unwrap(),
+            b"external image bytes"
+        );
+        assert!(cdn.requests()[0].header("Authorization").is_none());
+    }
 
     #[test]
     fn a_scenes_address_is_asked_for_again_once_it_may_have_expired() {
@@ -1007,6 +1144,31 @@ mod tests {
             crate::transcode::with_query(&t[0].id, "start", "61.500"),
             "https://vr/scene/1/stream.mp4?resolution=FOUR_K&start=61.500"
         );
+    }
+
+    #[test]
+    fn display_location_is_the_feeds_address_then_the_scenes() {
+        let d = FeedSource::deovr(&FeedConfig {
+            id: "f".into(),
+            name: "Feed".into(),
+            url: "http://u:pwx9@vr:9999/deovr?apikey=SECRETKEY".into(),
+            credentials: None,
+            insecure_tls: false,
+            parallel_downloads: false,
+            max_height: None,
+        })
+        .unwrap();
+        assert_eq!(
+            d.display_location(None).as_deref(),
+            Some("http://vr:9999/deovr")
+        );
+        let scene = crate::location::encode("f", "deovr-id", "7");
+        assert_eq!(
+            d.display_location(Some(&scene)).as_deref(),
+            Some("http://vr:9999/deovr · 7")
+        );
+        let other = crate::location::encode("g", "deovr-id", "7");
+        assert_eq!(d.display_location(Some(&other)), None);
     }
 
     #[test]

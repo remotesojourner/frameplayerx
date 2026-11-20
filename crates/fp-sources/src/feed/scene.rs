@@ -56,6 +56,8 @@ pub struct SceneInfo {
     pub duration: Option<f64>,
     /// Poster image URL.
     pub thumbnail_url: Option<String>,
+    /// DeoVR's seek preview sheet, when published by the feed.
+    pub trickplay_url: Option<String>,
     /// Projection and stereo layout the feed declares.
     pub format: Option<VideoFormat>,
     /// Available encodings.
@@ -142,6 +144,9 @@ impl SceneInfo {
         if self.thumbnail_url.is_some() {
             entry.thumbnail_url = self.thumbnail_url.clone();
         }
+        if self.trickplay_url.is_some() {
+            entry.trickplay_url = self.trickplay_url.clone();
+        }
         entry.format = self
             .format
             .or_else(|| detect_from_name(&entry.name))
@@ -182,6 +187,9 @@ pub struct FeedScene {
     pub duration: Option<f64>,
     /// Poster image URL.
     pub thumbnail_url: Option<String>,
+    /// The preview address may expire and is read again with the feed.
+    #[serde(skip)]
+    pub trickplay_url: Option<String>,
     /// Release date, Unix seconds.
     pub released: Option<i64>,
     /// When the server added it, Unix seconds.
@@ -213,6 +221,7 @@ impl FeedScene {
             title: e.name.clone(),
             duration: e.duration,
             thumbnail_url: e.thumbnail_url.clone(),
+            trickplay_url: e.trickplay_url.clone(),
             format: e.format,
             scripted: !e.scripts.is_empty(),
             ..FeedScene::default()
@@ -227,6 +236,9 @@ impl FeedScene {
         self.duration = info.duration.or(self.duration);
         if info.thumbnail_url.is_some() {
             self.thumbnail_url = info.thumbnail_url.clone();
+        }
+        if info.trickplay_url.is_some() {
+            self.trickplay_url = info.trickplay_url.clone();
         }
         self.format = info
             .format
@@ -278,6 +290,7 @@ impl FeedScene {
         let mut e = Entry::new(self.title.clone(), self.url.clone(), EntryKind::Video);
         e.duration = self.duration;
         e.thumbnail_url = self.thumbnail_url.clone();
+        e.trickplay_url = self.trickplay_url.clone();
         e.format = self.format;
         e.modified = self.released.or(self.added);
         e
@@ -322,7 +335,9 @@ impl FeedLibrary {
             if !s.detailed
                 && let Some(old) = detailed.get(s.url.as_str())
             {
-                *s = (*old).clone();
+                let mut scene = (*old).clone();
+                scene.trickplay_url = s.trickplay_url.take();
+                *s = scene;
             }
         }
     }

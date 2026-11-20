@@ -1,10 +1,12 @@
 // Comfort focus's matching (src/focus.rs): the strips fs_focus in
 // scene.wgsl sampled round the aim, matched for each patch of the 3 x 3
-// cluster by one workgroup of 64 threads, one per candidate disparity.
+// cluster by BANDS workgroups of 64 threads, one thread per candidate
+// disparity: each workgroup takes the next 64 candidates, and loads only
+// the part of the strips its shifts reach.
 //
-// The strips lie on a lattice of the video's own longitude and latitude,
-// where its cameras sit side by side, so a disparity is a shift along the
-// rows: candidate `m` compares the left
+// The strips lie on a lattice of angles about the cameras' baseline, whose
+// rows are the lines both cameras see a point on, so a disparity is a
+// shift along the rows: candidate `m` compares the left
 // strip at column `i + off_l` with the right at `i + off_r`, `off_l - off_r = m`, the
 // window moving apart symmetrically about the aim, and is a per-eye
 // disparity of half `m` lattice steps (`kappa_at` in focus.rs). The first
@@ -16,14 +18,21 @@
 // (unlike plain normalised correlation), so a bright patch in one eye does
 // not match a shadow in the other, weighted to the middle of the window.
 
-const CANDIDATES: u32 = 64u;
+// Candidates a workgroup scores, and workgroups a patch: 192 candidates,
+// the last a per-eye disparity of 0.327 rad (0.093 m with a 63 mm baseline).
+const PER_BAND: u32 = 64u;
+const BANDS: u32 = 3u;
 // Candidates below zero disparity.
 const NEGATIVE: i32 = 4;
-// fs_focus's strips (keep in step with scene.wgsl and focus.rs).
-const COLS: u32 = 53u;
+// fs_focus's strips (keep in step with scene.wgsl and focus.rs): COLS
+// columns for each eye, of which a band's shifts reach BAND_COLS, starting
+// BAND_SHIFT further out with every band.
+const COLS: u32 = 117u;
 const ROWS: u32 = 19u;
 const LEFT0: i32 = -12;
-const RIGHT0: i32 = -39;
+const RIGHT0: i32 = -103;
+const BAND_COLS: u32 = 53u;
+const BAND_SHIFT: i32 = 32;
 // The window: 21 x 13 samples, 4.2° by 2.6°, Gaussian-weighted.
 const HALF_W: i32 = 10;
 const HALF_H: i32 = 6;
@@ -46,15 +55,21 @@ fn main(
     @builtin(workgroup_id) wg: vec3<u32>,
 ) {
     let cell = wg.x;
-    for (var k = idx; k < COLS * ROWS; k += CANDIDATES) {
-        let at = vec2<i32>(i32(k % COLS), i32(cell * ROWS + k / COLS));
-        left[k] = textureLoad(samples, at, 0).r;
-        right[k] = textureLoad(samples, at + vec2<i32>(i32(COLS), 0), 0).r;
+    let band = wg.y;
+    // The columns this band's shifts reach: the left strip's further right
+    // with every band, the right strip's further left.
+    let shift = BAND_SHIFT * i32(band);
+    let left0 = shift;
+    let right0 = i32(COLS - BAND_COLS) - shift;
+    for (var k = idx; k < BAND_COLS * ROWS; k += PER_BAND) {
+        let at = vec2<i32>(i32(k % BAND_COLS), i32(cell * ROWS + k / BAND_COLS));
+        left[k] = textureLoad(samples, at + vec2<i32>(left0, 0), 0).r;
+        right[k] = textureLoad(samples, at + vec2<i32>(i32(COLS) + right0, 0), 0).r;
     }
     workgroupBarrier();
 
     // Half the shift each way, the left taking the odd step.
-    let m = i32(idx) - NEGATIVE;
+    let m = i32(band * PER_BAND + idx) - NEGATIVE;
     let off_r = -((m - (m & 1)) / 2);
     let off_l = m + off_r;
     let mid = i32(ROWS / 2u);
@@ -79,13 +94,13 @@ fn main(
         var srr: f32 = 0.0;
         var slr: f32 = 0.0;
         for (var j = -HALF_H; j <= HALF_H; j++) {
-            let lrow = u32(mid + j) * COLS;
-            let rrow = u32(mid + j + v) * COLS;
+            let lrow = u32(mid + j) * BAND_COLS;
+            let rrow = u32(mid + j + v) * BAND_COLS;
             for (var i = -HALF_W; i <= HALF_W; i++) {
                 let w = wx[i + HALF_W] * wy[j + HALF_H];
                 total_w += w;
-                let yl = left[lrow + u32(i + off_l - LEFT0)];
-                let yr = right[rrow + u32(i + off_r - RIGHT0)];
+                let yl = left[lrow + u32(i + off_l - LEFT0 - left0)];
+                let yr = right[rrow + u32(i + off_r - RIGHT0 - right0)];
                 if (yl >= 0.0 && yr >= 0.0) {
                     sw += w;
                     sl += w * yl;
@@ -113,5 +128,5 @@ fn main(
             found = true;
         }
     }
-    scores[cell * CANDIDATES + idx] = best;
+    scores[(cell * BANDS + band) * PER_BAND + idx] = best;
 }

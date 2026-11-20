@@ -865,6 +865,99 @@ impl HttpClient {
         Ok(String::from_utf8_lossy(&body).into_owned())
     }
 
+    /// A seek preview has a short deadline and never retries once abandoned.
+    /// Return only a complete, bounded sheet for the image decoder.
+    pub(crate) fn get_trickplay_sheet(
+        &self,
+        url: &str,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<Vec<u8>> {
+        self.get_trickplay_bytes(url, None, cancelled)
+    }
+
+    /// Bytes `start..end` of a file of seek previews (a picture inside a
+    /// BIF file, or its index). A server that would send the whole file
+    /// instead is refused, as that could be a long download.
+    pub(crate) fn get_trickplay_range(
+        &self,
+        url: &str,
+        (start, end): (u64, u64),
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<Vec<u8>> {
+        let bytes = self.get_trickplay_bytes(url, Some((start, end)), cancelled)?;
+        if bytes.len() as u64 != end - start {
+            return Err(Error::parse(
+                "seek preview",
+                "the server sent another length",
+            ));
+        }
+        Ok(bytes)
+    }
+
+    fn get_trickplay_bytes(
+        &self,
+        url: &str,
+        range: Option<(u64, u64)>,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<Vec<u8>> {
+        let check = || {
+            if cancelled() {
+                Err(io::Error::from(io::ErrorKind::Interrupted))
+            } else {
+                Ok(())
+            }
+        };
+        check()?;
+        if range
+            .is_some_and(|(start, end)| end <= start || end - start > crate::TRICKPLAY_SHEET_BYTES)
+        {
+            return Err(Error::parse("seek preview", "a range out of bounds"));
+        }
+        let deadline = Instant::now() + Duration::from_secs(8);
+        let bytes = range.map(|(start, end)| format!("bytes={start}-{}", end - 1));
+        let mut headers = vec![("Accept", "image/jpeg, image/png, image/webp, */*")];
+        if let Some(bytes) = &bytes {
+            headers.push(("Range", bytes.as_str()));
+            headers.push(("Accept-Encoding", "identity"));
+        }
+        let response = self.get_with_deadline(url, &headers, deadline)?;
+        let status = response.status().as_u16();
+        if let Some(error) = status_error(status, url) {
+            return Err(error);
+        }
+        if range.is_some() && status != 206 {
+            return Err(Error::parse(
+                "seek preview",
+                "the server doesn't send parts of files",
+            ));
+        }
+        let too_large = || Error::parse("seek preview sheet", "compressed image exceeds the limit");
+        let limit = crate::TRICKPLAY_SHEET_BYTES;
+        if response
+            .headers()
+            .get(http::header::CONTENT_LENGTH)
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.parse::<u64>().ok())
+            .is_some_and(|size| size > limit)
+        {
+            return Err(too_large());
+        }
+        let mut reader = response.into_body().into_reader();
+        let mut bytes = Vec::new();
+        let mut chunk = [0; 32 * 1024];
+        loop {
+            check()?;
+            let read = reader.read(&mut chunk)?;
+            if read == 0 {
+                return Ok(bytes);
+            }
+            if bytes.len() as u64 + read as u64 > limit {
+                return Err(too_large());
+            }
+            bytes.extend_from_slice(&chunk[..read]);
+        }
+    }
+
     /// Opens a URL for random access.
     pub fn open(&self, url: &str) -> Result<HttpFile> {
         HttpFile::open(self, url)

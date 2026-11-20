@@ -374,7 +374,8 @@ impl Tp10Eyes {
         self.bind_with(gpu, cmd, slot, self.cinema_pipeline);
     }
 
-    fn bind_with(&self, gpu: &Gpu, cmd: vk::CommandBuffer, slot: usize, pipe: vk::Pipeline) {
+    /// Binds `pipe`, made with [`Self::layout`], and slot `slot`'s descriptors.
+    pub fn bind_with(&self, gpu: &Gpu, cmd: vk::CommandBuffer, slot: usize, pipe: vk::Pipeline) {
         let Some(s) = self.slots.get(slot) else {
             return;
         };

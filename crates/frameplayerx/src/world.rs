@@ -31,6 +31,9 @@ pub struct Panel {
     /// of it: rays pass through the rest.
     pub solid: Option<egui::Rect>,
     pub opacity: f32,
+    /// How far a hands-free hold on it has got, 0 to 1: a ring round the
+    /// dot.
+    pub hold: Option<f32>,
     /// 0 hidden → 1 shown, following `visible` over a short fade.
     fade: f32,
     events: Vec<Event>,
@@ -63,6 +66,7 @@ impl Panel {
             display_only: false,
             solid: None,
             opacity: 1.0,
+            hold: None,
             fade: 0.0,
             events: Vec::new(),
             hovered: false,
@@ -96,6 +100,11 @@ impl Panel {
         self.base_size
     }
 
+    /// See [`Panel::growing`].
+    pub fn grows(&self) -> bool {
+        self.grows
+    }
+
     /// Makes text and controls `scale` times their size: laid out afresh in
     /// the same panel, or for a [`Panel::growing`] one, the panel itself
     /// that much bigger.
@@ -113,17 +122,7 @@ impl Panel {
 
     /// Ray hit: distance along the ray and position in egui points.
     pub fn hit(&self, origin: Vec3, dir: Vec3) -> Option<(f32, Pos2)> {
-        let inv = self.pose.inverse();
-        let o = inv.transform_point3(origin);
-        let d = inv.transform_vector3(dir);
-        if d.z.abs() < 1e-6 {
-            return None;
-        }
-        let t = -o.z / d.z;
-        if t <= 0.0 {
-            return None;
-        }
-        let p = o + d * t;
+        let (t, p) = ray_to_plane(self.pose, origin, dir)?;
         let (hw, hh) = (self.size.x / 2.0, self.size.y / 2.0);
         if p.x.abs() > hw || p.y.abs() > hh {
             return None;
@@ -194,9 +193,10 @@ impl Panel {
             self.id = Some(renderer.create_panel(self.px[0], self.px[1])?);
         }
         let input = self.input(time);
-        let hovered = self.hovered;
+        let (hovered, hold) = (self.hovered, self.hold);
         let mut ui = ui;
         let out = self.ctx.run(input, |ctx| {
+            crate::hands_free::clear_lists(ctx);
             ui(ctx);
             // The pointer's dot, drawn with the panel so it sits exactly on
             // it (a quad layer would cover one drawn in the scene).
@@ -207,6 +207,20 @@ impl Panel {
                 ));
                 painter.circle_filled(p, 7.0, egui::Color32::from_black_alpha(110));
                 painter.circle_filled(p, 5.0, egui::Color32::WHITE);
+                if let Some(hold) = hold {
+                    painter.circle_stroke(p, 13.0, (3.0, egui::Color32::from_black_alpha(160)));
+                    if hold > 0.0 {
+                        // Clockwise from the top.
+                        let points = (0..=32)
+                            .map(|i| {
+                                let angle = hold * std::f32::consts::TAU * i as f32 / 32.0
+                                    - std::f32::consts::FRAC_PI_2;
+                                p + egui::Vec2::angled(angle) * 13.0
+                            })
+                            .collect();
+                        painter.add(egui::Shape::line(points, (3.0, crate::ui::theme::ACCENT)));
+                    }
+                }
             }
         });
         let delay = out
@@ -340,6 +354,19 @@ pub fn player_frame(anchor: Mat4, flat: bool, picture: [f32; 2], bar: [f32; 2]) 
     place_around(from, bar[0], bar[1], 0.0, 0.0)
 }
 
+/// Where a ray meets the plane through `pose` facing its +Z: the distance
+/// along the ray, and the point in the plane's own coordinates.
+pub fn ray_to_plane(pose: Mat4, origin: Vec3, dir: Vec3) -> Option<(f32, Vec3)> {
+    let inv = pose.inverse();
+    let o = inv.transform_point3(origin);
+    let d = inv.transform_vector3(dir);
+    if d.z.abs() < 1e-6 {
+        return None;
+    }
+    let t = -o.z / d.z;
+    (t > 0.0).then(|| (t, o + d * t))
+}
+
 /// Yaw-only anchor at the head position.
 pub fn anchor_from_head(position: Vec3, orientation: Quat) -> Mat4 {
     let (yaw, _, _) = orientation.to_euler(glam::EulerRot::YXZ);
@@ -428,6 +455,19 @@ pub struct Aim {
     pub hit: Option<(usize, f32, Pos2)>,
 }
 
+impl Aim {
+    fn at(panels: &[&mut Panel], origin: Vec3, orientation: Quat) -> Self {
+        let dir = orientation * Vec3::NEG_Z;
+        let hit = panels
+            .iter()
+            .enumerate()
+            .filter(|(_, p)| p.visible)
+            .filter_map(|(i, p)| p.hit(origin, dir).map(|(t, point)| (i, t, point)))
+            .min_by(|a, b| a.1.total_cmp(&b.1));
+        Self { origin, dir, hit }
+    }
+}
+
 /// How far (in panel points) the pointer may move during a press and still
 /// click; beyond it, the press drags. egui's default of 6 is for a mouse: a
 /// pulled trigger tips a controller further than that. This is about two
@@ -469,6 +509,44 @@ pub struct Routed {
 }
 
 impl Pointer {
+    fn hover_panel(&mut self, panels: &mut [&mut Panel], hit: Option<(usize, f32, Pos2)>) {
+        self.hovering_display_only = hit.is_some_and(|(i, _, _)| panels[i].display_only);
+        let target = hit.map(|(i, _, _)| i);
+        if self.hovered_panel != target {
+            if let Some(old) = self.hovered_panel
+                && let Some(p) = panels.get_mut(old)
+            {
+                p.push(Event::PointerGone);
+                p.hovered = false;
+            }
+            self.hovered_panel = target;
+        }
+        if let Some((i, _, _)) = hit {
+            panels[i].hovered = true;
+        }
+    }
+
+    /// The head's ray in place of the hands' (see [`crate::hands_free`]):
+    /// the panel and point its dot is on. The dot stays put on the frame a
+    /// press goes down (`move_dot` false).
+    pub fn route_head(
+        &mut self,
+        panels: &mut [&mut Panel],
+        (pos, rot): (Vec3, Quat),
+        move_dot: bool,
+    ) -> Option<(usize, Pos2)> {
+        self.aims = [None; 2];
+        let hit = Aim::at(panels, pos, rot)
+            .hit
+            .filter(|(i, _, _)| !panels[*i].display_only);
+        self.hover_panel(panels, hit);
+        let (i, _, point) = hit?;
+        if move_dot {
+            panels[i].push(Event::PointerMoved(point));
+        }
+        Some((i, point))
+    }
+
     /// Ends the press on its panel, where `hit` (the pressing hand's ray) is
     /// if that's still on the panel. A press let go off its panel isn't a
     /// click.
@@ -493,25 +571,7 @@ impl Pointer {
     pub fn route(&mut self, panels: &mut [&mut Panel], hands: &[Hand; 2], dt: f32) -> Routed {
         let mut routed = Routed::default();
         for (i, h) in hands.iter().enumerate() {
-            self.aims[i] = h.aim.map(|(pos, rot)| {
-                let dir = rot * Vec3::NEG_Z;
-                let mut best: Option<(usize, f32, Pos2)> = None;
-                for (pi, p) in panels.iter().enumerate() {
-                    if !p.visible {
-                        continue;
-                    }
-                    if let Some((t, pt)) = p.hit(pos, dir)
-                        && best.is_none_or(|b| t < b.1)
-                    {
-                        best = Some((pi, t, pt));
-                    }
-                }
-                Aim {
-                    origin: pos,
-                    dir,
-                    hit: best,
-                }
-            });
+            self.aims[i] = h.aim.map(|(pos, rot)| Aim::at(panels, pos, rot));
         }
         // A trigger press makes that hand the active one. If both cross the
         // press point on the same frame, the second waits a frame so egui
@@ -546,21 +606,10 @@ impl Pointer {
         let display_only = |panels: &[&mut Panel], h: &(usize, f32, Pos2)| panels[h.0].display_only;
         // Hover changes.
         let hover = hit.filter(|h| self.rays_shown || !display_only(panels, h));
-        self.hovering_display_only = hover.is_some_and(|h| display_only(panels, &h));
-        let target = hover.map(|h| h.0);
-        if self.hovered_panel != target {
-            if let Some(old) = self.hovered_panel
-                && let Some(p) = panels.get_mut(old)
-            {
-                p.push(Event::PointerGone);
-                p.hovered = false;
-            }
-            self.hovered_panel = target;
-        }
+        self.hover_panel(panels, hover);
         if let Some((pi, _, pos)) = hover {
             let p = &mut panels[pi];
             routed.over_ui = !p.display_only;
-            p.hovered = true;
             // egui takes a press as a click until the pointer has been too
             // far from it; a list has taken this one.
             if crate::ui::widgets::list_took_press(&p.ctx) {

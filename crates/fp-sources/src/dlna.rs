@@ -886,6 +886,14 @@ impl Source for DlnaSource {
         format!("DLNA server {}", redact(&self.location))
     }
 
+    /// The server's address, then the item's.
+    fn display_location(&self, location: Option<&str>) -> Option<String> {
+        let mut server = url::Url::parse(&self.location).ok()?;
+        server.set_path("");
+        let base = crate::urlutil::display_url(server.as_str());
+        crate::location::display_opaque(self, &base, location)
+    }
+
     fn canonical_location(&self, location: &str) -> Option<String> {
         if crate::is_source_location(location) {
             let reference = self.owned_reference(location).ok()?;
@@ -991,6 +999,29 @@ impl Source for DlnaSource {
 mod tests {
     use super::*;
     use fp_core::format::{Projection, StereoLayout};
+
+    #[test]
+    fn display_location_is_the_servers_address_then_the_items() {
+        let s = DlnaSource::new(&DlnaConfig {
+            id: "d".into(),
+            name: "MiniDLNA".into(),
+            location: "http://192.168.1.10:8200/rootDesc.xml".into(),
+            control_url: None,
+            service_type: None,
+        })
+        .unwrap();
+        assert_eq!(
+            s.display_location(None).as_deref(),
+            Some("http://192.168.1.10:8200")
+        );
+        assert_eq!(
+            s.display_location(Some(&s.folder_location("64$1")))
+                .as_deref(),
+            Some("http://192.168.1.10:8200 · folder:64$1")
+        );
+        let other = crate::location::encode("other", "dlna", "folder:64");
+        assert_eq!(s.display_location(Some(&other)), None);
+    }
 
     #[test]
     fn ssdp_answers_and_notifies() {

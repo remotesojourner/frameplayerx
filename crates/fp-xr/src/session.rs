@@ -88,6 +88,9 @@ pub struct FrameCtx {
     pub eyes: Option<[EyeView; 2]>,
     /// Head pose in the play space.
     pub head: Option<(Vec3, Quat)>,
+    /// The head pose while it is tracked and the session has input focus:
+    /// what hands-free navigation points with.
+    pub head_aim: Option<(Vec3, Quat)>,
     pub targets: Option<[EyeTarget; 2]>,
     views: Vec<xr::View>,
 }
@@ -327,6 +330,7 @@ impl XrSession {
             state,
             eyes: None,
             head: None,
+            head_aim: None,
             targets: None,
             views: Vec::new(),
         };
@@ -348,7 +352,14 @@ impl XrSession {
             .view_space
             .locate(&self.space, state.predicted_display_time)
         {
-            ctx.head = Some(crate::pose(loc.pose));
+            let head = crate::pose(loc.pose);
+            ctx.head = Some(head);
+            let tracked = xr::SpaceLocationFlags::POSITION_VALID
+                | xr::SpaceLocationFlags::ORIENTATION_VALID
+                | xr::SpaceLocationFlags::ORIENTATION_TRACKED;
+            if self.state == xr::SessionState::FOCUSED && loc.location_flags.contains(tracked) {
+                ctx.head_aim = Some(head);
+            }
         }
         let eye = |v: &xr::View| {
             let (p, q) = crate::pose(v.pose);

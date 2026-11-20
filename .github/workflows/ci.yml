@@ -357,6 +357,7 @@ jobs:
       # A draft until every file is in and reads back as built, so update
       # checks never find a release with files missing.
       - name: Publish the release
+        id: publish
         run: |
           files=(dist/frameplayerx-*.zip dist/manifest.json dist/manifest.json.sig
             dist/frameplayerx.json dist/frameplayerx-install-*
@@ -398,3 +399,37 @@ jobs:
             latest=false
           fi
           gh release edit "$TAG" --draft=false --latest="$latest"
+          echo "published=true" >> "$GITHUB_OUTPUT"
+      # Only when this run published it: an alpha stays a draft, and a re-run
+      # finds the release already out.
+      - name: Announce on Discord
+        if: steps.publish.outputs.published == 'true'
+        # The release is out by now; a Discord problem mustn't fail the run.
+        continue-on-error: true
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+        run: |
+          if [ -z "$DISCORD_WEBHOOK_URL" ]; then
+            echo "::notice::DISCORD_WEBHOOK_URL secret not set: no Discord post"
+            exit 0
+          fi
+          # A plain message, since an embed is only about 520 px wide. Discord
+          # caps one at 2000 characters, so the notes lose their commit links
+          # and stop at the last whole item that fits, then link the rest.
+          # Flags 4 keeps GitHub's link preview out of the post.
+          jq -n --rawfile notes dist/RELEASE_NOTES.md --arg tag "$TAG" \
+            --arg url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/tag/$TAG" '
+            def items: map(select(startswith("- "))) | length;
+            ($notes | ltrimstr("\n") | rtrimstr("\n") | split("\n")
+              | map(sub(" \\(\\[`[0-9a-f]+`\\]\\([^)]*\\)\\)$"; ""))) as $lines
+            | "## [FramePlayerX \($tag)](\($url))\n\n" as $head
+            | (reduce $lines[] as $line ({kept: [], cut: false};
+              if .cut then .
+              elif ($head + (.kept + [$line] | join("\n")) | length) > 1850 then .cut = true
+              else .kept += [$line] end)) as $fit
+            | (if $fit.cut
+               then ($fit.kept | until(length == 0 or (last | startswith("- ")); .[:-1])) as $kept
+                 | ($kept | join("\n")) + "\n\n[\(($lines | items) - ($kept | items)) more on GitHub](\($url))"
+               else $fit.kept | join("\n") end) as $body
+            | {content: ($head + $body), flags: 4, allowed_mentions: {parse: []}}' |
+            curl -fsS --retry 3 -H 'Content-Type: application/json' -d @- "$DISCORD_WEBHOOK_URL"

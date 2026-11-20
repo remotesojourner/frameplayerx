@@ -800,8 +800,8 @@ little saturation to make room for them.
 controller) opens the adjust panel for the video playing. Its tabs are
 Format, Position, Stereo, Picture, Passthrough, Chapters and, with haptics
 on, Haptics; between them they hold the format, position, size, IPD/depth,
-stereo alignment, picture controls, subtitle depth and keyframes
-(adjustments that change smoothly along the video). **Save for this
+stereo alignment, picture controls, subtitle depth, size and height, and
+keyframes (adjustments that change smoothly along the video). **Save for this
 video** keeps the changes with that video; **Reset** puts the picture's
 own adjustments back.
 
@@ -812,7 +812,8 @@ one step, and holding repeats.
 
 Where videos start is set in Settings: **Video position** for the screen,
 zoom, height and background, **Picture** for the picture and a 3D video's
-depth and eye alignment, and Sound and subtitles for subtitle depth.
+depth and eye alignment, and Sound and subtitles for how far away, how
+big and how high subtitles show.
 
 A flat screen's **Distance**, **Width** and **Curvature** are on the
 Position tab. Its size is its width, so zooming a flat screen with the
@@ -827,6 +828,18 @@ The same at the bottom of the Position tab changes it for the video that
 is playing, and **Save for this video** keeps it with the rest of its
 adjustments. Your room replaces it while it shows.
 
+**Screen glow**, under the colour in Settings › Video position, lights the
+background round a flat screen the way an LED strip behind a television
+lights the wall: each part takes the colour of the picture's edge beside
+it, mixing with its neighbours further out, and changes with the picture.
+Black bars above and below a film, or beside it, are left out.
+**Brightness** sets how bright it is beside the screen, up to as bright as
+the picture's edge, and **Spread** how far out it reaches. The same under
+the colour on the Position tab changes it for the video that is playing,
+and the button beside its switch puts the video back on Settings. It shows
+on a colour background only, not in a cinema, over your room or with a
+chroma key.
+
 ### Comfort focus
 
 **Comfort focus**, on the Stereo tab for stereo 180° and fisheye videos,
@@ -837,9 +850,16 @@ With it on, FramePlayerX measures how far away that thing is and adjusts
 each eye's picture to your eyes' actual positions at that distance, so it
 fuses at its real depth; things much nearer or farther than it may still
 look a little doubled. When it is closer than about 85 cm, it also eases
-the depth so your eyes don't have to cross as far. It measures where your
-eyes look while foveated rendering is on, otherwise the middle of your
-view, and catches up about half a second after you look somewhere else.
+the depth so your eyes don't have to cross as far, which makes it look
+bigger. It measures where your eyes look when the headset
+tracks them, otherwise the middle of your view. The easing holds still
+while your eyes move over the same thing. When they jump to something
+else, the picture is ready for it by about the time they have settled
+there, a little later for something nearer you haven't just looked at;
+where the headset doesn't track them, it follows gently, over about a
+second for something nearer and half a second for something farther.
+Something that passes in front of what you look at leaves the picture as
+it is, unless it stays for about a second or your eyes go to it.
 It assumes the camera's lenses were 63 mm apart, the average eye spacing.
 Settings › Picture › **3D videos** turns it on for every video; turning it
 on or off for one video keeps that video's choice, and the button beside
@@ -1161,7 +1181,11 @@ picture. Play/pause and seeking are under either thumb.
 | Trigger | Click; on empty space, show or hide the controls | The same |
 
 On the control bar, point at the speaker for the volume slider above it;
-press the speaker to mute. What a controller shortcut changes, such as the
+press the speaker to mute. Pointing along the seek bar shows the time there,
+and a picture of that moment where the server has made them: Jellyfin's
+trickplay images, Emby's and Plex's video preview thumbnails, or a DeoVR
+feed's timeline preview. **Settings › Playback › Seek bar previews** turns
+the pictures off. What a controller shortcut changes, such as the
 volume or a minute's skip, shows for a moment in a small message above where
 the control bar sits.
 
@@ -1232,6 +1256,32 @@ Text fields bring up a keyboard below the panel you type in; **#+=**
 switches it to symbols (`! # $ % ( ) [ ] { }` and the rest) and **abc**
 back. You can also type on your phone through the
 [web remote](#remote-control).
+
+### Hands-free navigation
+
+To use FramePlayerX without a controller, press the hands-free key (a
+person in a frame) in the library's top bar, beside **Room**, and put the
+controllers down; press it again, or rest the dot on it, to turn it off. A
+dot then shows where your head points: rest it on a button, a card or a spot
+on a slider until the ring round it fills, and that is pressed, as the
+trigger would press it. The ring fills only while your head is still, so
+the dot passing over things presses nothing. **Hold time** in Settings ›
+Controller sets how long that takes (0.75 s to start with). Once something is pressed, nothing else
+is until you look away from it, so what opens in its place isn't pressed
+too; to press the same button again, look off it and back.
+
+What doesn't fit scrolls with keys just outside a panel's right edge: up
+and down beside a page, and back and on level with each row of pictures,
+each moving it by most of what shows. While a video plays the control bar hides as usual: look up above
+the picture and **Show controls** appears there; rest the dot on it to
+bring the bar back. It stays out of sight while you watch.
+
+The screen and the menus stay where they are, since you couldn't point at
+them if they followed your head: **Screen follows you** is off, and on the
+control bar **Recenter** takes the bed button's place. FramePlayerX also
+starts facing where you look, so lying down the menus come up where you
+can reach them. Move or press a controller and it works at once; the dot
+comes back once both controllers have been left still for 3 seconds.
 
 ## Passthrough videos
 

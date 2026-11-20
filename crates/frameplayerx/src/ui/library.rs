@@ -225,7 +225,7 @@ fn nav(ui: &mut egui::Ui, v: &mut View) {
                     + 64.0
             })
             .sum();
-        let right = if v.playback.is_some() { 270.0 } else { 120.0 };
+        let right = if v.playback.is_some() { 326.0 } else { 176.0 };
         let labelled = ui.available_width() >= labels + right;
         for (s, icon, label) in tabs {
             let selected =
@@ -277,6 +277,12 @@ fn nav(ui: &mut egui::Ui, v: &mut View) {
                     .clicked()
             {
                 v.actions.push(Action::TogglePassthrough);
+            }
+            if widgets::icon_button(ui, icons::USER_FOCUS, 48.0, v.settings.hands_free)
+                .tip(tr!("settings-hands-free"))
+                .clicked()
+            {
+                v.actions.push(Action::ToggleHandsFree);
             }
             if let Some(s) = &v.state.worker_status {
                 ui.label(
@@ -760,7 +766,12 @@ fn details(ui: &mut egui::Ui, v: &mut View, id: fp_library::MediaId) {
                 format = super::format_label(&shown.format),
                 evidence = super::evidence_label(shown.evidence)
             );
-            let location = crate::libraries::display_location(&r.location);
+            let location = v
+                .services
+                .opener
+                .source(&r.source_id)
+                .and_then(|s| s.display_location(Some(&r.location)))
+                .unwrap_or_else(|| crate::libraries::display_location(&r.location));
             widgets::rows(ui, |rows| {
                 rows.row(tr!("adjust-format"), Some(&format), |ui| {
                     if widgets::button(

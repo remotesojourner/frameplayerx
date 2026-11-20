@@ -21,6 +21,7 @@ mod cinema;
 mod cinema_mesh;
 mod focus;
 mod foveation;
+mod glow;
 pub mod gpu;
 pub mod hdr;
 pub mod math;
@@ -36,6 +37,7 @@ mod tp10_eyes;
 mod video;
 
 pub use foveation::Foveation;
+pub use glow::ScreenGlow;
 pub use gpu::{Creator, DirectCreator, Gpu};
 pub use params::{CinemaParams, CinemaRoom, VideoParams};
 pub use renderer::{EyeTarget, EyeView, PanelId, QuadDraw, QuadTexture, Renderer};

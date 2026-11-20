@@ -170,11 +170,56 @@ Comfort focus (`fp-render/src/focus.rs`) measures how close what the
 viewer looks at is, 20 times a second. After the eye passes, the scene
 shader's `fs_focus` draws strips of both eyes' luma round the aim into a
 small float target with the eye passes' own pipeline layout and bindings,
-so it reads every frame they read, one in the decoder's buffer included;
-`shaders/focus.wgsl` then matches the strips in a compute pass, and the
-scores are read back once the slot's fence has signalled. The eye passes
-start each eye's rays at its offset from its camera, taken from the
-headset's eye poses, and intersect them with a sphere of the measured
+so it reads every frame they read, one in the decoder's buffer included.
+The strips lie on a lattice of angles about the cameras' baseline, whose
+rows are the lines both cameras see a point on, so a disparity is a shift
+along a row wherever the aim is; `shaders/focus.wgsl` then matches the
+strips in a compute pass, at 192 candidate disparities that reach from
+far away to 0.1 m, the scores are read back once the slot's fence
+has signalled, and the disparity found is triangulated into a distance
+(`focus::nearness`). The aim is the gaze smoothed in head axes
+(`focus::AimFilter`), measured on every new video frame and after every
+eye movement of a degree or more. The distance in focus moves once two
+readings in a row agree on another distance, not when the eyes move:
+measurements with nothing to match don't come between them, within half a
+second, so something that reads only now and then still takes over.
+Something more than a fifth nearer takes over only once it has stayed: a
+quarter of a second after the eyes landed for it or where the head aims,
+a second while the eyes rest where they were, so what passes in front of
+what is looked at and is gone again moves nothing (the runtime gives one
+gaze for both eyes, not what they converge on); a distance the eyes were
+on in the last five seconds needn't wait when they land back on it. The
+easing follows it only for a change of a fifth or more, more to the
+side where readings are less precise, and then by what is beyond that
+fifth only, so the eyes going back and forth between two parts of
+something move it once (`focus::ComfortFocus`). A patch gives a reading
+only with texture within 6° of the aim: matches between things farther
+out, with a plain patch between them, are chance. It glides in
+over about a second, and out once something farther has stayed in
+focus for a quarter of a second, or once the distance it was for hasn't
+been read for a second. The re-projection follows the distance
+only once keeping its own would misalign what is looked at by more than
+0.15° (`focus::redraw_lever`): never with the head level and facing the
+video's front, closely lying down, where the pictures would come apart
+up and down. The part of each eye's offset from its camera that lies along
+the line through the eyes (all of it with the head turned to one side of
+the video and the eyes level) only moves the pictures towards or away from
+each other, which the eyes follow: that part is drawn for a distance of
+its own, which goes by what is beyond a fifth as the easing does
+(`params::set_comfort_focus` stretches it by how much nearer that distance
+is), so the eyes going over something near there don't move the pictures
+at every look. Towards the video's left and right edges (from 30° to the
+side, fully past 45°) it gives twice the 0.15° and glides after a landing
+too, rather than going at once. Those changes are gentle because they
+show while the eyes rest on something. When the eyes jump, the aim goes
+where they land at once (`AimFilter::take_landed`: the smoothing has
+caught up and two samples running are close together), and what is read
+there in the next 0.3 s is acted on while they are still converging on it: the
+re-projection in about 0.06 s, the easing out for something farther in
+about 0.13 s and without the wait, the easing in for something nearer in
+about 0.3 s (later, the eyes have converged on it all the way and must
+let go again as it comes). The eye passes start each eye's rays at its
+offset from its camera, taken from the headset's eye poses, and intersect them with a sphere of the measured
 radius round that camera (`Params.focus.w` and `eyes`), and turn the eyes'
 pictures apart about the head's up to ease close things (`focus.z` and
 `relief`); the measurement leaves both out, reading the video as filmed.
@@ -498,6 +543,8 @@ A skip slower than 2 s counts as a failure, so a slow route ends in `FAIL`; the 
 
 Every 10 s the log has a `frame GPU ms` line beside `frame CPU ms`: the GPU's time per frame (median, 95th percentile, longest) and the median of each part of a frame (`video`: an upload, a 10-bit conversion and HDR measuring; `eyes`: both eye passes; `panels`: painting the menus; `layers`: copying them into the compositor's layers), from timestamps the renderer writes between the parts. The compositor's own work isn't in it. The same work takes longer at a lower GPU clock, so the line ends with the clock. In `--preview`, the `gpu` script command prints the same line for the frames since the last one, and the run ends with one for the rest; `--size 2160` renders the eyes at the headset's size.
 
+While comfort focus draws, a `comfort focus` line follows: how many measurements it made a second, how many were read back and what share of them gave a distance, what is in focus now (its distance and the easing), in what share of frames the aim followed the eyes, and the eye passes' mean GPU time with a measurement and without, whose difference is what a measurement costs. A `--preview` run ends with the same line.
+
 ```bash
 printf 'open clip_8k.mp4\nwait-playing 30\nwait 2\ngpu\nwait 10\ngpu\n' > /tmp/gpu.fps
 frameplayerx --preview /tmp/shots --size 2160 --script /tmp/gpu.fps
@@ -653,7 +700,12 @@ headset and copies the text and JSON reports into `probe-reports/`.
    `FP_OPENSUBTITLES_API_KEY` repository secret (or a variable of that
    name, which the secret overrides). Packaging embeds it in the app;
    without it, **Find subtitles** says OpenSubtitles is unavailable.
-3. Stable: push (or merge) to `main`. Beta: run the `ci` workflow on the
+3. Once: make a webhook for the Discord announcements channel (the
+   channel's settings › Integrations › Webhooks) and store its URL as the
+   `DISCORD_WEBHOOK_URL` repository secret. Each stable and beta release
+   is then posted there with its notes once it's published; an alpha
+   isn't. Without the secret, nothing is posted.
+4. Stable: push (or merge) to `main`. Beta: run the `ci` workflow on the
    `beta` branch from the Actions tab (Run workflow). CI calculates the
    version, stamps it into `crates/frameplayerx/Cargo.toml`, builds,
    packages, signs `manifest.json` and publishes the GitHub release with
