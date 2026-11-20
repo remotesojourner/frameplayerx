@@ -364,7 +364,9 @@ impl Source for SftpSource {
         Some(self.location(&segments, value.ends_with('/')))
     }
 
-    /// `sftp://host/folder/sub-folder`, with names as they are on the server.
+    /// `sftp://host/folder/sub-folder` for a folder,
+    /// `sftp://host/folder/My Film.mkv` for a video, with names as they are
+    /// on the server.
     fn display_location(&self, location: Option<&str>) -> Option<String> {
         let segments = self.segments(location).ok()?;
         let mut out = crate::urlutil::display_url(&self.url());

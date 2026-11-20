@@ -161,9 +161,11 @@ pub trait Source: Send + Sync {
         None
     }
 
-    /// Where a folder of this source is (its root for `None`), for people
-    /// to read while browsing it. `None` when the source has no address
-    /// worth showing. Performs no I/O.
+    /// Where a folder or video of this source is (its root for `None`), for
+    /// people to read: under the title while browsing a folder, and in the
+    /// File row of a video's details. `None` when the source has no address
+    /// worth showing, or doesn't own `location`. Performs no I/O: it is
+    /// called every frame.
     fn display_location(&self, _location: Option<&str>) -> Option<String> {
         None
     }

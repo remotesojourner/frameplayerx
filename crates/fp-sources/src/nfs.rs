@@ -472,9 +472,10 @@ impl Source for NfsSource {
         self.open_file(&loc)
     }
 
-    /// `nfs://host/folder/sub-folder`, with names as they are on the server:
-    /// `nfs://host` for a whole server's list of exports, `nfs://host/` for
-    /// the export `/`.
+    /// `nfs://host/folder/sub-folder` for a folder,
+    /// `nfs://host/folder/My Film.mkv` for a video, with names as they are
+    /// on the server: `nfs://host` for a whole server's list of exports,
+    /// `nfs://host/` for the export `/`.
     fn display_location(&self, location: Option<&str>) -> Option<String> {
         let loc =
             NfsLocation::parse(&self.current_url(location.unwrap_or(&self.root)).ok()?).ok()?;

@@ -293,7 +293,9 @@ impl Source for SmbSource {
         Some(crate::location::encode(&self.id, "smb", &key))
     }
 
-    /// `smb://host/share/folder`, with names as they are on the server.
+    /// `smb://host/share/folder` for a folder,
+    /// `smb://host/share/folder/My Film.mkv` for a video, with names as they
+    /// are on the server.
     fn display_location(&self, location: Option<&str>) -> Option<String> {
         let location = location.unwrap_or(&self.root);
         self.canonical_location(location)?;
