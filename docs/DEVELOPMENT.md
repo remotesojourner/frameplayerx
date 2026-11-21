@@ -667,8 +667,9 @@ What the code relies on about the platform:
   rate attachment instead: 8×8-pixel texels, `R8_UINT` in optimal tiling
   only, padded to 64 texels (one 270 texels wide was misread near its
   right edge). The gaze comes from `XR_EXT_eye_gaze_interaction`.
-- The hardware decoder is a V4L2 stateful decoder for 4:2:0 H.264 (8-bit)
-  and HEVC (8- and 10-bit). One session takes at most 8192×4320. Every
+- The hardware decoder is a V4L2 stateful decoder for 4:2:0 H.264 (8-bit),
+  HEVC (8- and 10-bit), and AV1 (8- and 10-bit on SteamOS 0.5.10 and later,
+  where the device lists `AV01`). One session takes at most 8192×4320. Every
   session open on the driver lowers that, idle ones and encoders too, so
   Steam's recording and browser can leave it busy. `/proc` shows who holds
   it. It writes 10-bit pictures correctly only as Q10C: asked for NV12, it
@@ -676,10 +677,11 @@ What the code relies on about the platform:
   driver allocates sits in one address space of about 2.9 GB, shared by all
   sessions, in a slot of its size rounded up to a power of two: an
   8192×4096 10-bit picture (64.8 MiB) takes 128 MiB, and at a DPB of 6 the
-  motion-vector working buffer (256 MiB + 512 B) takes 512 MiB. `fp-media`'s
-  V4L2 decoder declares a smaller size for the start of such a stream,
-  lowers an over-declared 10-bit level-6.1 DPB of 6 to 5, and adds 10-bit
-  picture buffers after CAPTURE `STREAMON`.
+  HEVC motion-vector working buffer (256 MiB + 512 B) takes 512 MiB.
+  `fp-media`'s V4L2 decoder declares a smaller size for the start of such a
+  stream (including 8K AV1, whose `BUF_PARTIAL` working buffer is sized as
+  Q10C), lowers an over-declared 10-bit HEVC level-6.1 DPB of 6 to 5, and
+  adds 10-bit picture buffers after CAPTURE `STREAMON`.
 - Turnip has no TP10 images, though the GPU reads TP10. A TP10 texture
   reads wrongly past 2^24 samples, so 10-bit planes are read in bands.
 - SteamOS only mounts ext4 microSD cards itself, and no USB drives;
