@@ -38,13 +38,14 @@
 //! the pictures there; a buffer is queued again once its frame is dropped.
 //! It then asks for what the decoder has to keep ([`CaptureNeeds`]) plus
 //! [`MAX_LENT`], and at least [`CAPTURE_BUFFERS`]. In NV12 the decoder keeps
-//! what the driver asks for (1 on the Frame: 8 buffers). Q10C buffers are
-//! the decoder's reference pictures, so it also keeps the stream's DPB (13
-//! buffers for an 8K stream with a DPB of 5). A buffer is lent only while
-//! the decoder keeps that many without it ([`lendable`]), so decoding never
-//! waits on the renderer. Otherwise, and whenever frames aren't shared
-//! ([`crate::decode::shared_frames`], [`shareable`]), the picture is copied
-//! out into a pooled `AVFrame` and the buffer goes straight back.
+//! what the driver asks for (1 on the Frame: 8 buffers). On the driver
+//! before SteamOS 0.5.10, Q10C buffers are the decoder's reference pictures,
+//! so it also keeps the stream's DPB (13 buffers for an 8K stream with a DPB
+//! of 5). A buffer is lent only while the decoder keeps that many without
+//! it ([`lendable`]), so decoding never waits on the renderer. Otherwise,
+//! and whenever frames aren't shared ([`crate::decode::shared_frames`],
+//! [`shareable`]), the picture is copied out into a pooled `AVFrame` and
+//! the buffer goes straight back.
 //!
 //! 10-bit HEVC comes out correctly only as Q10C, Qualcomm's compressed TP10
 //! ([`Q10cLayout`]): asked for NV12, the decoder clamps the 10-bit samples
@@ -53,6 +54,28 @@
 //! Q10C CAPTURE buffers by the exact picture height (8192x4080 and
 //! 8192x4096 differ) and ignores a requested one, so a 10-bit 8K stream the
 //! admission check refuses decodes in software.
+//!
+//! SteamOS 0.5.10 replaced the driver with one that follows the mainline
+//! Linux driver ([`Driver`], told apart by what it reports). Its reference
+//! pictures are buffers of its own, whatever the CAPTURE format: the
+//! CAPTURE buffers just hold the decoded pictures handed to the player.
+//! Every buffer it allocates goes into one address space all its sessions
+//! share, in a slot of the buffer's size rounded up to a power of two, so a
+//! CAPTURE buffer over [`SMALL_SLOT`] (64 MiB), as an 8192x4096 10-bit
+//! picture's is, takes 128 MiB. Its working buffers come in two sets. The
+//! first is allocated at OUTPUT `STREAMON`, computed from the OUTPUT size
+//! declared; it is still allocated when CAPTURE `STREAMON` allocates the
+//! reference pictures and the second set, computed from the stream's own
+//! size. Started the usual way, a stream with buffers that big needs more
+//! slots than there are. So the decoder declares [`DECLARED_START_SIZE`]
+//! for it ([`declared_start_size`]), and the stream's own size comes with
+//! its source change. CAPTURE buffers that big ([`adds_after_streamon`])
+//! then start with the driver's minimum, and the rest are added one at a
+//! time with `VIDIOC_CREATE_BUFS` after CAPTURE `STREAMON`, by when the
+//! first set has been released, until one finds no memory
+//! ([`AddedCount`]). Of them the decoder keeps the stream's reorder count
+//! plus one ([`CaptureNeeds::keep_reordered`]). Every other stream, and
+//! every stream on the earlier driver, starts as described above.
 
 /// Bitstream (OUTPUT) buffers to request.
 pub(crate) const OUTPUT_BUFFERS: u32 = 6;
@@ -148,6 +171,35 @@ impl CaptureNeeds {
         self.control
             .max(self.counted_dpb().map_or(0, |p| p + 1))
             .max(1)
+    }
+
+    /// The stream's reorder count (`sps_max_num_reorder_pics`), and whether
+    /// an SPS gave it. Unread, the most HEVC allows at the picture size:
+    /// one less than its largest DPB ([`crate::nal::hevc_most_dpb`]; H.265
+    /// 7.4.3.2.1 keeps the reorder count below the DPB), 5 at 8K.
+    fn reorder(&self) -> (u32, bool) {
+        match self.dpb {
+            Some(d) => (d.reorder, true),
+            None => (
+                crate::nal::hevc_most_dpb(self.size.0, self.size.1).reorder,
+                false,
+            ),
+        }
+    }
+
+    /// Buffers to keep when the decoder's reference pictures are buffers of
+    /// its own, not the CAPTURE buffers, which then just hold the decoded
+    /// pictures (the mainline driver, [`Driver::Mainline`]): the stream's
+    /// reorder count plus the picture output and not yet dequeued, whatever
+    /// the driver's minimum. On SteamOS 0.5.10, a test giving a buffer back
+    /// only once a newer picture came decoded every picture with this many
+    /// left to the decoder, for reorder counts 0, 1 and 2 with 8 to 10
+    /// buffers, and where one fewer was tried, it stopped. For 3, which
+    /// real 8K files have, the rule held in the player (10 buffers, 4 kept,
+    /// up to 6 lent: 180 s of shared pictures, none copied, no stall), but
+    /// one fewer was not tried.
+    pub(crate) fn keep_reordered(&self) -> u32 {
+        self.reorder().0 + 1
     }
 }
 
@@ -264,6 +316,251 @@ impl std::fmt::Display for CaptureCount {
             write!(f, ", raised by the driver to {}", self.granted)?;
         } else if self.granted < self.asked {
             write!(f, ", given {}", self.granted)?;
+        }
+        write!(f, ": the decoder keeps {}", self.keep())?;
+        match self.lent_at_most() {
+            0 if self.lend > 0 => write!(f, ", none lent"),
+            0 => Ok(()),
+            n => write!(f, ", up to {n} lent"),
+        }
+    }
+}
+
+/// Which of the Frame's two decoder drivers is behind the device. SteamOS
+/// 0.5.10 replaced the earlier one with one that follows the mainline Linux
+/// driver; `VIDIOC_QUERYCAP` is the same for both (driver, card, and the
+/// kernel's version), so they are told apart by what each reports instead.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Driver {
+    /// SteamOS up to 0.5.9, and any device not positively recognised as
+    /// the other: every stream starts the way it always has.
+    Earlier,
+    /// SteamOS 0.5.10's: reference pictures of its own, and buffers in
+    /// power-of-two slots of one shared address space (module docs).
+    Mainline,
+}
+
+impl Driver {
+    /// From whether the codec's OUTPUT format carries
+    /// `V4L2_FMT_FLAG_DYN_RESOLUTION` and whether
+    /// `V4L2_CID_MIN_BUFFERS_FOR_CAPTURE` exists. On the Frame the earlier
+    /// driver has neither (its H.264, HEVC and VP9 formats flag only
+    /// `V4L2_FMT_FLAG_COMPRESSED`, and `VIDIOC_QUERYCTRL` fails for the
+    /// control), the mainline one both. One without the other is neither as
+    /// seen, so it is taken for the earlier one: the start meant for the
+    /// mainline driver was never tried on that, whose firmware faults when
+    /// a stream resumes on a setup made for a smaller one (module docs).
+    pub(crate) fn from_reports(dynamic_resolution: bool, min_buffers_control: bool) -> Driver {
+        if dynamic_resolution && min_buffers_control {
+            Driver::Mainline
+        } else {
+            Driver::Earlier
+        }
+    }
+}
+
+/// The largest buffer the mainline driver places in a slot of 64 MiB, in
+/// bytes. It puts every buffer at an address aligned to the buffer's size
+/// rounded up to a power of two, in one address space of about 2.9 GB that
+/// all its sessions share, so a buffer one byte larger takes 128 MiB.
+/// Measured on SteamOS 0.5.10 with nothing else open: `REQBUFS` granted 45
+/// Q10C buffers of 66,871,296 bytes (8192x4032) but 23 of 67,399,680
+/// (8192x4064).
+pub(crate) const SMALL_SLOT: u64 = 64 << 20;
+
+/// The OUTPUT size declared for the start of a stream whose CAPTURE buffers
+/// are over [`SMALL_SLOT`] on the mainline driver, in place of the stream's
+/// own ([`declared_start_size`]). What the declared size decides is the
+/// first set of working buffers, allocated at OUTPUT `STREAMON`, and that
+/// set is still allocated when CAPTURE `STREAMON` allocates everything
+/// else. With 8192x4096 10-bit declared, the whole comes to 25 slots of 128
+/// MiB where there are 23, and CAPTURE `STREAMON` fails with `ENOMEM`
+/// (SteamOS 0.5.10). The decoder takes the declared size as a placeholder,
+/// replaced at the stream's source change (dev-decoder.rst). 4096x2320 is
+/// the smallest size tried that keeps the bitstream buffers at the 12.8 MiB
+/// 8K gets: the driver gives that much to any size with more than
+/// 4096x2304's 36,864 macroblocks, and once the stream is known refuses to
+/// queue into smaller ones (1920x1080 gets 6.8 MiB, and `QBUF` failed with
+/// `EINVAL`). Measured on SteamOS 0.5.10, where an 8192x4096 10-bit clip
+/// then decoded whole in hardware, and an 8192x4032 one decoded the same
+/// pictures as with its own size declared.
+pub(crate) const DECLARED_START_SIZE: (u32, u32) = (4096, 2320);
+
+/// The OUTPUT size to declare in place of the stream's `stream` size: on
+/// the mainline driver, [`DECLARED_START_SIZE`] for a Q10C stream (`q10c`)
+/// whose CAPTURE buffers will be over [`SMALL_SLOT`] by [`q10c_size`]'s
+/// reckoning; else `None`, the stream's own size, as always. NV12 never
+/// gets there within the 8192x4320 a session takes (53 MB), and 8-bit
+/// streams start as they always have.
+pub(crate) fn declared_start_size(
+    driver: Driver,
+    q10c: bool,
+    stream: (u32, u32),
+) -> Option<(u32, u32)> {
+    (driver == Driver::Mainline && q10c && q10c_size(stream) as u64 > SMALL_SLOT)
+        .then_some(DECLARED_START_SIZE)
+}
+
+/// Whether the bitstream buffers the driver gives [`DECLARED_START_SIZE`],
+/// `start` bytes, are as large as those it gives the stream's own size,
+/// `own` bytes (`S_FMT`'s `sizeimage`), so the stream's packets fit them
+/// and the driver takes them once it knows the stream.
+pub(crate) fn start_buffers_hold(own: u32, start: u32) -> bool {
+    own > 0 && start >= own
+}
+
+/// Whether CAPTURE buffers of `sizeimage` bytes start with the driver's
+/// minimum, more added after CAPTURE `STREAMON` ([`AddedCount`]): on the
+/// mainline driver, buffers over [`SMALL_SLOT`]. Decided from the driver's
+/// own figure after the source change, whatever the OUTPUT size declared.
+pub(crate) fn adds_after_streamon(driver: Driver, sizeimage: u32) -> bool {
+    driver == Driver::Mainline && u64::from(sizeimage) > SMALL_SLOT
+}
+
+/// Why no more CAPTURE buffers were added after `STREAMON`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum AddStop {
+    /// There were as many as wanted.
+    Wanted,
+    /// `VIDIOC_CREATE_BUFS` found no memory: the decoder's address space is
+    /// full. Each failure writes to the kernel log, so it isn't tried again
+    /// (but once, for the first).
+    NoMemory,
+    /// Any other failure, and what it was. The buffer that failed, if it
+    /// was made, is left out: never queued, mapped or lent.
+    Failed(String),
+}
+
+/// How the CAPTURE buffers were counted when they start with the driver's
+/// minimum and more are added after `STREAMON` ([`adds_after_streamon`]):
+/// what the decoder keeps, what it wants, and what there was room for.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct AddedCount {
+    /// `control` is what `REQBUFS` is asked for.
+    pub needs: CaptureNeeds,
+    /// What the player can hold at once ([`MAX_LENT`]); 0 when frames are
+    /// copied.
+    pub lend: u32,
+    /// What `REQBUFS` gave back before `STREAMON`.
+    pub started: u32,
+    /// Buffers `VIDIOC_CREATE_BUFS` added after `STREAMON`.
+    pub added: u32,
+    pub stop: AddStop,
+}
+
+impl AddedCount {
+    /// Buffers the decoder keeps: [`CaptureNeeds::keep_reordered`], or
+    /// every buffer `REQBUFS` gave if it raised the driver's minimum it was
+    /// asked for, as [`CaptureCount::keep`] takes a raised count. Buffers
+    /// added later don't count as raised.
+    pub(crate) fn keep(&self) -> u32 {
+        let keep = self.needs.keep_reordered();
+        if self.started > self.needs.control {
+            keep.max(self.started)
+        } else {
+            keep
+        }
+    }
+
+    /// The count wanted: what the decoder keeps and what the player can
+    /// hold, and at least the driver's minimum and [`CAPTURE_BUFFERS`] (which
+    /// only counts when frames are copied). 10 for an 8K stream with 2
+    /// reordered, all there was room for on SteamOS 0.5.10.
+    pub(crate) fn wanted(&self) -> u32 {
+        CAPTURE_BUFFERS
+            .max(self.keep() + self.lend)
+            .max(self.needs.control)
+    }
+
+    /// The buffers there are.
+    pub(crate) fn buffers(&self) -> u32 {
+        self.started + self.added
+    }
+
+    /// The most buffers [`lendable`] lets out at once: fewer buffers than
+    /// wanted means fewer lent.
+    pub(crate) fn lent_at_most(&self) -> u32 {
+        if self.lend == 0 {
+            0
+        } else {
+            self.buffers().saturating_sub(self.keep())
+        }
+    }
+
+    /// The level to log this count at. Info when the adds ended as they
+    /// may on the mainline driver: with as many as wanted, or with a
+    /// `VIDIOC_CREATE_BUFS` that found no memory, which is how every start
+    /// of an 8K 10-bit file reordering 3 ends (11 wanted, room for 10), as
+    /// long as there is something to lend when frames are shared. Warn for
+    /// what isn't expected: an add that failed for another reason, a
+    /// `REQBUFS` that gave other than the minimum asked for, or frames
+    /// shared with none to lend, every picture then copied.
+    pub(crate) fn level(&self) -> log::Level {
+        if matches!(self.stop, AddStop::Failed(_))
+            || self.started != self.needs.control
+            || (self.lend > 0 && self.lent_at_most() == 0)
+        {
+            log::Level::Warn
+        } else {
+            log::Level::Info
+        }
+    }
+
+    /// This count, when there are at least as many buffers as the decoder
+    /// keeps; else the error that sends the video to software, worded as
+    /// [`CaptureCount::enough`]'s so the player says the decoder is busy.
+    pub(crate) fn enough(self) -> Result<AddedCount, crate::Error> {
+        let keep = self.keep();
+        if self.buffers() >= keep {
+            return Ok(self);
+        }
+        Err(crate::Error::Unsupported(format!(
+            "V4L2 capture got {} of the {} buffers wanted, fewer than the {keep} the decoder \
+             keeps: the driver is out of memory",
+            self.buffers(),
+            self.wanted()
+        )))
+    }
+}
+
+impl std::fmt::Display for AddedCount {
+    /// "started with 7 (driver minimum 7), added 3 after STREAMON: all 10
+    /// wanted (stream reorders 2, player holds 7): the decoder keeps 3, up
+    /// to 7 lent".
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "started with {} (driver minimum {}",
+            self.started, self.needs.control
+        )?;
+        if self.started > self.needs.control {
+            write!(f, ", raised by the driver")?;
+        } else if self.started < self.needs.control {
+            write!(f, ", given fewer")?;
+        }
+        write!(f, "), added {} after STREAMON: ", self.added)?;
+        let wanted = self.wanted();
+        match &self.stop {
+            AddStop::Wanted => write!(f, "all {wanted} wanted")?,
+            AddStop::NoMemory => write!(
+                f,
+                "{} of {wanted} wanted, no memory for more",
+                self.buffers()
+            )?,
+            AddStop::Failed(e) => write!(f, "{} of {wanted} wanted, {e}", self.buffers())?,
+        }
+        match self.needs.reorder() {
+            (r, true) => write!(f, " (stream reorders {r}, ")?,
+            (r, false) => write!(
+                f,
+                " (stream's reorder count unread, at most {r} at {}x{}, ",
+                self.needs.size.0, self.needs.size.1
+            )?,
+        }
+        if self.lend > 0 {
+            write!(f, "player holds {})", self.lend)?;
+        } else {
+            write!(f, "frames copied)")?;
         }
         write!(f, ": the decoder keeps {}", self.keep())?;
         match self.lent_at_most() {
@@ -896,6 +1193,28 @@ impl Q10cLayout {
         sizeimage: usize,
         visible: (u32, u32),
     ) -> Option<Q10cLayout> {
+        let (uv_offset, size) = Self::planes(fmt, stride);
+        let l = Q10cLayout {
+            width: visible.0,
+            height: visible.1,
+            stride,
+            rows: fmt.1,
+            uv_offset,
+            size,
+        };
+        let fits = visible.0 > 0 && visible.1 > 0 && visible.0 <= fmt.0 && visible.1 <= fmt.1;
+        (fits && stride == Self::stride(fmt.0) && l.size == sizeimage).then_some(l)
+    }
+
+    /// The stride of a CAPTURE format `width` wide: whole groups of 192
+    /// samples (64 of three samples in four bytes), rows to 256 bytes.
+    fn stride(width: u32) -> usize {
+        ((width as usize).next_multiple_of(192) * 4 / 3).next_multiple_of(256)
+    }
+
+    /// Where the UV plane's metadata starts, and the bytes of the whole
+    /// picture, for CAPTURE format `fmt` with `stride`.
+    fn planes(fmt: (u32, u32), stride: usize) -> (usize, usize) {
         let a = usize::next_multiple_of;
         let (w, h) = (fmt.0 as usize, fmt.1 as usize);
         let y_meta = a(a(w.div_ceil(48), 64) * a(h.div_ceil(4), 16), 4096);
@@ -905,17 +1224,29 @@ impl Q10cLayout {
             4096,
         );
         let uv = a(stride * a(h.div_ceil(2), 16), 4096);
-        let l = Q10cLayout {
-            width: visible.0,
-            height: visible.1,
-            stride,
-            rows: fmt.1,
-            uv_offset: y_meta + y,
-            size: y_meta + y + uv_meta + uv,
-        };
-        let fits = visible.0 > 0 && visible.1 > 0 && visible.0 <= fmt.0 && visible.1 <= fmt.1;
-        (fits && stride == a(a(w, 192) * 4 / 3, 256) && l.size == sizeimage).then_some(l)
+        (y_meta + y, y_meta + y + uv_meta + uv)
     }
+}
+
+/// The CAPTURE format the driver gives a Q10C stream of visible size
+/// `stream`: the width in whole groups of 192 samples (as its stride), the
+/// height in whole 16-line rows. That is every size measured on the Frame,
+/// with both drivers: 1920x1080 as 1920x1088, 8192 wide as 8256 (4096, 4064
+/// and 4032 high), and 3840x2160, 5760x2880 and 7680x3840 as they are. A
+/// stream coded larger than that around its visible picture gets more.
+pub(crate) fn q10c_format(stream: (u32, u32)) -> (u32, u32) {
+    (
+        stream.0.next_multiple_of(192),
+        stream.1.next_multiple_of(16),
+    )
+}
+
+/// Bytes of a Q10C CAPTURE buffer for a stream of visible size `stream`,
+/// by [`q10c_format`] and [`Q10cLayout`]'s arithmetic: what the driver will
+/// report once the stream's source change comes, foreseen at open.
+pub(crate) fn q10c_size(stream: (u32, u32)) -> usize {
+    let fmt = q10c_format(stream);
+    Q10cLayout::planes(fmt, Q10cLayout::stride(fmt.0)).1
 }
 
 /// Maps the V4L2 buffer timestamps we hand out to packet timing. Ids count
@@ -999,7 +1330,10 @@ mod sys {
     pub const DEC_CMD_STOP: u32 = 1;
 
     pub const CID_MIN_BUFFERS_FOR_CAPTURE: u32 = 0x0098_0900 + 39;
+    pub const CTRL_FLAG_DISABLED: u32 = 0x0001;
     pub const SEL_TGT_COMPOSE: u32 = 0x0100;
+
+    pub const FMT_FLAG_DYN_RESOLUTION: u32 = 0x0008;
 
     #[repr(C)]
     #[derive(Default)]
@@ -1027,6 +1361,7 @@ mod sys {
 
     /// `struct v4l2_format`; the union starts at offset 8 on 64-bit.
     #[repr(C)]
+    #[derive(Clone)]
     pub struct Format {
         pub type_: u32,
         pub pad: u32,
@@ -1097,6 +1432,38 @@ mod sys {
         pub capabilities: u32,
         pub flags: u8,
         pub reserved: [u8; 3],
+    }
+
+    /// `struct v4l2_create_buffers`. `struct v4l2_format` is 8-aligned on
+    /// 64-bit (its union holds pointers), hence `pad` before it.
+    #[repr(C)]
+    pub struct CreateBuffers {
+        pub index: u32,
+        pub count: u32,
+        pub memory: u32,
+        pub pad: u32,
+        pub format: Format,
+        pub capabilities: u32,
+        pub flags: u32,
+        pub max_num_buffers: u32,
+        pub reserved: [u32; 5],
+    }
+
+    impl CreateBuffers {
+        /// `count` MMAP buffers for `format`.
+        pub fn new(count: u32, format: &Format) -> CreateBuffers {
+            CreateBuffers {
+                index: 0,
+                count,
+                memory: MEMORY_MMAP,
+                pad: 0,
+                format: format.clone(),
+                capabilities: 0,
+                flags: 0,
+                max_num_buffers: 0,
+                reserved: [0; 5],
+            }
+        }
     }
 
     #[repr(C)]
@@ -1192,6 +1559,21 @@ mod sys {
         pub value: i32,
     }
 
+    /// `struct v4l2_queryctrl`.
+    #[repr(C)]
+    #[derive(Default)]
+    pub struct QueryCtrl {
+        pub id: u32,
+        pub type_: u32,
+        pub name: [u8; 32],
+        pub minimum: i32,
+        pub maximum: i32,
+        pub step: i32,
+        pub default_value: i32,
+        pub flags: u32,
+        pub reserved: [u32; 2],
+    }
+
     #[repr(C)]
     #[derive(Default)]
     pub struct Selection {
@@ -1244,8 +1626,10 @@ mod sys {
     pub const VIDIOC_STREAMON: u64 = iow::<i32>(18);
     pub const VIDIOC_STREAMOFF: u64 = iow::<i32>(19);
     pub const VIDIOC_G_CTRL: u64 = iowr::<Control>(27);
+    pub const VIDIOC_QUERYCTRL: u64 = iowr::<QueryCtrl>(36);
     pub const VIDIOC_DQEVENT: u64 = ior::<Event>(89);
     pub const VIDIOC_SUBSCRIBE_EVENT: u64 = iow::<EventSubscription>(90);
+    pub const VIDIOC_CREATE_BUFS: u64 = iowr::<CreateBuffers>(92);
     pub const VIDIOC_G_SELECTION: u64 = iowr::<Selection>(94);
     pub const VIDIOC_DECODER_CMD: u64 = iowr::<DecoderCmd>(96);
 
@@ -1254,12 +1638,15 @@ mod sys {
     const _: () = assert!(size_of::<FmtDesc>() == 64);
     const _: () = assert!(size_of::<Format>() == 208);
     const _: () = assert!(size_of::<RequestBuffers>() == 20);
+    const _: () = assert!(size_of::<CreateBuffers>() == 256);
+    const _: () = assert!(std::mem::offset_of!(CreateBuffers, format) == 16);
     const _: () = assert!(size_of::<Plane>() == 64);
     const _: () = assert!(size_of::<Buffer>() == 88);
     const _: () = assert!(size_of::<EventSubscription>() == 32);
     const _: () = assert!(size_of::<Event>() == 136);
     const _: () = assert!(size_of::<DecoderCmd>() == 72);
     const _: () = assert!(size_of::<Control>() == 8);
+    const _: () = assert!(size_of::<QueryCtrl>() == 68);
     const _: () = assert!(size_of::<Selection>() == 64);
 
     // Known values from videodev2.h, as a check on the encoding.
@@ -1268,6 +1655,8 @@ mod sys {
     const _: () = assert!(VIDIOC_QBUF == 0xc058_560f);
     const _: () = assert!(VIDIOC_STREAMON == 0x4004_5612);
     const _: () = assert!(VIDIOC_DQEVENT == 0x8088_5659);
+    const _: () = assert!(VIDIOC_QUERYCTRL == 0xc044_5624);
+    const _: () = assert!(VIDIOC_CREATE_BUFS == 0xc100_565c);
 }
 
 #[cfg(target_os = "linux")]
@@ -1289,6 +1678,12 @@ mod linux {
     const Q10C: u32 = fourcc(b"Q10C");
     /// Give up when the device makes no progress for this long.
     const STALL: Duration = Duration::from_secs(5);
+    /// The wait before the one second try at adding the first CAPTURE
+    /// buffer after `STREAMON` ([`AddedCount`]), when the first found no
+    /// memory. On SteamOS 0.5.10 the first adds succeeded on the first try
+    /// or after very few, tries made about 9 ms apart (40 failing ones took
+    /// 0.37 s): this is about ten of those, and a video's start spares it.
+    const FIRST_ADD_RETRY: Duration = Duration::from_millis(100);
 
     fn ioctl<T>(fd: &OwnedFd, req: u64, arg: &mut T) -> std::io::Result<()> {
         loop {
@@ -1317,6 +1712,25 @@ mod linux {
 
     fn fourcc_str(f: u32) -> String {
         f.to_le_bytes().iter().map(|&b| b as char).collect()
+    }
+
+    /// How the CAPTURE line starts: the format, `buffers` of them and the
+    /// bytes they take, and whether they are `shared` with the GPU.
+    fn capture_line(f: &Format, layout: Layout, buffers: u32, shared: bool) -> String {
+        let visible = layout.visible();
+        format!(
+            "V4L2 capture {} {}x{} (visible {}x{}, stride {}) x{buffers} buffers of {} bytes \
+             ({} in all){}",
+            fourcc_str(f.pixelformat()),
+            f.width(),
+            f.height(),
+            visible.0,
+            visible.1,
+            layout.stride(),
+            f.sizeimage(0),
+            u64::from(buffers) * u64::from(f.sizeimage(0)),
+            if shared { ", shared with the GPU" } else { "" }
+        )
     }
 
     /// An mmapped V4L2 buffer plane.
@@ -1446,7 +1860,11 @@ mod linux {
         cap: Option<Capture>,
         fd: OwnedFd,
         pub device: String,
+        /// Which driver the device is: it decides how big streams start.
+        driver: Driver,
         codec: Codec,
+        /// The stream's size: what the decoder and its messages go by, also
+        /// while OUTPUT is declared [`DECLARED_START_SIZE`].
         stream_size: (u32, u32),
         /// The CAPTURE format: NV12, or Q10C for 10-bit streams.
         pixelformat: u32,
@@ -1536,7 +1954,8 @@ mod linux {
         })
     }
 
-    fn formats(fd: &OwnedFd, type_: u32) -> Vec<u32> {
+    /// The formats of queue `type_`, each with its `V4L2_FMT_FLAG_*` flags.
+    fn formats(fd: &OwnedFd, type_: u32) -> Vec<(u32, u32)> {
         let mut out = Vec::new();
         for index in 0..64 {
             let mut d = FmtDesc {
@@ -1547,9 +1966,30 @@ mod linux {
             if ioctl(fd, VIDIOC_ENUM_FMT, &mut d).is_err() {
                 break;
             }
-            out.push(d.pixelformat);
+            out.push((d.pixelformat, d.flags));
         }
         out
+    }
+
+    /// Whether the device has control `id`, and it isn't disabled for good.
+    fn has_control(fd: &OwnedFd, id: u32) -> bool {
+        let mut q = QueryCtrl {
+            id,
+            ..Default::default()
+        };
+        ioctl(fd, VIDIOC_QUERYCTRL, &mut q).is_ok() && q.flags & CTRL_FLAG_DISABLED == 0
+    }
+
+    /// Which driver `fd` is, from what it reports for `codec`
+    /// ([`Driver::from_reports`]).
+    fn which_driver(fd: &OwnedFd, codec: Codec) -> Driver {
+        let dynamic_resolution = formats(fd, BUF_TYPE_OUTPUT_MPLANE)
+            .iter()
+            .any(|&(f, flags)| f == codec.fourcc() && flags & FMT_FLAG_DYN_RESOLUTION != 0);
+        Driver::from_reports(
+            dynamic_resolution,
+            has_control(fd, CID_MIN_BUFFERS_FOR_CAPTURE),
+        )
     }
 
     fn open_node(path: &str) -> std::io::Result<OwnedFd> {
@@ -1573,10 +2013,11 @@ mod linux {
         let Some(caps) = query_caps(fd) else {
             return false;
         };
+        let lists = |type_, format| formats(fd, type_).iter().any(|&(f, _)| f == format);
         caps & CAP_VIDEO_M2M_MPLANE != 0
             && caps & CAP_STREAMING != 0
-            && formats(fd, BUF_TYPE_OUTPUT_MPLANE).contains(&codec.fourcc())
-            && formats(fd, BUF_TYPE_CAPTURE_MPLANE).contains(&NV12)
+            && lists(BUF_TYPE_OUTPUT_MPLANE, codec.fourcc())
+            && lists(BUF_TYPE_CAPTURE_MPLANE, NV12)
     }
 
     /// `/dev/video-dec0` (the Frame's decoder), else the first `/dev/video*`
@@ -1720,11 +2161,14 @@ mod linux {
             let bsf = AnnexbFilter::open(par, time_base)?
                 .ok_or_else(|| Error::Unsupported("Annex B bitstream filter unavailable".into()))?;
             let (device, fd) = find_device(codec)?;
+            let driver = which_driver(&fd, codec);
+            log::debug!("V4L2 {device}: {driver:?} driver");
             let mut dec = V4l2Decoder {
                 out_bufs: Vec::new(),
                 cap: None,
                 fd,
                 device,
+                driver,
                 codec,
                 stream_size,
                 pixelformat,
@@ -1797,12 +2241,26 @@ mod linux {
 
         /// S_FMT + REQBUFS on the OUTPUT queue with the declared size.
         fn try_output(&self, width: u32, height: u32) -> std::io::Result<u32> {
+            self.declare_output(width, height)?;
+            self.request_output()
+        }
+
+        /// S_FMT on the OUTPUT queue with the declared size: the bytes of
+        /// the bitstream buffers the driver gives it (`sizeimage`). Nothing
+        /// is allocated yet.
+        fn declare_output(&self, width: u32, height: u32) -> std::io::Result<u32> {
             let mut f = Format::new(BUF_TYPE_OUTPUT_MPLANE);
             f.set_size(width, height);
             f.set_pixelformat(self.codec.fourcc());
             f.set_field(FIELD_NONE);
             f.set_num_planes(1);
             ioctl(&self.fd, VIDIOC_S_FMT, &mut f)?;
+            Ok(f.sizeimage(0))
+        }
+
+        /// REQBUFS on the OUTPUT queue for the size declared last: how many
+        /// buffers it gave.
+        fn request_output(&self) -> std::io::Result<u32> {
             let mut r = RequestBuffers {
                 count: OUTPUT_BUFFERS,
                 type_: BUF_TYPE_OUTPUT_MPLANE,
@@ -1811,6 +2269,56 @@ mod linux {
             };
             ioctl(&self.fd, VIDIOC_REQBUFS, &mut r)?;
             Ok(r.count)
+        }
+
+        /// The OUTPUT queue declared [`DECLARED_START_SIZE`] and its buffers
+        /// allocated, for a stream [`declared_start_size`] picks: how many
+        /// buffers there are. `None`, with nothing allocated, for every
+        /// other stream, and when that size gets smaller
+        /// bitstream buffers than the stream's own or a step fails: the
+        /// stream's own size is then declared, as for every other stream.
+        fn output_at_start_size(&self) -> Option<u32> {
+            let (w, h) = self.stream_size;
+            let (sw, sh) =
+                declared_start_size(self.driver, self.pixelformat == Q10C, self.stream_size)?;
+            let about = format!(
+                "V4L2 {w}x{h} {} on the mainline driver: CAPTURE buffers of {} bytes \
+                 foreseen, over {} MiB",
+                fourcc_str(self.pixelformat),
+                q10c_size(self.stream_size),
+                SMALL_SLOT >> 20
+            );
+            let sizes = self
+                .declare_output(w, h)
+                .and_then(|own| Ok((own, self.declare_output(sw, sh)?)));
+            let (own, at_start) = match sizes {
+                Ok(sizes) => sizes,
+                Err(e) => {
+                    log::warn!("{about}; S_FMT output: {e}: declaring {w}x{h}");
+                    return None;
+                }
+            };
+            if !start_buffers_hold(own, at_start) {
+                log::warn!(
+                    "{about}, but {sw}x{sh} gets bitstream buffers of {at_start} bytes, \
+                     {w}x{h} {own}: declaring {w}x{h}"
+                );
+                return None;
+            }
+            match self.request_output() {
+                Ok(count) => {
+                    log::info!(
+                        "{about}: declaring {sw}x{sh} on OUTPUT for the start (bitstream buffers \
+                         of {at_start} bytes, {own} at {w}x{h}), the stream's size to come \
+                         with its source change"
+                    );
+                    Some(count)
+                }
+                Err(e) => {
+                    log::warn!("{about}; REQBUFS output at {sw}x{sh}: {e}: declaring {w}x{h}");
+                    None
+                }
+            }
         }
 
         /// [`refused`], with who holds the driver, logging the driver's error.
@@ -1847,7 +2355,10 @@ mod linux {
 
         fn setup_output(&mut self) -> Result<()> {
             let (w, h) = self.stream_size;
-            let count = match self.try_output(w, h) {
+            let declared = self
+                .output_at_start_size()
+                .map_or_else(|| self.try_output(w, h), Ok);
+            let count = match declared {
                 Ok(n) => n,
                 Err(e) if e.raw_os_error() == Some(libc::ENOMEM) => {
                     // The admission check: find the largest height admitted
@@ -2189,6 +2700,9 @@ mod linux {
                     ),
                 );
             let lend = if share { MAX_LENT } else { 0 };
+            if adds_after_streamon(self.driver, f.sizeimage(0)) {
+                return self.setup_capture_adding(&f, layout, needs, lend);
+            }
             let mut asked = CaptureCount::ask(&needs, lend);
             let granted = loop {
                 let mut r = RequestBuffers {
@@ -2229,18 +2743,7 @@ mod linux {
             .enough()?;
             let mut bufs = Vec::new();
             for i in 0..granted {
-                let mut planes = [Plane::default(); 1];
-                let mut b = Buffer::new(BUF_TYPE_CAPTURE_MPLANE, i, &mut planes);
-                ioctl(&self.fd, VIDIOC_QUERYBUF, &mut b).map_err(|e| err("QUERYBUF capture", e))?;
-                bufs.push(
-                    Mapping::new(
-                        &self.fd,
-                        planes[0].length as usize,
-                        planes[0].m as u32,
-                        false,
-                    )
-                    .map_err(|e| err("mmap capture", e))?,
-                );
+                bufs.push(self.map_capture(i).map_err(|(what, e)| err(what, e))?);
             }
             let exports = if share {
                 self.export_buffers(granted).unwrap_or_else(|e| {
@@ -2266,7 +2769,6 @@ mod linux {
             }
             let mut t = BUF_TYPE_CAPTURE_MPLANE as i32;
             ioctl(&self.fd, VIDIOC_STREAMON, &mut t).map_err(|e| err("STREAMON capture", e))?;
-            let visible = layout.visible();
             let count = CaptureCount {
                 lend: if shared { lend } else { 0 },
                 ..count
@@ -2280,39 +2782,217 @@ mod linux {
             };
             log::log!(
                 level,
-                "V4L2 capture {} {}x{} (visible {}x{}, stride {}) x{granted} buffers of {} bytes \
-                 ({} in all){}; {count}",
-                fourcc_str(f.pixelformat()),
-                f.width(),
-                f.height(),
-                visible.0,
-                visible.1,
-                layout.stride(),
-                f.sizeimage(0),
-                u64::from(granted) * u64::from(f.sizeimage(0)),
-                if shared { ", shared with the GPU" } else { "" }
+                "{}; {count}",
+                capture_line(&f, layout, granted, shared)
             );
             Ok(())
         }
 
+        /// CAPTURE set up for buffers over [`SMALL_SLOT`] on the mainline
+        /// driver ([`adds_after_streamon`]): `REQBUFS` for the driver's
+        /// minimum, those mapped, exported when shared and queued, then
+        /// `STREAMON`, then one buffer at a time added
+        /// ([`V4l2Decoder::add_capture`]) up to the count wanted, stopping
+        /// at the first that fails ([`AddedCount`]). A failed `STREAMON`
+        /// leaves the session unusable, so it isn't tried again: its error
+        /// ("Cannot allocate memory" when the decoder's room is taken) sends
+        /// the video to software, and the player reads "memory" as the
+        /// decoder being busy (`slow_decode_notice`).
+        fn setup_capture_adding(
+            &mut self,
+            f: &Format,
+            layout: Layout,
+            needs: CaptureNeeds,
+            lend: u32,
+        ) -> Result<()> {
+            let mut r = RequestBuffers {
+                count: needs.control,
+                type_: BUF_TYPE_CAPTURE_MPLANE,
+                memory: MEMORY_MMAP,
+                ..Default::default()
+            };
+            ioctl(&self.fd, VIDIOC_REQBUFS, &mut r).map_err(|e| err("REQBUFS capture", e))?;
+            if r.count == 0 {
+                return Err(Error::Unsupported(
+                    "V4L2 REQBUFS capture granted 0 buffers".into(),
+                ));
+            }
+            let mut count = AddedCount {
+                needs,
+                lend,
+                started: r.count,
+                added: 0,
+                stop: AddStop::Wanted,
+            };
+            let mut bufs = Vec::new();
+            for i in 0..count.started {
+                bufs.push(self.map_capture(i).map_err(|(what, e)| err(what, e))?);
+            }
+            let exports = if lend > 0 {
+                self.export_buffers(count.started).unwrap_or_else(|e| {
+                    log::warn!("V4L2: capture buffers not shared, pictures are copied: {e}");
+                    Vec::new()
+                })
+            } else {
+                Vec::new()
+            };
+            let shared = !exports.is_empty();
+            if !shared {
+                count.lend = 0;
+            }
+            self.cap = Some(Capture {
+                lent: vec![false; bufs.len()],
+                bufs,
+                allocated_for: (f.width(), f.height()),
+                layout,
+                held: None,
+                set: NEXT_SHARED.fetch_add(1, Ordering::Relaxed),
+                // Buffers added later change what may be lent, not this.
+                keep: count.keep(),
+                exports,
+            });
+            for i in 0..count.started {
+                self.queue_capture(i)?;
+            }
+            let wanted = count.wanted();
+            log::info!(
+                "V4L2 capture {} {}x{}: STREAMON with {} buffers of {} bytes (driver minimum {}), \
+                 then up to {} more added",
+                fourcc_str(f.pixelformat()),
+                f.width(),
+                f.height(),
+                count.started,
+                f.sizeimage(0),
+                needs.control,
+                wanted.saturating_sub(count.started)
+            );
+            let mut t = BUF_TYPE_CAPTURE_MPLANE as i32;
+            ioctl(&self.fd, VIDIOC_STREAMON, &mut t).map_err(|e| err("STREAMON capture", e))?;
+            let mut retried = false;
+            while count.buffers() < wanted {
+                match self.add_capture(f) {
+                    Ok(()) => count.added += 1,
+                    // The adds take the room the first set of working
+                    // buffers held. Whether that set can still be there at
+                    // the first add was not seen, so that one gets a second
+                    // try.
+                    Err(AddStop::NoMemory) if count.added == 0 && !retried => {
+                        retried = true;
+                        log::info!(
+                            "V4L2 CREATE_BUFS capture: no memory right after STREAMON; trying \
+                             once more in {} ms",
+                            FIRST_ADD_RETRY.as_millis()
+                        );
+                        std::thread::sleep(FIRST_ADD_RETRY);
+                    }
+                    Err(stop) => {
+                        count.stop = stop;
+                        break;
+                    }
+                }
+            }
+            let count = count.enough()?;
+            // Fewer buffers than wanted because an add found no memory is
+            // how the adds end on this driver for 8K files reordering 3, so
+            // that is info like all wanted; only a failed add, a REQBUFS
+            // count other than the minimum asked for, or nothing to lend
+            // while sharing warns (AddedCount::level).
+            log::log!(
+                count.level(),
+                "{}; {count}",
+                capture_line(f, layout, count.buffers(), shared)
+            );
+            Ok(())
+        }
+
+        /// One more CAPTURE buffer after CAPTURE `STREAMON`: made with
+        /// `VIDIOC_CREATE_BUFS` for format `f`, mapped, exported when the
+        /// others are, and queued. It joins the others only once queued: a
+        /// buffer that fails a step is never counted, queued or lent, and
+        /// its memory stays allocated, unused, until CAPTURE is freed. So
+        /// lending stays all or none, and an add that fails costs only the
+        /// buffers it would have lent.
+        fn add_capture(&mut self, f: &Format) -> std::result::Result<(), AddStop> {
+            let failed = |what: &str, e: std::io::Error| AddStop::Failed(format!("{what}: {e}"));
+            let mut c = CreateBuffers::new(1, f);
+            match ioctl(&self.fd, VIDIOC_CREATE_BUFS, &mut c) {
+                Ok(()) => {}
+                Err(e) if e.raw_os_error() == Some(libc::ENOMEM) => return Err(AddStop::NoMemory),
+                Err(e) => return Err(failed("CREATE_BUFS capture", e)),
+            }
+            let Some(cap) = self.cap.as_ref() else {
+                return Err(AddStop::Failed("no capture buffers".into()));
+            };
+            let (next, shared) = (cap.bufs.len(), !cap.exports.is_empty());
+            // The buffer's index is its place in `Capture`'s lists.
+            if c.count == 0 || c.index as usize != next {
+                return Err(AddStop::Failed(format!(
+                    "CREATE_BUFS capture made {} at index {}, wanted 1 at {next}",
+                    c.count, c.index
+                )));
+            }
+            let mapping = self
+                .map_capture(c.index)
+                .map_err(|(what, e)| failed(what, e))?;
+            let export = if shared {
+                Some(
+                    self.export_buffer(c.index)
+                        .map_err(|e| failed("EXPBUF capture", e))?,
+                )
+            } else {
+                None
+            };
+            let mut planes = [Plane {
+                length: mapping.len as u32,
+                ..Default::default()
+            }];
+            let mut b = Buffer::new(BUF_TYPE_CAPTURE_MPLANE, c.index, &mut planes);
+            ioctl(&self.fd, VIDIOC_QBUF, &mut b).map_err(|e| failed("QBUF capture", e))?;
+            if let Some(cap) = self.cap.as_mut() {
+                cap.bufs.push(mapping);
+                cap.lent.push(false);
+                cap.exports.extend(export);
+            }
+            Ok(())
+        }
+
+        /// CAPTURE buffer `index` mapped (`QUERYBUF`, `mmap`); on failure,
+        /// the step that failed and its error.
+        fn map_capture(
+            &self,
+            index: u32,
+        ) -> std::result::Result<Mapping, (&'static str, std::io::Error)> {
+            let mut planes = [Plane::default(); 1];
+            let mut b = Buffer::new(BUF_TYPE_CAPTURE_MPLANE, index, &mut planes);
+            ioctl(&self.fd, VIDIOC_QUERYBUF, &mut b).map_err(|e| ("QUERYBUF capture", e))?;
+            Mapping::new(
+                &self.fd,
+                planes[0].length as usize,
+                planes[0].m as u32,
+                false,
+            )
+            .map_err(|e| ("mmap capture", e))
+        }
+
         /// Exports the `count` CAPTURE buffers as DMA-BUFs, all or none.
         fn export_buffers(&self, count: u32) -> std::io::Result<Vec<Arc<Export>>> {
-            (0..count)
-                .map(|index| {
-                    let mut x = ExportBuffer {
-                        type_: BUF_TYPE_CAPTURE_MPLANE,
-                        index,
-                        flags: (libc::O_RDWR | libc::O_CLOEXEC) as u32,
-                        ..Default::default()
-                    };
-                    ioctl(&self.fd, VIDIOC_EXPBUF, &mut x)?;
-                    Ok(Arc::new(Export {
-                        // SAFETY: a new descriptor the driver gave us.
-                        fd: unsafe { OwnedFd::from_raw_fd(x.fd) },
-                        id: NEXT_SHARED.fetch_add(1, Ordering::Relaxed),
-                    }))
-                })
-                .collect()
+            (0..count).map(|index| self.export_buffer(index)).collect()
+        }
+
+        /// Exports CAPTURE buffer `index` as a DMA-BUF.
+        fn export_buffer(&self, index: u32) -> std::io::Result<Arc<Export>> {
+            let mut x = ExportBuffer {
+                type_: BUF_TYPE_CAPTURE_MPLANE,
+                index,
+                flags: (libc::O_RDWR | libc::O_CLOEXEC) as u32,
+                ..Default::default()
+            };
+            ioctl(&self.fd, VIDIOC_EXPBUF, &mut x)?;
+            Ok(Arc::new(Export {
+                // SAFETY: a new descriptor the driver gave us.
+                fd: unsafe { OwnedFd::from_raw_fd(x.fd) },
+                id: NEXT_SHARED.fetch_add(1, Ordering::Relaxed),
+            }))
         }
 
         /// Lend buffers with frames instead of copying the pictures out,
@@ -2467,7 +3147,15 @@ mod linux {
             self.drc_pending = false;
             let f = self.g_fmt_capture()?;
             let needs = self.capture_needs(&f);
-            let keep = needs.keep();
+            // What the decoder keeps, and the fewest buffers to resume on:
+            // for buffers set up the mainline driver's way, the stream's
+            // reorder count plus one, and at least the driver's minimum.
+            let (keep, fewest) = if adds_after_streamon(self.driver, f.sizeimage(0)) {
+                let keep = needs.keep_reordered();
+                (keep, keep.max(needs.control))
+            } else {
+                (needs.keep(), needs.keep())
+            };
             let (allocated_for, count, smallest, kept, shared) = self
                 .cap
                 .as_ref()
@@ -2484,7 +3172,7 @@ mod linux {
             let need = f.sizeimage(0) as usize;
             let new_format = (f.width(), f.height());
             if f.pixelformat() == self.pixelformat
-                && can_reuse_capture(allocated_for, count, smallest, new_format, keep, need)
+                && can_reuse_capture(allocated_for, count, smallest, new_format, fewest, need)
             {
                 let layout = self.layout(&f)?;
                 if layout.end() <= smallest {
@@ -2510,7 +3198,7 @@ mod linux {
             }
             log::info!(
                 "V4L2 stream now {}x{} {}: reallocating capture ({count} x {smallest} bytes, \
-                 need {keep} x {need})",
+                 need {fewest} x {need})",
                 f.width(),
                 f.height(),
                 fourcc_str(f.pixelformat())
@@ -3295,6 +3983,300 @@ mod tests {
                 .to_string()
                 .contains("granted 5 of the 6 buffers asked for, fewer than the 6")
         );
+    }
+
+    #[test]
+    fn the_mainline_driver_is_known_by_both_of_its_reports() {
+        assert_eq!(Driver::from_reports(true, true), Driver::Mainline);
+        // Neither, as the earlier driver reports, or one alone, as neither
+        // driver does.
+        assert_eq!(Driver::from_reports(false, false), Driver::Earlier);
+        assert_eq!(Driver::from_reports(true, false), Driver::Earlier);
+        assert_eq!(Driver::from_reports(false, true), Driver::Earlier);
+    }
+
+    #[test]
+    fn q10c_buffers_are_foreseen_from_the_stream_size() {
+        // Visible size, and the CAPTURE format and bytes the drivers gave
+        // it: the first three from the mainline driver (SteamOS 0.5.10),
+        // the rest from the earlier one.
+        for (stream, fmt, size) in [
+            ((8192, 4096), (8256, 4096), 67_928_064),
+            ((8192, 4064), (8256, 4064), 67_399_680),
+            ((8192, 4032), (8256, 4032), 66_871_296),
+            ((1920, 1080), (1920, 1088), 4_210_688),
+            ((3840, 2160), (3840, 2160), 16_736_256),
+            ((5760, 2880), (5760, 2880), 33_320_960),
+            ((7680, 3840), (7680, 3840), 59_260_928),
+        ] {
+            assert_eq!(q10c_format(stream), fmt, "{stream:?}");
+            assert_eq!(q10c_size(stream), size, "{stream:?}");
+            let stride = fmt.0 as usize * 4 / 3;
+            assert!(Q10cLayout::new(fmt, stride, size, stream).is_some());
+        }
+    }
+
+    #[test]
+    fn only_q10c_buffers_over_64_mib_start_the_mainline_way() {
+        let declared = |q10c, stream| declared_start_size(Driver::Mainline, q10c, stream);
+        // Over 64 MiB, so in 128 MiB slots, of which there are 23.
+        assert_eq!(declared(true, (8192, 4096)), Some((4096, 2320)));
+        assert_eq!(declared(true, (8192, 4064)), Some((4096, 2320)));
+        assert_eq!(declared(true, (8192, 4320)), Some((4096, 2320)));
+        // 64 MiB slots, 45 of them: started as before.
+        assert_eq!(declared(true, (8192, 4032)), None);
+        assert_eq!(declared(true, (5760, 2880)), None);
+        assert_eq!(declared(true, (7680, 4320)), None);
+        assert_eq!(declared(true, (3840, 2160)), None);
+        // 8-bit, whatever its size (NV12 at 8192x4096: 50,331,648 bytes).
+        assert_eq!(declared(false, (8192, 4096)), None);
+        assert_eq!(declared(false, (8192, 4320)), None);
+        // After the source change, the driver's own figure decides.
+        for (sizeimage, adds) in [
+            (67_928_064, true),
+            (67_399_680, true),
+            ((64 << 20) + 1, true),
+            (64 << 20, false),
+            (66_871_296, false),
+            (33_320_960, false),
+            (50_331_648, false),
+        ] {
+            assert_eq!(
+                adds_after_streamon(Driver::Mainline, sizeimage),
+                adds,
+                "{sizeimage}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_start_size_needs_bitstream_buffers_as_large() {
+        // In tenths of a MiB, as measured on SteamOS 0.5.10: 12.8 at
+        // 4096x2320 and at 8192x4096, 6.8 at 1920x1080.
+        let mib = |tenths: u32| tenths * (1 << 20) / 10;
+        assert!(start_buffers_hold(mib(128), mib(128)));
+        assert!(start_buffers_hold(mib(128), mib(130)));
+        assert!(!start_buffers_hold(mib(128), mib(68)));
+        assert!(!start_buffers_hold(0, mib(128)));
+        // Above 4096x2304, the most macroblocks with smaller buffers, and
+        // well below the streams it stands in for.
+        assert_eq!(macroblocks(4096, 2304), 36_864);
+        let (w, h) = DECLARED_START_SIZE;
+        assert!(macroblocks(w, h) > 36_864);
+        assert!(macroblocks(w, h) < macroblocks(8192, 4064) / 2);
+    }
+
+    /// An 8K 10-bit stream on the mainline driver, `reorder` of its
+    /// pictures reordered (`None`: no SPS read): `REQBUFS` gives the
+    /// driver's minimum, 7 after the source change, and `added` more come
+    /// after `STREAMON`.
+    fn added(reorder: Option<u32>, lend: u32, added: u32) -> AddedCount {
+        AddedCount {
+            needs: CaptureNeeds {
+                control: 7,
+                dpb: reorder.map(|reorder| crate::nal::Dpb {
+                    pictures: reorder + 1,
+                    reorder,
+                }),
+                references: true,
+                size: (8192, 4096),
+            },
+            lend,
+            started: 7,
+            added,
+            stop: AddStop::Wanted,
+        }
+    }
+
+    #[test]
+    fn the_mainline_driver_keeps_the_reordered_pictures_and_one() {
+        // (reorder, wanted, kept, lent with 7, 8, 9 and 10 buffers). As
+        // measured on SteamOS 0.5.10, holding pictures back: an 8K stream
+        // reordering 2 went on with 5, 6 and 7 held of 8, 9 and 10, a 1080p
+        // one reordering 0 or 1 with 7 or 6 of 8.
+        for (reorder, wanted, keep, lent) in [
+            (0, 8, 1, [6, 7, 8, 9]),
+            (1, 9, 2, [5, 6, 7, 8]),
+            (2, 10, 3, [4, 5, 6, 7]),
+            (3, 11, 4, [3, 4, 5, 6]),
+        ] {
+            for (buffers, lent) in (7..=10).zip(lent) {
+                let c = added(Some(reorder), MAX_LENT, buffers - 7);
+                let at = format!("{reorder} reordered, {buffers} buffers");
+                assert_eq!(c.wanted(), wanted, "{at}");
+                assert_eq!((c.keep(), c.lent_at_most()), (keep, lent), "{at}");
+                assert_eq!(lent_at_most(buffers, c.keep()), lent, "{at}");
+                assert!(c.enough().is_ok(), "{at}");
+            }
+        }
+        // Asked for exactly the driver's minimum, given it, then 3 added:
+        // none of that is a raised count, so the decoder keeps 3, not 10.
+        let c = added(Some(2), MAX_LENT, 3);
+        assert_eq!((c.buffers(), c.keep(), c.lent_at_most()), (10, 3, 7));
+        assert!(MAX_LENT <= c.lent_at_most());
+        // No SPS read: the most an 8K stream may reorder, 5.
+        let c = added(None, MAX_LENT, 3);
+        assert_eq!(c.needs.reorder(), (5, false));
+        assert_eq!((c.keep(), c.wanted(), c.lent_at_most()), (6, 13, 4));
+        // Frames copied: at least CAPTURE_BUFFERS, none lent.
+        let c = added(Some(2), 0, 1);
+        assert_eq!((c.wanted(), c.keep(), c.lent_at_most()), (8, 3, 0));
+        // A REQBUFS that raised the minimum asked for: it needs them all,
+        // as CaptureCount takes it.
+        let raised = AddedCount {
+            started: 9,
+            ..added(Some(2), MAX_LENT, 1)
+        };
+        assert_eq!(
+            (raised.keep(), raised.wanted(), raised.lent_at_most()),
+            (9, 16, 1)
+        );
+        // Fewer buffers than the decoder keeps: software, read as busy.
+        let e = added(Some(8), MAX_LENT, 1)
+            .enough()
+            .unwrap_err()
+            .to_string();
+        assert_eq!(
+            e,
+            "unsupported: V4L2 capture got 8 of the 16 buffers wanted, fewer than the 9 the \
+             decoder keeps: the driver is out of memory"
+        );
+        assert!(e.contains("memory"));
+    }
+
+    #[test]
+    fn the_capture_line_says_how_the_buffers_were_added() {
+        assert_eq!(
+            added(Some(2), MAX_LENT, 3).to_string(),
+            "started with 7 (driver minimum 7), added 3 after STREAMON: all 10 wanted (stream \
+             reorders 2, player holds 7): the decoder keeps 3, up to 7 lent"
+        );
+        let full = AddedCount {
+            stop: AddStop::NoMemory,
+            ..added(Some(3), MAX_LENT, 3)
+        };
+        assert_eq!(
+            full.to_string(),
+            "started with 7 (driver minimum 7), added 3 after STREAMON: 10 of 11 wanted, no \
+             memory for more (stream reorders 3, player holds 7): the decoder keeps 4, up to 6 \
+             lent"
+        );
+        let unread = AddedCount {
+            stop: AddStop::NoMemory,
+            ..added(None, MAX_LENT, 3)
+        };
+        assert_eq!(
+            unread.to_string(),
+            "started with 7 (driver minimum 7), added 3 after STREAMON: 10 of 13 wanted, no \
+             memory for more (stream's reorder count unread, at most 5 at 8192x4096, player \
+             holds 7): the decoder keeps 6, up to 4 lent"
+        );
+        let failed = AddedCount {
+            stop: AddStop::Failed("CREATE_BUFS capture: Inappropriate ioctl for device".into()),
+            ..added(Some(2), MAX_LENT, 0)
+        };
+        assert_eq!(
+            failed.to_string(),
+            "started with 7 (driver minimum 7), added 0 after STREAMON: 7 of 10 wanted, \
+             CREATE_BUFS capture: Inappropriate ioctl for device (stream reorders 2, player \
+             holds 7): the decoder keeps 3, up to 4 lent"
+        );
+        assert_eq!(
+            added(Some(2), 0, 1).to_string(),
+            "started with 7 (driver minimum 7), added 1 after STREAMON: all 8 wanted (stream \
+             reorders 2, frames copied): the decoder keeps 3"
+        );
+        let raised = AddedCount {
+            started: 9,
+            stop: AddStop::NoMemory,
+            ..added(Some(2), MAX_LENT, 1)
+        };
+        assert!(raised.to_string().starts_with(
+            "started with 9 (driver minimum 7, raised by the driver), added 1 after STREAMON: \
+             10 of 16 wanted, no memory for more"
+        ));
+    }
+
+    #[test]
+    fn the_capture_line_warns_only_when_the_adds_end_unexpectedly() {
+        use log::Level::{Info, Warn};
+        let no_memory = |c: AddedCount| AddedCount {
+            stop: AddStop::NoMemory,
+            ..c
+        };
+        // All wanted: 7 and 3 added for a stream reordering 2.
+        assert_eq!(added(Some(2), MAX_LENT, 3).level(), Info);
+        // No memory for the 11th that an 8K file reordering 3 wants, the
+        // way every start of one ends: 4 kept, up to 6 lent.
+        let c = no_memory(added(Some(3), MAX_LENT, 3));
+        assert_eq!((c.keep(), c.lent_at_most(), c.level()), (4, 6, Info));
+        // No memory even for the first add: fewer lent, still something.
+        let c = no_memory(added(Some(2), MAX_LENT, 0));
+        assert_eq!((c.lent_at_most(), c.level()), (4, Info));
+        // No memory with nothing to lend while sharing: every picture is
+        // copied.
+        let c = no_memory(added(Some(6), MAX_LENT, 0));
+        assert_eq!((c.keep(), c.lent_at_most(), c.level()), (7, 0, Warn));
+        // An add that failed for another reason.
+        let failed = AddedCount {
+            stop: AddStop::Failed("QBUF capture: Invalid argument".into()),
+            ..added(Some(2), MAX_LENT, 1)
+        };
+        assert_eq!(failed.level(), Warn);
+        // REQBUFS gave other than the minimum asked for: raised, or fewer.
+        let raised = AddedCount {
+            started: 9,
+            ..no_memory(added(Some(2), MAX_LENT, 1))
+        };
+        assert_eq!(raised.level(), Warn);
+        let fewer = AddedCount {
+            started: 6,
+            ..no_memory(added(Some(2), MAX_LENT, 3))
+        };
+        assert_eq!(fewer.level(), Warn);
+        // Frames copied: no lending wanted, whether all wanted came or an
+        // add found no memory, nothing lent included.
+        assert_eq!(added(Some(2), 0, 1).level(), Info);
+        assert_eq!(no_memory(added(Some(2), 0, 0)).level(), Info);
+        assert_eq!(no_memory(added(Some(6), 0, 0)).level(), Info);
+        // But a failed add warns there too.
+        let failed = AddedCount {
+            stop: AddStop::Failed("CREATE_BUFS capture: Invalid argument".into()),
+            ..added(Some(2), 0, 0)
+        };
+        assert_eq!(failed.level(), Warn);
+    }
+
+    #[test]
+    fn the_earlier_driver_starts_every_stream_as_before() {
+        for (q10c, stream) in [
+            (true, (8192, 4096)),
+            (true, (8192, 4064)),
+            (true, (8192, 4032)),
+            (true, (5760, 2880)),
+            (false, (8192, 4096)),
+        ] {
+            assert_eq!(declared_start_size(Driver::Earlier, q10c, stream), None);
+        }
+        for sizeimage in [67_928_064, 67_399_680, 66_871_296, 33_320_960, 50_331_648] {
+            assert!(!adds_after_streamon(Driver::Earlier, sizeimage));
+        }
+        // And counts as before: there the driver has no minimum control
+        // (1), and Q10C buffers are the references.
+        let c = counted(ten_bit_8k(Some(DPB_5)), MAX_LENT, None);
+        assert_eq!((c.asked, c.keep(), c.lent_at_most()), (13, 6, 7));
+        let reorders_2 = crate::nal::Dpb {
+            pictures: 4,
+            reorder: 2,
+        };
+        let c = counted(ten_bit_8k(Some(reorders_2)), MAX_LENT, None);
+        assert_eq!((c.asked, c.keep(), c.lent_at_most()), (12, 5, 7));
+        let nv12 = CaptureNeeds {
+            references: false,
+            ..ten_bit_8k(Some(reorders_2))
+        };
+        let c = counted(nv12, MAX_LENT, None);
+        assert_eq!((c.asked, c.keep(), c.lent_at_most()), (8, 1, 7));
     }
 
     /// The DPB the decoder sizes CAPTURE from after sending SPSs declaring

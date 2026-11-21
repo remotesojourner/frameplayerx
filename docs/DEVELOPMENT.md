@@ -672,7 +672,12 @@ What the code relies on about the platform:
   session open on the driver lowers that, idle ones and encoders too, so
   Steam's recording and browser can leave it busy. `/proc` shows who holds
   it. It writes 10-bit pictures correctly only as Q10C: asked for NV12, it
-  clamps the samples to 8 bits.
+  clamps the samples to 8 bits. Since SteamOS 0.5.10 every buffer the
+  driver allocates sits in one address space of about 2.9 GB, shared by all
+  sessions, in a slot of its size rounded up to a power of two: an
+  8192×4096 10-bit picture (64.8 MiB) takes 128 MiB. `fp-media`'s V4L2
+  decoder declares a smaller size for the start of such a stream, and adds
+  picture buffers after CAPTURE `STREAMON`.
 - Turnip has no TP10 images, though the GPU reads TP10. A TP10 texture
   reads wrongly past 2^24 samples, so 10-bit planes are read in bands.
 - SteamOS only mounts ext4 microSD cards itself, and no USB drives;

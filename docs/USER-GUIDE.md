@@ -1024,15 +1024,18 @@ reads as broken, picture after picture, plays in software instead.
 10-bit video takes more memory in hardware than 8-bit: the decoder keeps
 the pictures it predicts from in the buffers it shares with the GPU, as
 many as the video says it needs, so an 8K 10-bit video typically holds
-about 0.9 GB of them while it plays, where 8K 8-bit holds 0.4 GB. The line
-starting `V4L2 capture` in frameplayerx.log says how many buffers a video
-got and why. If the decoder can't get as many as the video's pictures
-need, the video plays in software straight away, which can't keep up at 8K
-10-bit: the warning pill says "Decoder busy", and the log says how many
-buffers the decoder got and how many it needed. If the hardware decoder
-gives no picture for 5 seconds, the video carries on in software too; the
-log's `V4L2 decoder stalled` line then says where the decoder's buffers
-were, which is worth including in a bug report.
+about 0.9 GB of them while it plays, where 8K 8-bit holds 0.4 GB. Since
+SteamOS 0.5.10 the decoder keeps those pictures in memory of its own, and
+an 8192×4096 10-bit video shares as many buffers with the GPU as fit
+beside them, about 0.7 GB. The line starting `V4L2 capture` in
+frameplayerx.log says how many buffers a video got and why. If the decoder
+can't get as many as the video's pictures need, the video plays in
+software straight away, which can't keep up at 8K 10-bit: the warning pill
+says "Decoder busy", and the log says how many buffers the decoder got and
+how many it needed. If the hardware decoder gives no picture for 5
+seconds, the video carries on in software too; the log's `V4L2 decoder
+stalled` line then says where the decoder's buffers were, which is worth
+including in a bug report.
 
 A damaged stretch of a file, such as a part a download hasn't filled in
 yet, doesn't send the video to software. Playback carries on in hardware
