@@ -978,14 +978,22 @@ subtitles** or sign in.
 
 ## Hardware decoding
 
-The Frame's hardware decoder plays 4:2:0 HEVC (H.265, 8- and 10-bit) and
-H.264 (8-bit) smoothly up to 8K. The Frame has no hardware decoder for AV1,
-4:2:2 or 4:4:4 colour or 10-bit H.264, so those decode on the CPU, which
-can fall behind at VR sizes; a warning pill on the control bar shows when a
+The Frame's hardware decoder plays 4:2:0 HEVC (H.265, 8- and 10-bit), AV1
+(8- and 10-bit on SteamOS 0.5.10 and later), and H.264 (8-bit) smoothly up
+to 8K. There is no hardware decoder for 4:2:2 or 4:4:4 colour, 10-bit H.264,
+or AV1 on earlier SteamOS versions, so those decode on the CPU, which can
+fall behind at VR sizes; a warning pill on the control bar shows when a
 video plays this way, and pointing at it says why ("No hardware decoding
 for AV1", "… for 4:2:2 HEVC"). Converted once to 4:2:0 HEVC on a PC, they
-play as smoothly as the rest. VP9 decodes on the CPU too and keeps up at
-lower resolutions; at 8K, convert it as well.
+play as smoothly as the rest.
+
+VP9 is intentionally decoded on the CPU rather than in hardware: VP9
+sessions on the Frame's video driver can hit firmware errors that leave
+playback stuck or hang the headset (reported to Valve as
+[ValveSoftware/SteamOS#2865](https://github.com/ValveSoftware/SteamOS/issues/2865)),
+and hardware VP9 also flickered on hidden reference frames and froze when
+restarting after the end of a video. Software VP9 keeps up at 4K and lower
+resolutions; at 8K, convert it to 4:2:0 HEVC as well.
 
 "Too big for hardware" means the file can't fit even with nothing else
 open: the decoder takes at most 8192×4320 pixels a frame. 8192×4320 and

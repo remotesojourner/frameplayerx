@@ -492,12 +492,12 @@ impl Sim {
                 self.run_frames(3)?;
             }
             // The notice for software decoding falling behind, as a 10-bit
-            // AV1 video gets it.
+            // VP9 video gets it.
             Some("slow-decode") => {
                 if let Some(p) = &mut self.app.playback {
                     let v = p.player.info().video_stream().cloned();
                     if let Some(mut v) = v {
-                        v.codec = "av1".into();
+                        v.codec = "vp9".into();
                         v.bit_depth = 10;
                         v.pixel_format = "yuv420p10le".into();
                         p.notice = Some(crate::playback::slow_decode_notice(

@@ -1,4 +1,5 @@
-//! Native V4L2 stateful (memory-to-memory) video decoder for H.264 and HEVC.
+//! Native V4L2 stateful (memory-to-memory) video decoder for H.264, HEVC
+//! and AV1.
 //!
 //! FFmpeg's `*_v4l2m2m` wrappers cannot open large streams on the Steam
 //! Frame: the qcom iris driver's admission check (`check_core_mbps_mbpf`)
@@ -141,10 +142,11 @@ pub(crate) fn larger_dpb(
 /// The inputs are kept for the log, so a person can check the count.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct CaptureNeeds {
+    pub codec: Codec,
     /// `V4L2_CID_MIN_BUFFERS_FOR_CAPTURE`, 1 when the driver doesn't say.
     pub control: u32,
     /// The largest DPB of the stream's SPSs ([`larger_dpb`]), when one was
-    /// read ([`crate::nal::sps_dpb`]).
+    /// read ([`crate::nal::sps_dpb`]). Unused for AV1.
     pub dpb: Option<crate::nal::Dpb>,
     /// The CAPTURE buffers are the decoder's reference pictures (Q10C), so
     /// the stream's DPB counts. In NV12 it doesn't: on the Frame, 8-bit
@@ -159,7 +161,7 @@ pub(crate) struct CaptureNeeds {
 impl CaptureNeeds {
     /// The stream's DPB in pictures, when it counts.
     fn counted_dpb(&self) -> Option<u32> {
-        self.references.then(|| {
+        (self.references && self.codec != Codec::Av1).then(|| {
             self.dpb
                 .unwrap_or_else(|| crate::nal::hevc_most_dpb(self.size.0, self.size.1))
                 .pictures
@@ -179,10 +181,16 @@ impl CaptureNeeds {
     }
 
     /// The stream's reorder count (`sps_max_num_reorder_pics`), and whether
-    /// an SPS gave it. Unread, the most HEVC allows at the picture size:
-    /// one less than its largest DPB ([`crate::nal::hevc_most_dpb`]; H.265
-    /// 7.4.3.2.1 keeps the reorder count below the DPB), 5 at 8K.
+    /// it is known. AV1 temporal units arrive in presentation order (0
+    /// reordered CAPTURE buffers: non-displayed reference frames live in the
+    /// driver's own internal DPB). Unread for HEVC/H.264, the most HEVC
+    /// allows at the picture size: one less than its largest DPB
+    /// ([`crate::nal::hevc_most_dpb`]; H.265 7.4.3.2.1 keeps the reorder
+    /// count below the DPB), 5 at 8K.
     fn reorder(&self) -> (u32, bool) {
+        if self.codec == Codec::Av1 {
+            return (0, true);
+        }
         match self.dpb {
             Some(d) => (d.reorder, true),
             None => (
@@ -202,7 +210,8 @@ impl CaptureNeeds {
     /// buffers, and where one fewer was tried, it stopped. For 3, which
     /// real 8K files have, the rule held in the player (10 buffers, 4 kept,
     /// up to 6 lent: 180 s of shared pictures, none copied, no stall), but
-    /// one fewer was not tried.
+    /// one fewer was not tried. For 8K 10-bit AV1 (7 buffers, 0 reordered),
+    /// keeping 1 and lending up to 6 decoded every picture without stalling.
     pub(crate) fn keep_reordered(&self) -> u32 {
         self.reorder().0 + 1
     }
@@ -213,6 +222,9 @@ impl std::fmt::Display for CaptureNeeds {
     /// reorder count is that SPS's own, which its DPB holds.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "driver minimum {}, ", self.control)?;
+        if self.codec == Codec::Av1 {
+            return write!(f, "AV1 (presentation order)");
+        }
         match (self.dpb, self.references) {
             (Some(d), _) => write!(
                 f,
@@ -403,17 +415,19 @@ pub(crate) fn dpb6_comv_size(stream: (u32, u32)) -> u64 {
 
 /// The OUTPUT size to declare in place of the stream's `stream` size: on
 /// the mainline driver, [`DECLARED_START_SIZE`] for a Q10C stream (`q10c`)
-/// whose CAPTURE buffers will be over [`SMALL_SLOT`] by [`q10c_size`]'s
-/// reckoning, or an 8-bit stream with a DPB of 6 (or unread) whose motion-
-/// vector working buffer ([`dpb6_comv_size`]) will be over 256 MiB
+/// or an AV1 stream (whose `BUF_PARTIAL` working buffer is sized as Q10C
+/// even for 8-bit) over [`SMALL_SLOT`] by [`q10c_size`]'s reckoning, or an
+/// 8-bit H.264/HEVC stream with a DPB of 6 (or unread) whose motion-vector
+/// working buffer ([`dpb6_comv_size`]) will be over 256 MiB
 /// (`4 * SMALL_SLOT`); else `None`, the stream's own size, as always.
 pub(crate) fn declared_start_size(
     driver: Driver,
+    codec: Codec,
     q10c: bool,
     stream: (u32, u32),
     dpb: Option<crate::nal::Dpb>,
 ) -> Option<(u32, u32)> {
-    let needs_start_size = if q10c {
+    let needs_start_size = if q10c || codec == Codec::Av1 {
         q10c_size(stream) as u64 > SMALL_SLOT
     } else {
         dpb.is_none_or(|d| d.pictures >= 6) && dpb6_comv_size(stream) > 4 * SMALL_SLOT
@@ -423,14 +437,22 @@ pub(crate) fn declared_start_size(
 
 /// Whether an HEVC SPS's over-declared DPB of 6 pictures is lowered to 5
 /// before the device reads it ([`crate::nal::clamp_hevc_packet_dpb`]): on
-/// the mainline driver, for a Q10C stream (`q10c`) whose CAPTURE buffers
-/// will be over [`SMALL_SLOT`] by [`q10c_size`]'s reckoning. At 8192x4096
-/// 10-bit, a DPB of 6 raises the driver's minimum CAPTURE count from 7 to 8
-/// and pushes its motion-vector working buffer ([`dpb6_comv_size`]) past
-/// 256 MiB into a 512 MiB slot, which together need 24 slots of 128 MiB
-/// where the address space has 23.
-pub(crate) fn clamps_overdeclared_dpb(driver: Driver, q10c: bool, stream: (u32, u32)) -> bool {
-    driver == Driver::Mainline && q10c && q10c_size(stream) as u64 > SMALL_SLOT
+/// the mainline driver, for a Q10C HEVC stream (`q10c`) whose CAPTURE
+/// buffers will be over [`SMALL_SLOT`] by [`q10c_size`]'s reckoning. At
+/// 8192x4096 10-bit, a DPB of 6 raises the driver's minimum CAPTURE count
+/// from 7 to 8 and pushes its motion-vector working buffer
+/// ([`dpb6_comv_size`]) past 256 MiB into a 512 MiB slot, which together
+/// need 24 slots of 128 MiB where the address space has 23.
+pub(crate) fn clamps_overdeclared_dpb(
+    driver: Driver,
+    codec: Codec,
+    q10c: bool,
+    stream: (u32, u32),
+) -> bool {
+    driver == Driver::Mainline
+        && codec == Codec::Hevc
+        && q10c
+        && q10c_size(stream) as u64 > SMALL_SLOT
 }
 
 /// Whether the bitstream buffers the driver gives [`DECLARED_START_SIZE`],
@@ -655,6 +677,7 @@ pub(crate) const MAX_CORE_MACROBLOCKS: u64 = 261_120;
 pub(crate) enum Codec {
     H264,
     Hevc,
+    Av1,
 }
 
 impl Codec {
@@ -662,6 +685,7 @@ impl Codec {
         match id {
             fp_ffmpeg_sys::AV_CODEC_ID_H264 => Some(Codec::H264),
             fp_ffmpeg_sys::AV_CODEC_ID_HEVC => Some(Codec::Hevc),
+            fp_ffmpeg_sys::AV_CODEC_ID_AV1 => Some(Codec::Av1),
             _ => None,
         }
     }
@@ -670,32 +694,106 @@ impl Codec {
         match self {
             Codec::H264 => fourcc(b"H264"),
             Codec::Hevc => fourcc(b"HEVC"),
+            Codec::Av1 => fourcc(b"AV01"),
         }
     }
 
     /// The bitstream filter turning MP4/MKV length-prefixed NAL units into
-    /// the Annex B byte stream V4L2 decoders take.
-    pub(crate) fn annexb_filter(self) -> &'static std::ffi::CStr {
+    /// the Annex B byte stream V4L2 decoders take; `None` for AV1, whose
+    /// packets are OBU temporal units already.
+    pub(crate) fn annexb_filter(self) -> Option<&'static std::ffi::CStr> {
         match self {
-            Codec::H264 => c"h264_mp4toannexb",
-            Codec::Hevc => c"hevc_mp4toannexb",
+            Codec::H264 => Some(c"h264_mp4toannexb"),
+            Codec::Hevc => Some(c"hevc_mp4toannexb"),
+            Codec::Av1 => None,
         }
     }
 
     /// The primer: one black IDR picture (Annex B with parameter sets, no
     /// SEI) and its size. Only HEVC has one; 8K H.264 is not something the
-    /// Frame needs. Generated with
+    /// Frame needs, and AV1 only runs on the mainline driver. Generated with
     /// `ffmpeg -f lavfi -i color=c=black:s=8192x4080:r=1 -frames:v 1
     /// -pix_fmt yuv420p -c:v libx265 -profile:v main -x265-params info=0 -f hevc`.
     pub(crate) fn primer(self) -> Option<(&'static [u8], (u32, u32))> {
         match self {
-            Codec::H264 => None,
+            Codec::H264 | Codec::Av1 => None,
             Codec::Hevc => Some((
                 include_bytes!("../assets/primer_8192x4080.hevc"),
                 (8192, 4080),
             )),
         }
     }
+}
+
+/// Leading temporal delimiter OBU length (`0x12 0x00` sized, or `0x10`
+/// unsized), or `0` if `data` does not start with one.
+pub(crate) fn av1_leading_td_len(data: &[u8]) -> usize {
+    match *data {
+        [0x12, 0x00, ..] => 2,
+        [0x10, ..] => 1,
+        _ => 0,
+    }
+}
+
+/// Whether an AV1 temporal unit already carries a sequence header OBU (type 1).
+pub(crate) fn av1_has_sequence_header(mut data: &[u8]) -> bool {
+    while let Some(&header) = data.first() {
+        if header & 0x80 != 0 {
+            return false;
+        }
+        let obu_type = (header >> 3) & 0x0f;
+        if obu_type == 1 {
+            return true;
+        }
+        let has_ext = header & 0x04 != 0;
+        let has_size = header & 0x02 != 0;
+        let header_len = 1 + usize::from(has_ext);
+        if data.len() < header_len {
+            return false;
+        }
+        data = &data[header_len..];
+        if !has_size {
+            if obu_type == 2 {
+                continue;
+            }
+            return false;
+        }
+        let mut size = 0u64;
+        let mut consumed = 0usize;
+        for (i, &b) in data.iter().take(8).enumerate() {
+            size |= u64::from(b & 0x7f) << (7 * i);
+            consumed = i + 1;
+            if b & 0x80 == 0 {
+                break;
+            }
+        }
+        if consumed == 0 || data[consumed - 1] & 0x80 != 0 {
+            return false;
+        }
+        let Some(next) = usize::try_from(size)
+            .ok()
+            .and_then(|n| consumed.checked_add(n))
+            .and_then(|skip| data.get(skip..))
+        else {
+            return false;
+        };
+        data = next;
+    }
+    false
+}
+
+/// The `configOBUs` carried after the 4-byte header of an `av1C`
+/// configuration record (`marker = 1, version = 1`), stripped of any leading
+/// temporal delimiter, when they include a sequence header OBU; else empty.
+pub(crate) fn av1c_config_obus(extradata: &[u8]) -> &[u8] {
+    if extradata.len() > 4 && extradata[0] == 0x81 {
+        let obus = &extradata[4..];
+        let obus = &obus[av1_leading_td_len(obus)..];
+        if av1_has_sequence_header(obus) {
+            return obus;
+        }
+    }
+    &[]
 }
 
 /// Bitstream filter converting H.264/HEVC MP4/MKV length-prefixed packets to
@@ -734,6 +832,9 @@ impl AnnexbFilter {
         let Some(codec) = Codec::from_ffmpeg(unsafe { (*par).codec_id }) else {
             return Ok(None);
         };
+        let Some(bsf_name) = codec.annexb_filter() else {
+            return Ok(None);
+        };
         let mut filter = Self {
             ctx: std::ptr::null_mut(),
             hvcc_parameter_sets: Vec::new(),
@@ -741,7 +842,7 @@ impl AnnexbFilter {
         };
         // SAFETY: standard FFmpeg BSF setup; `Drop` frees `filter.ctx` on error.
         unsafe {
-            let f = fp_ffmpeg_sys::av_bsf_get_by_name(codec.annexb_filter().as_ptr());
+            let f = fp_ffmpeg_sys::av_bsf_get_by_name(bsf_name.as_ptr());
             if f.is_null() {
                 return Err(crate::Error::Unsupported(
                     "Annex B bitstream filter missing".into(),
@@ -900,6 +1001,7 @@ fn nal_length_size(codec: Codec, extradata: &[u8]) -> Option<usize> {
     let at = match codec {
         Codec::H264 => 4,
         Codec::Hevc => 21,
+        Codec::Av1 => return None,
     };
     extradata.get(at).map(|b| (b & 3) as usize + 1)
 }
@@ -1902,7 +2004,12 @@ mod linux {
         pixelformat: u32,
         /// The primer trick is active (declared OUTPUT size was lowered).
         primed: bool,
-        bsf: AnnexbFilter,
+        bsf: Option<AnnexbFilter>,
+        /// `configOBUs` from an `av1C` record, prepended if a keyframe or
+        /// first packet omits its in-band sequence header OBU.
+        av1_config_obus: Vec<u8>,
+        /// Whether a packet has been queued since open or the last flush.
+        sent_any_packet: bool,
         /// IRAP pictures with parameter sets unlike the hvcC's were seen
         /// (logged).
         in_band_parameter_sets: bool,
@@ -2164,11 +2271,13 @@ mod linux {
             ];
             let pixelformat = if eight_bit_420.contains(&p.format) {
                 NV12
-            } else if p.format == ff::AV_PIX_FMT_YUV420P10LE && codec == Codec::Hevc {
+            } else if p.format == ff::AV_PIX_FMT_YUV420P10LE
+                && matches!(codec, Codec::Hevc | Codec::Av1)
+            {
                 Q10C
             } else {
                 return Err(Error::Unsupported(format!(
-                    "V4L2 path takes 8-bit 4:2:0, or 10-bit 4:2:0 HEVC (pixel format {})",
+                    "V4L2 path takes 8-bit 4:2:0, or 10-bit 4:2:0 HEVC/AV1 (pixel format {})",
                     p.format
                 )));
             };
@@ -2191,12 +2300,24 @@ mod linux {
                 // SAFETY: the stream's extradata holds extradata_size bytes.
                 unsafe { std::slice::from_raw_parts(p.extradata, p.extradata_size as usize) }
             };
-            let bsf = AnnexbFilter::open(par, time_base)?
-                .ok_or_else(|| Error::Unsupported("Annex B bitstream filter unavailable".into()))?;
+            let bsf = if codec.annexb_filter().is_some() {
+                Some(AnnexbFilter::open(par, time_base)?.ok_or_else(|| {
+                    Error::Unsupported("Annex B bitstream filter unavailable".into())
+                })?)
+            } else {
+                None
+            };
+            let av1_config_obus = if codec == Codec::Av1 {
+                av1c_config_obus(extradata).to_vec()
+            } else {
+                Vec::new()
+            };
             let (device, fd) = find_device(codec)?;
             let driver = which_driver(&fd, codec);
             log::debug!("V4L2 {device}: {driver:?} driver");
-            let dpb = if clamps_overdeclared_dpb(driver, pixelformat == Q10C, stream_size) {
+            let dpb = if codec == Codec::Av1 {
+                None
+            } else if clamps_overdeclared_dpb(driver, codec, pixelformat == Q10C, stream_size) {
                 crate::nal::clamp_extradata_dpb(extradata)
             } else {
                 crate::nal::extradata_dpb(codec == Codec::Hevc, extradata)
@@ -2212,6 +2333,8 @@ mod linux {
                 pixelformat,
                 primed: false,
                 bsf,
+                av1_config_obus,
+                sent_any_packet: false,
                 in_band_parameter_sets: false,
                 clamped_dpb: false,
                 dpb,
@@ -2319,11 +2442,20 @@ mod linux {
         fn output_at_start_size(&self) -> Option<u32> {
             let (w, h) = self.stream_size;
             let q10c = self.pixelformat == Q10C;
-            let (sw, sh) = declared_start_size(self.driver, q10c, self.stream_size, self.dpb)?;
+            let (sw, sh) =
+                declared_start_size(self.driver, self.codec, q10c, self.stream_size, self.dpb)?;
             let about = if q10c {
                 format!(
                     "V4L2 {w}x{h} {} on the mainline driver: CAPTURE buffers of {} bytes \
                      foreseen, over {} MiB",
+                    fourcc_str(self.pixelformat),
+                    q10c_size(self.stream_size),
+                    SMALL_SLOT >> 20
+                )
+            } else if self.codec == Codec::Av1 {
+                format!(
+                    "V4L2 {w}x{h} {} AV1 on the mainline driver: PARTIAL working buffer of {} \
+                     bytes foreseen, over {} MiB",
                     fourcc_str(self.pixelformat),
                     q10c_size(self.stream_size),
                     SMALL_SLOT >> 20
@@ -2527,8 +2659,12 @@ mod linux {
 
         /// Moves everything the bitstream filter has ready into `pending`.
         fn drain_bsf(&mut self) -> Result<()> {
-            let clamp_dpb =
-                clamps_overdeclared_dpb(self.driver, self.pixelformat == Q10C, self.stream_size);
+            let clamp_dpb = clamps_overdeclared_dpb(
+                self.driver,
+                self.codec,
+                self.pixelformat == Q10C,
+                self.stream_size,
+            );
             let Self {
                 bsf,
                 in_band_parameter_sets,
@@ -2539,6 +2675,9 @@ mod linux {
                 pending,
                 ..
             } = self;
+            let Some(bsf) = bsf.as_mut() else {
+                return Ok(());
+            };
             let sets = bsf.hvcc_parameter_sets().to_vec();
             let r = bsf.drain(|out| {
                 // SAFETY: a valid packet from the filter.
@@ -2646,6 +2785,68 @@ mod linux {
             Ok(())
         }
 
+        /// Moves one packet straight into `pending`, for codecs that need no
+        /// bitstream filter (AV1 OBU temporal units). If the first packet (or a
+        /// keyframe) carries no sequence header OBU and `av1C` extradata gave
+        /// one, it is prepended.
+        fn queue_raw_packet(&mut self, pkt: *const ff::AVPacket) -> Result<()> {
+            // SAFETY: `pkt` is a valid packet for the duration of the call.
+            let (pts, dts, duration, flags, data) = unsafe {
+                let p = &*pkt;
+                (p.pts, p.dts, p.duration, p.flags, packet_data(pkt))
+            };
+            if data.is_empty() {
+                // V4L2 would read an empty OUTPUT buffer as a full one.
+                return Ok(());
+            }
+            let prepend = !self.av1_config_obus.is_empty()
+                && (!self.sent_any_packet || flags & ff::AV_PKT_FLAG_KEY as i32 != 0)
+                && !av1_has_sequence_header(data);
+            let out = Packet::new();
+            if prepend {
+                let td = av1_leading_td_len(data);
+                let total = self.av1_config_obus.len() + data.len();
+                let total_i32 = i32::try_from(total)
+                    .map_err(|_| Error::Unsupported("V4L2: AV1 packet too large".into()))?;
+                // SAFETY: allocates a fresh packet of `total` bytes and writes
+                // any leading temporal delimiter, then `av1_config_obus`, then
+                // the rest of `data`.
+                unsafe {
+                    crate::check(ff::av_new_packet(out.as_ptr(), total_i32), "av1 packet")?;
+                    let dst = (*out.as_ptr()).data;
+                    if td > 0 {
+                        std::ptr::copy_nonoverlapping(data.as_ptr(), dst, td);
+                    }
+                    std::ptr::copy_nonoverlapping(
+                        self.av1_config_obus.as_ptr(),
+                        dst.add(td),
+                        self.av1_config_obus.len(),
+                    );
+                    std::ptr::copy_nonoverlapping(
+                        data.as_ptr().add(td),
+                        dst.add(td + self.av1_config_obus.len()),
+                        data.len() - td,
+                    );
+                    let p = &mut *out.as_ptr();
+                    (p.pts, p.dts, p.duration, p.flags) = (pts, dts, duration, flags);
+                }
+            } else {
+                // SAFETY: adds a reference to the caller's packet.
+                unsafe {
+                    crate::check(ff::av_packet_ref(out.as_ptr(), pkt), "packet ref")?;
+                }
+            }
+            self.sent_any_packet = true;
+            let pts = if pts == ff::AV_NOPTS_VALUE { dts } else { pts };
+            if self.arm_floor {
+                self.arm_floor = false;
+                self.pts_floor = (pts != ff::AV_NOPTS_VALUE).then_some(pts);
+            }
+            let id = self.ts.insert(pts, duration);
+            self.pending.push_back((out, id));
+            Ok(())
+        }
+
         /// Sends a packet, or end of stream when `pkt` is null. Returns false
         /// when the decoder is full: receive frames, then send it again.
         pub(crate) fn send(&mut self, pkt: *const ff::AVPacket) -> Result<bool> {
@@ -2656,8 +2857,10 @@ mod linux {
             }
             if pkt.is_null() {
                 if !self.eos_input {
-                    let _ = self.bsf.send(std::ptr::null());
-                    self.drain_bsf()?;
+                    if let Some(bsf) = self.bsf.as_mut() {
+                        let _ = bsf.send(std::ptr::null());
+                        self.drain_bsf()?;
+                    }
                     self.eos_input = true;
                 }
                 self.pump_output()?;
@@ -2666,8 +2869,12 @@ mod linux {
             if self.eos_input {
                 return Ok(true); // after EOS until a flush
             }
-            self.bsf.send(pkt)?;
-            self.drain_bsf()?;
+            if let Some(bsf) = self.bsf.as_mut() {
+                bsf.send(pkt)?;
+                self.drain_bsf()?;
+            } else {
+                self.queue_raw_packet(pkt)?;
+            }
             self.pump_output()?;
             Ok(true)
         }
@@ -2724,6 +2931,7 @@ mod linux {
         /// What the decoder keeps of CAPTURE buffers for format `f`.
         fn capture_needs(&self, f: &Format) -> CaptureNeeds {
             CaptureNeeds {
+                codec: self.codec,
                 control: self.min_capture_buffers(),
                 dpb: self.dpb,
                 references: self.pixelformat == Q10C,
@@ -3532,7 +3740,10 @@ mod linux {
         /// already queued still decodes, and its frames are dropped.
         pub(crate) fn flush(&mut self) {
             self.pending.clear();
-            self.bsf.flush();
+            if let Some(bsf) = self.bsf.as_mut() {
+                bsf.flush();
+            }
+            self.sent_any_packet = false;
             self.ts.invalidate();
             self.pts_floor = None;
             self.arm_floor = true;
@@ -3877,6 +4088,7 @@ mod tests {
     /// a DPB of 5 with 3 reordered, the driver's minimum 1.
     fn ten_bit_8k(dpb: Option<crate::nal::Dpb>) -> CaptureNeeds {
         CaptureNeeds {
+            codec: Codec::Hevc,
             control: 1,
             dpb,
             references: true,
@@ -4104,64 +4316,116 @@ mod tests {
             pictures: 6,
             reorder: 2,
         });
-        let declared = |q10c, stream, dpb| declared_start_size(Driver::Mainline, q10c, stream, dpb);
+        let declared = |codec, q10c, stream, dpb| {
+            declared_start_size(Driver::Mainline, codec, q10c, stream, dpb)
+        };
         // Over 64 MiB, so in 128 MiB slots, of which there are 23.
         for dpb in [Some(DPB_5), dpb_6, None] {
-            assert_eq!(declared(true, (8192, 4096), dpb), Some((4096, 2320)));
-            assert_eq!(declared(true, (8192, 4064), dpb), Some((4096, 2320)));
-            assert_eq!(declared(true, (8192, 4320), dpb), Some((4096, 2320)));
+            assert_eq!(
+                declared(Codec::Hevc, true, (8192, 4096), dpb),
+                Some((4096, 2320))
+            );
+            assert_eq!(
+                declared(Codec::Hevc, true, (8192, 4064), dpb),
+                Some((4096, 2320))
+            );
+            assert_eq!(
+                declared(Codec::Hevc, true, (8192, 4320), dpb),
+                Some((4096, 2320))
+            );
             // 64 MiB slots, 45 of them: started as before.
-            assert_eq!(declared(true, (8192, 4032), dpb), None);
-            assert_eq!(declared(true, (5760, 2880), dpb), None);
-            assert_eq!(declared(true, (7680, 4320), dpb), None);
-            assert_eq!(declared(true, (3840, 2160), dpb), None);
+            assert_eq!(declared(Codec::Hevc, true, (8192, 4032), dpb), None);
+            assert_eq!(declared(Codec::Hevc, true, (5760, 2880), dpb), None);
+            assert_eq!(declared(Codec::Hevc, true, (7680, 4320), dpb), None);
+            assert_eq!(declared(Codec::Hevc, true, (3840, 2160), dpb), None);
         }
-        // And only those 10-bit streams lower an over-declared DPB of 6.
+        // AV1's PARTIAL working buffer is sized as Q10C even for 8-bit, so
+        // 8-bit and 10-bit AV1 both declare the start size over 64 MiB.
+        for q10c in [false, true] {
+            assert_eq!(
+                declared(Codec::Av1, q10c, (8192, 4096), None),
+                Some((4096, 2320))
+            );
+            assert_eq!(
+                declared(Codec::Av1, q10c, (8192, 4064), None),
+                Some((4096, 2320))
+            );
+            assert_eq!(declared(Codec::Av1, q10c, (8192, 4032), None), None);
+            assert_eq!(declared(Codec::Av1, q10c, (7680, 4320), None), None);
+        }
+        // And only those 10-bit HEVC streams lower an over-declared DPB of 6.
         assert!(clamps_overdeclared_dpb(
             Driver::Mainline,
+            Codec::Hevc,
             true,
             (8192, 4096)
         ));
         assert!(clamps_overdeclared_dpb(
             Driver::Mainline,
+            Codec::Hevc,
             true,
             (8192, 4064)
         ));
         assert!(clamps_overdeclared_dpb(
             Driver::Mainline,
+            Codec::Hevc,
             true,
             (8192, 4320)
         ));
         assert!(!clamps_overdeclared_dpb(
             Driver::Mainline,
+            Codec::Hevc,
             true,
             (8192, 4032)
         ));
         assert!(!clamps_overdeclared_dpb(
             Driver::Mainline,
+            Codec::Hevc,
             true,
             (7680, 4320)
         ));
         assert!(!clamps_overdeclared_dpb(
             Driver::Mainline,
+            Codec::Hevc,
             false,
             (8192, 4096)
         ));
-        // 8-bit with a DPB up to 5 starts at its own size (COMV is 224 MiB +
-        // 512 B, a 256 MiB slot); at a DPB of 6 (or unread), 8192x4096 and
-        // 8192x4320 push COMV 512 B past 256 MiB into a 512 MiB slot and
+        assert!(!clamps_overdeclared_dpb(
+            Driver::Mainline,
+            Codec::Av1,
+            true,
+            (8192, 4096)
+        ));
+        // 8-bit HEVC with a DPB up to 5 starts at its own size (COMV is 224
+        // MiB + 512 B, a 256 MiB slot); at a DPB of 6 (or unread), 8192x4096
+        // and 8192x4320 push COMV 512 B past 256 MiB into a 512 MiB slot and
         // declare the start size too, though CAPTURE still allocates in one
         // REQBUFS (50,331,648 <= 64 MiB).
         assert_eq!(dpb6_comv_size((8192, 4096)), (256 << 20) + 512);
         assert!(dpb6_comv_size((8192, 4064)) <= 4 * SMALL_SLOT);
         assert!(dpb6_comv_size((7680, 4320)) <= 4 * SMALL_SLOT);
-        assert_eq!(declared(false, (8192, 4096), Some(DPB_5)), None);
-        assert_eq!(declared(false, (8192, 4320), Some(DPB_5)), None);
-        assert_eq!(declared(false, (8192, 4096), dpb_6), Some((4096, 2320)));
-        assert_eq!(declared(false, (8192, 4320), dpb_6), Some((4096, 2320)));
-        assert_eq!(declared(false, (8192, 4096), None), Some((4096, 2320)));
-        assert_eq!(declared(false, (8192, 4064), dpb_6), None);
-        assert_eq!(declared(false, (7680, 4320), dpb_6), None);
+        assert_eq!(
+            declared(Codec::Hevc, false, (8192, 4096), Some(DPB_5)),
+            None
+        );
+        assert_eq!(
+            declared(Codec::Hevc, false, (8192, 4320), Some(DPB_5)),
+            None
+        );
+        assert_eq!(
+            declared(Codec::Hevc, false, (8192, 4096), dpb_6),
+            Some((4096, 2320))
+        );
+        assert_eq!(
+            declared(Codec::Hevc, false, (8192, 4320), dpb_6),
+            Some((4096, 2320))
+        );
+        assert_eq!(
+            declared(Codec::Hevc, false, (8192, 4096), None),
+            Some((4096, 2320))
+        );
+        assert_eq!(declared(Codec::Hevc, false, (8192, 4064), dpb_6), None);
+        assert_eq!(declared(Codec::Hevc, false, (7680, 4320), dpb_6), None);
         // After the source change, the driver's own figure decides.
         for (sizeimage, adds) in [
             (67_928_064, true),
@@ -4204,6 +4468,7 @@ mod tests {
     fn added(reorder: Option<u32>, lend: u32, added: u32) -> AddedCount {
         AddedCount {
             needs: CaptureNeeds {
+                codec: Codec::Hevc,
                 control: 7,
                 dpb: reorder.map(|reorder| crate::nal::Dpb {
                     pictures: reorder + 1,
@@ -4379,19 +4644,86 @@ mod tests {
     }
 
     #[test]
+    fn av1_capture_counts_and_sequence_headers() {
+        // <= 64 MiB (e.g. 5760x2880 or 7680x4320 10-bit): single REQBUFS
+        // keeps the driver's minimum (4), lends 7: 11 buffers.
+        let av1_small = CaptureNeeds {
+            codec: Codec::Av1,
+            control: 4,
+            dpb: None,
+            references: true,
+            size: (7680, 4320),
+        };
+        let c = counted(av1_small, MAX_LENT, None);
+        assert_eq!((c.keep(), c.asked, c.lent_at_most()), (4, 11, 7));
+        assert_eq!(
+            c.to_string(),
+            "asked for 11 (driver minimum 4, AV1 (presentation order), player holds 7): the \
+             decoder keeps 4, up to 7 lent"
+        );
+        // > 64 MiB (8192x4096 10-bit): starts with 4, adds 3 after STREAMON
+        // (7 total): 0 reordered -> keeps 1, up to 6 lent.
+        let av1_8k = AddedCount {
+            needs: CaptureNeeds {
+                size: (8192, 4096),
+                ..av1_small
+            },
+            lend: MAX_LENT,
+            started: 4,
+            added: 3,
+            stop: AddStop::NoMemory,
+        };
+        assert_eq!(
+            (av1_8k.keep(), av1_8k.wanted(), av1_8k.lent_at_most()),
+            (1, 8, 6)
+        );
+        assert_eq!(av1_8k.level(), log::Level::Info);
+        assert!(av1_8k.enough().is_ok());
+
+        // AV1 sequence header detection and av1C configOBUs extraction.
+        assert!(av1_has_sequence_header(&[0x0a, 0x0b, 0x00]));
+        assert!(av1_has_sequence_header(&[0x12, 0x00, 0x0a, 0x0b]));
+        assert!(av1_has_sequence_header(&[0x10, 0x08, 0x00]));
+        // Metadata OBU (type 5, 2-byte payload) before sequence header OBU.
+        assert!(av1_has_sequence_header(&[
+            0x12, 0x00, 0x2a, 0x02, 0x01, 0x02, 0x0a, 0x00
+        ]));
+        assert!(!av1_has_sequence_header(&[0x12, 0x00, 0x32, 0x01, 0x00])); // OBU_FRAME
+        assert!(!av1_has_sequence_header(&[0x2a, 0x80])); // truncated LEB128
+        assert!(!av1_has_sequence_header(&[]));
+        assert_eq!(av1_leading_td_len(&[0x12, 0x00, 0x32]), 2);
+        assert_eq!(av1_leading_td_len(&[0x10, 0x30]), 1);
+        assert_eq!(av1_leading_td_len(&[0x32, 0x01]), 0);
+
+        let av1c = [0x81, 0x0d, 0x0c, 0x00, 0x0a, 0x0b, 0x00, 0x00];
+        assert_eq!(av1c_config_obus(&av1c), &[0x0a, 0x0b, 0x00, 0x00]);
+        assert_eq!(av1c_config_obus(&[0x81, 0x0d, 0x0c, 0x00]), &[] as &[u8]);
+        assert_eq!(
+            av1c_config_obus(&[0x00, 0x00, 0x00, 0x01, 0x0a]),
+            &[] as &[u8]
+        );
+    }
+
+    #[test]
     fn the_earlier_driver_starts_every_stream_as_before() {
-        for (q10c, stream) in [
-            (true, (8192, 4096)),
-            (true, (8192, 4064)),
-            (true, (8192, 4032)),
-            (true, (5760, 2880)),
-            (false, (8192, 4096)),
+        for (codec, q10c, stream) in [
+            (Codec::Hevc, true, (8192, 4096)),
+            (Codec::Hevc, true, (8192, 4064)),
+            (Codec::Hevc, true, (8192, 4032)),
+            (Codec::Hevc, true, (5760, 2880)),
+            (Codec::Hevc, false, (8192, 4096)),
+            (Codec::Av1, true, (8192, 4096)),
         ] {
             assert_eq!(
-                declared_start_size(Driver::Earlier, q10c, stream, None),
+                declared_start_size(Driver::Earlier, codec, q10c, stream, None),
                 None
             );
-            assert!(!clamps_overdeclared_dpb(Driver::Earlier, q10c, stream));
+            assert!(!clamps_overdeclared_dpb(
+                Driver::Earlier,
+                codec,
+                q10c,
+                stream
+            ));
         }
         for sizeimage in [67_928_064, 67_399_680, 66_871_296, 33_320_960, 50_331_648] {
             assert!(!adds_after_streamon(Driver::Earlier, sizeimage));
