@@ -737,10 +737,16 @@ impl Decoder {
                 // Only keyframes (the first picture after a seek is one),
                 // skipping the rest unparsed past their headers, and no
                 // deblocking: invisible once scaled down to a thumbnail.
+                // Interlaced streams can code each picture as two separate
+                // field packets whose second field is a P-field predicting
+                // from the first I-field, so AVDISCARD_NONINTRA would drop
+                // the second field and leave every picture incomplete.
                 // One thread: frame threads would hold back pictures to
                 // decode several at once, for nothing here.
                 (*ctx).thread_count = 1;
-                (*ctx).skip_frame = ff::AVDISCARD_NONINTRA;
+                if !crate::info::interlaced(&*par) {
+                    (*ctx).skip_frame = ff::AVDISCARD_NONINTRA;
+                }
                 (*ctx).skip_loop_filter = ff::AVDISCARD_ALL;
                 (*ctx).flags2 |= ff::AV_CODEC_FLAG2_FAST as i32;
             } else if !hardware {
