@@ -322,7 +322,7 @@ fn disc_centre(img: &[u8]) -> (f32, f32) {
     (sx / n, sy / n)
 }
 
-/// Draws frames until comfort focus has had 1.5 s to settle, and returns the
+/// Draws frames until comfort focus has had 2.5 s to settle, and returns the
 /// last. Its tracker takes at most 0.1 s from any one frame, so a stall (a
 /// shader compiled on first use, a busy machine) must not use up the wait.
 fn settle<T>(mut frame: impl FnMut() -> T) -> T {
@@ -333,7 +333,7 @@ fn settle<T>(mut frame: impl FnMut() -> T) -> T {
         let now = std::time::Instant::now();
         settled += (now - last).as_secs_f32().min(0.1);
         last = now;
-        if settled >= 1.5 {
+        if settled >= 2.5 {
             return out;
         }
     }
@@ -356,13 +356,21 @@ fn comfort_focus_keeps_what_is_looked_at_in_one_piece_with_the_head_on_its_side(
         (l.0 - r.0, l.1 - r.1)
     };
     let off = apart(&render_both(&mut rig, &frame, &p, side));
+    assert_eq!(rig.r.focus_line(), None, "nothing to log without it");
     p.settings.comfort_focus = true;
     let on = apart(&settle(|| render_both(&mut rig, &frame, &p, side)));
+    let line = rig.r.focus_line().expect("a line for the log");
     rig.eyes.destroy(&rig.r);
 
     // 0.4 m away is 9.3° of disparity: ~20 pixels, up/down the eyes' views
     // when the video is drawn as filmed.
     eprintln!("disc apart (across, up/down): off {off:?}, on {on:?} px");
+    // The log's line says it read the disc and settled on it: 0.39 m, as
+    // the disc's 65 mm baseline reads with the 63 mm assumed.
+    eprintln!("{line}");
+    assert!(line.starts_with("comfort focus: "), "{line}");
+    assert!(line.contains(" read back, 100% gave a distance"), "{line}");
+    assert!(line.contains("now 0.39 m, eased "), "{line}");
     assert!(
         off.1.abs() > 12.0,
         "as filmed, apart up/down by {} px",
@@ -382,8 +390,7 @@ fn comfort_focus_keeps_what_is_looked_at_in_one_piece_with_the_head_on_its_side(
 
 /// How far (pixels) comfort focus moves the disc towards the centre of the
 /// left eye's view once settled (~1.5 s) with the head turned `yaw` degrees
-/// and the eyes on `gaze` (play space, followed as foveation does), and
-/// where it was without.
+/// and the eyes on `gaze` (play space), and where it was without.
 fn comfort_shift(
     rig: &mut Rig,
     frame: &Arc<fp_media::VideoFrame>,
@@ -405,11 +412,8 @@ fn comfort_shift_pitched(
     let mut p = params(Projection::EQUIRECT_180, StereoLayout::SideBySide);
     p.settings.pitch = pitch;
     rig.r.set_gaze(gaze);
-    rig.r.set_foveation(if gaze.is_some() {
-        fp_render::Foveation::High
-    } else {
-        fp_render::Foveation::Off
-    });
+    // The eyes are followed with foveated rendering off too.
+    rig.r.set_foveation(fp_render::Foveation::Off);
     let off = render(rig, frame, &p, yaw, pitch, 0);
     p.settings.comfort_focus = true;
     let on = settle(|| render(rig, frame, &p, yaw, pitch, 0));
@@ -460,4 +464,150 @@ fn comfort_focus_eases_what_is_looked_at_only_when_it_is_close() {
     );
     assert!(turned.abs() < 0.2, "turned to the wall, moved {turned} px");
     assert!(glance.abs() < 0.2, "looking at the wall, moved {glance} px");
+}
+
+/// A side-by-side 180° stereo frame of a real scene, ray-traced from two
+/// cameras 65 mm apart: a bright textured round plate `radius` metres
+/// across round `centre` (the cameras' frame, metres, the origin between
+/// them), facing them, its texture as fine to the cameras at any distance,
+/// in a dark textured room 3 m round. Unlike
+/// [`stereo_disc`], whose two pictures are only turned apart, each camera
+/// sees from where it is, so the disparity is as a camera rig films it
+/// wherever the plate is.
+fn stereo_plate(centre: Vec3, radius: f32) -> Arc<fp_media::VideoFrame> {
+    use std::f32::consts::PI;
+    const EYE: usize = 512;
+    // Grey of hashed cubes `cell` metres across, at point `p`.
+    let noise = |p: Vec3, cell: f32, seed: u32| {
+        let c = (p / cell).floor();
+        let mut h = (c.x as i32 as u32).wrapping_mul(73_856_093)
+            ^ (c.y as i32 as u32).wrapping_mul(19_349_663)
+            ^ (c.z as i32 as u32).wrapping_mul(83_492_791)
+            ^ seed;
+        h ^= h >> 13;
+        h = h.wrapping_mul(0x5bd1_e995);
+        h ^= h >> 15;
+        (h & 0xff) as f32 / 255.0
+    };
+    let mut rgba = vec![0u8; EYE * 2 * EYE * 4];
+    for eye in 0..2 {
+        let o = Vec3::new(if eye == 0 { -0.0325 } else { 0.0325 }, 0.0, 0.0);
+        for y in 0..EYE {
+            for x in 0..EYE {
+                let lon = ((x as f32 + 0.5) / EYE as f32 - 0.5) * PI;
+                let lat = (0.5 - (y as f32 + 0.5) / EYE as f32) * PI;
+                let d = Vec3::new(lat.cos() * lon.sin(), lat.sin(), -lat.cos() * lon.cos());
+                let facing = -centre.normalize();
+                let hit = o + d * ((centre - o).dot(facing) / d.dot(facing));
+                let g = if d.dot(facing) < 0.0 && hit.distance(centre) < radius {
+                    140.0 + 100.0 * noise(hit, 0.02 * centre.length(), 7)
+                } else {
+                    let b = d.dot(o);
+                    let t = -b + (b * b - o.length_squared() + 9.0).sqrt();
+                    20.0 + 80.0 * noise(o + d * t, 0.05, 3)
+                };
+                let i = (y * EYE * 2 + eye * EYE + x) * 4;
+                rgba[i..i + 4].copy_from_slice(&[g as u8, g as u8, g as u8, 255]);
+            }
+        }
+    }
+    Arc::new(fp_media::VideoFrame::from_rgba((EYE * 2) as u32, EYE as u32, &rgba).expect("frame"))
+}
+
+#[test]
+fn comfort_focus_keeps_a_close_thing_looked_at_off_to_the_side_in_one_piece_lying_down() {
+    let Some(mut rig) = rig() else { return };
+    rig.r.set_gaze(None);
+    rig.r.set_foveation(fp_render::Foveation::Off);
+    // Looking right and down at a plate half a metre away, lying on the
+    // right side: the left eye above the right. Off to the side, the
+    // cameras' baseline is seen at a slant; looking both ways at once, each
+    // camera sees the plate at another height in a picture's longitude and
+    // latitude. Only a reading of its real distance lines it up.
+    let mut found = Vec::new();
+    for (right, down) in [(50.0f32, 0.0f32), (35.0, 35.0)] {
+        let look = Quat::from_euler(EulerRot::YXZ, -right.to_radians(), -down.to_radians(), 0.0);
+        let frame = stereo_plate(look * Vec3::NEG_Z * 0.5, 0.1);
+        let head = look * Quat::from_rotation_z(-90f32.to_radians());
+        let mut p = params(Projection::EQUIRECT_180, StereoLayout::SideBySide);
+        let apart = |views: &[Vec<u8>; 2]| {
+            let (l, r) = (disc_centre(&views[0]), disc_centre(&views[1]));
+            (l.0 - r.0, l.1 - r.1)
+        };
+        let off = apart(&render_both(&mut rig, &frame, &p, head));
+        p.settings.comfort_focus = true;
+        let on = apart(&settle(|| render_both(&mut rig, &frame, &p, head)));
+        eprintln!(
+            "{right}° right, {down}° down: plate apart (across, up/down) \
+             off {off:?}, on {on:?} px"
+        );
+        found.push((right, down, off, on));
+    }
+    rig.eyes.destroy(&rig.r);
+    for (right, down, off, on) in found {
+        assert!(
+            off.1.abs() > 8.0,
+            "{right}° right, {down}° down: as filmed, apart up/down by {} px",
+            off.1
+        );
+        assert!(
+            on.1.abs() < 1.5,
+            "{right}° right, {down}° down: with comfort focus, still apart up/down by {} px",
+            on.1
+        );
+    }
+}
+
+#[test]
+fn comfort_focus_reads_things_nearer_than_30_cm() {
+    let Some(mut rig) = rig() else { return };
+    rig.r.set_gaze(None);
+    rig.r.set_foveation(fp_render::Foveation::Off);
+    // A plate straight ahead, 20, 15 and 11 cm away, looked at lying on the
+    // right side. That near, the cameras see it 18°, 24° and 33° apart: only
+    // its real distance lines the eyes' pictures of it up.
+    let side = Quat::from_rotation_z(-90f32.to_radians());
+    let mut found = Vec::new();
+    for d in [0.2f32, 0.15, 0.11] {
+        let frame = stereo_plate(Vec3::NEG_Z * d, 0.2 * d);
+        let mut p = params(Projection::EQUIRECT_180, StereoLayout::SideBySide);
+        let apart = |views: &[Vec<u8>; 2]| {
+            let (l, r) = (disc_centre(&views[0]), disc_centre(&views[1]));
+            (l.0 - r.0, l.1 - r.1)
+        };
+        let off = apart(&render_both(&mut rig, &frame, &p, side));
+        rig.r.focus_line();
+        p.settings.comfort_focus = true;
+        let on = apart(&settle(|| render_both(&mut rig, &frame, &p, side)));
+        let line = rig.r.focus_line().expect("a line for the log");
+        eprintln!("{d} m: plate apart (across, up/down) off {off:?}, on {on:?} px\n{line}");
+        found.push((d, off, on, line));
+    }
+    rig.eyes.destroy(&rig.r);
+    for (d, off, on, line) in found {
+        assert!(
+            off.1.abs() > 20.0,
+            "{d} m: as filmed, apart up/down by {} px",
+            off.1
+        );
+        // What is left is the plate's 65 mm baseline against the 63 mm
+        // assumed, which shows the more the nearer it is.
+        assert!(
+            on.1.abs() < 0.08 * off.1.abs(),
+            "{d} m: with comfort focus, still apart up/down by {} px of {}",
+            on.1,
+            off.1
+        );
+        // The log's line has its distance, 3% nearer for the same reason.
+        let read: f32 = line
+            .split("now ")
+            .nth(1)
+            .and_then(|rest| rest.split(" m").next())
+            .and_then(|m| m.parse().ok())
+            .unwrap_or_else(|| panic!("{d} m: no distance in {line}"));
+        assert!(
+            (read / (d * 0.063 / 0.065) - 1.0).abs() < 0.05,
+            "{d} m read as {read} m"
+        );
+    }
 }

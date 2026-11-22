@@ -113,6 +113,15 @@ impl Source for HttpDirSource {
         location::relative_url(&self.root, &url).map(|key| location::encode(&self.id, "http", &key))
     }
 
+    /// The folder's or file's address, with names as they are on the server.
+    fn display_location(&self, location: Option<&str>) -> Option<String> {
+        let location = location.unwrap_or(&self.root);
+        self.canonical_location(location)?;
+        Some(crate::urlutil::display_url(
+            &self.current_url(location).ok()?,
+        ))
+    }
+
     fn list(&self, location: Option<&str>) -> Result<Vec<Entry>> {
         let url = with_trailing_slash(&self.current_url(location.unwrap_or(&self.root))?);
         let html = self.client.get_text(&url)?;
@@ -478,6 +487,45 @@ mod tests {
             Some("yes&")
         );
         assert_eq!(tag_attr(" name=x", "href"), None);
+    }
+
+    #[test]
+    fn display_location_names_folders_and_files_on_the_server() {
+        let s = HttpDirSource::new(&HttpConfig {
+            id: "h".into(),
+            name: "H".into(),
+            url: "http://bob:hunter2@nas/vr".into(),
+            credentials: None,
+            insecure_tls: false,
+            parallel_downloads: false,
+        })
+        .unwrap();
+        assert_eq!(s.display_location(None).as_deref(), Some("http://nas/vr"));
+        let folder = s.canonical_location("http://nas/vr/a%20b/").unwrap();
+        assert_eq!(
+            s.display_location(Some(&folder)).as_deref(),
+            Some("http://nas/vr/a b")
+        );
+        let file = s.canonical_location("http://nas/vr/a%20b/c.mp4").unwrap();
+        assert_eq!(
+            s.display_location(Some(&file)).as_deref(),
+            Some("http://nas/vr/a b/c.mp4")
+        );
+        let other = location::encode("other", "http", "c.mp4");
+        assert_eq!(s.display_location(Some(&other)), None);
+        let top = HttpDirSource::new(&HttpConfig {
+            id: "h".into(),
+            name: "H".into(),
+            url: "http://nas:8080/".into(),
+            credentials: None,
+            insecure_tls: false,
+            parallel_downloads: false,
+        })
+        .unwrap();
+        assert_eq!(
+            top.display_location(None).as_deref(),
+            Some("http://nas:8080")
+        );
     }
 
     #[test]

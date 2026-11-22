@@ -303,6 +303,14 @@ impl App {
             Action::Recenter => self.recenter(),
             Action::TogglePassthrough => self.settings.passthrough = !self.settings.passthrough,
             Action::ToggleFollow => self.settings.follow = !self.settings.follow,
+            Action::ToggleHandsFree => {
+                self.settings.hands_free = !self.settings.hands_free;
+                self.ui.toast(if self.settings.hands_free {
+                    tr!("toast-hands-free-on")
+                } else {
+                    tr!("toast-hands-free-off")
+                });
+            }
             Action::ToggleLoopVideo => self.settings.loop_video = !self.settings.loop_video,
             Action::ToggleAutoplay => self.settings.autoplay = !self.settings.autoplay,
             Action::ToggleLoopPlaylist => {
@@ -323,6 +331,10 @@ impl App {
             Action::HideControls => {
                 self.ui_visible = false;
                 self.show_browser = false;
+            }
+            Action::ShowControls => {
+                self.ui_visible = true;
+                self.last_activity = Instant::now();
             }
         }
     }

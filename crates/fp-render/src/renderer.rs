@@ -8,7 +8,7 @@
 
 use crate::cinema::Cinema;
 use crate::cinema_mesh::RoomData;
-use crate::focus::{AimFilter, ComfortFocus, FocusPass, MEASURE_EVERY};
+use crate::focus::{AimFilter, ComfortFocus, FocusLog, FocusPass, MEASURE_EVERY, REMEASURE_RAD};
 use crate::foveation::{Foveation, RateMaps};
 use crate::gpu::Gpu;
 use crate::hdr::PeakDetector;
@@ -220,8 +220,17 @@ pub struct Renderer {
     focus: Option<FocusPass>,
     focus_aim: AimFilter,
     comfort_focus: ComfortFocus,
-    /// When comfort focus last measured.
-    focus_measured_at: Option<std::time::Instant>,
+    /// When comfort focus last measured, where it aimed (play space) and the
+    /// video frame it read.
+    focus_measured: Option<(std::time::Instant, Vec3, Option<u64>)>,
+    /// What comfort focus did lately, for the log ([`Renderer::focus_line`]),
+    /// and whether each slot's frame in flight was drawn with it: with a
+    /// measurement, or without.
+    focus_log: FocusLog,
+    focus_drawn: [Option<bool>; SLOTS],
+    /// The video frame shown ([`fp_media::VideoFrame::id`]).
+    shown_frame: Option<u64>,
+    glow: crate::glow::Glow,
     /// Times each frame's parts on the GPU, where it has timestamps.
     timer: Option<FrameTimer>,
     /// The parts of the last frame the GPU finished.
@@ -454,7 +463,11 @@ impl Renderer {
                     .ok(),
                 focus_aim: AimFilter::default(),
                 comfort_focus: ComfortFocus::default(),
-                focus_measured_at: None,
+                focus_measured: None,
+                focus_log: FocusLog::default(),
+                focus_drawn: [None; SLOTS],
+                shown_frame: None,
+                glow: Default::default(),
                 timer: FrameTimer::new(&gpu, SLOTS),
                 gpu_times: None,
                 imports: Default::default(),
@@ -922,13 +935,20 @@ impl Renderer {
         if let Some(hist) = self.peak.as_mut().and_then(|p| p.take(self.current)) {
             self.hdr_peak.add(&hist);
         }
-        if let Some((scores, aim, lat)) = self.focus.as_mut().and_then(|f| f.take(self.current)) {
-            self.comfort_focus.ingest(&scores, aim, lat);
+        if let Some((scores, along)) = self.focus.as_mut().and_then(|f| f.take(self.current)) {
+            let gave = self.comfort_focus.ingest(&scores, along);
+            self.focus_log.read_back(gave);
         }
+        self.glow.read(self.current);
         if let Some(t) = self.timer.as_mut() {
             // Read before `begin` resets the queries for this frame.
             self.gpu_times = t.read(&self.gpu, self.current);
             t.begin(&self.gpu, cmd, self.current);
+        }
+        if let Some(measured) = self.focus_drawn[self.current].take()
+            && let Some(ms) = self.gpu_times.and_then(|t| t.eyes)
+        {
+            self.focus_log.gpu(measured, ms);
         }
         self.recording = true;
         Ok(())
@@ -937,6 +957,15 @@ impl Renderer {
     /// The parts of the last frame the GPU finished, two frames back.
     pub fn gpu_times(&self) -> Option<GpuTimes> {
         self.gpu_times
+    }
+
+    /// What comfort focus did since the last call, as one line for the log:
+    /// how often it measured and how many of those gave a distance, what is
+    /// in focus, how often the eyes aimed and what a measurement costs.
+    /// `None` when no frame was drawn with it.
+    pub fn focus_line(&mut self) -> Option<String> {
+        self.focus_log
+            .take_line(std::time::Instant::now(), self.comfort_focus.in_focus())
     }
 
     fn stamp(&mut self, mark: Mark) {
@@ -965,6 +994,7 @@ impl Renderer {
     }
 
     fn show_video(&mut self, frame: Option<&Arc<VideoFrame>>) -> Result<()> {
+        self.shown_frame = frame.map(|f| f.id);
         let Some(f) = frame else {
             let slot = &mut self.slots[self.current];
             if slot.has_video {
@@ -1235,6 +1265,7 @@ impl Renderer {
     /// Starts the HDR peak afresh, ignoring measurements still on their way.
     fn forget_scene(&mut self) {
         self.hdr_peak.reset();
+        self.glow.reset();
         if let Some(p) = self.peak.as_mut() {
             p.discard();
         }
@@ -1637,6 +1668,13 @@ impl Renderer {
         self.gaze = gaze;
     }
 
+    /// Lights the background round a flat screen with the picture's edge
+    /// colours, or not with `None`. It shows only on an opaque background,
+    /// not in a cinema or with a chroma key.
+    pub fn set_screen_glow(&mut self, glow: Option<crate::ScreenGlow>) {
+        self.glow.set(glow);
+    }
+
     /// Records both eye passes.
     pub fn draw(
         &mut self,
@@ -1718,6 +1756,31 @@ impl Renderer {
             (p.fill.z, p.fill.w) = (depth[0], depth[1]);
         }
         p.hdr = params::hdr_levels(self.hdr_peak.peak_nits());
+        // Screen glow, round a flat screen on an opaque background: not in a
+        // cinema, nor over passthrough or a chroma key.
+        let now = std::time::Instant::now();
+        let glow_shows = self.glow.wanted()
+            && video.cinema.is_none()
+            && p.mode[0] == 0
+            && p.bg_color.w >= 1.0
+            && p.key2.y == 0.0
+            && p.key2.z == 0.0
+            && self.slots[slot_idx].has_video
+            && frame_desc.is_some();
+        let (glow, measure_glow) = if glow_shows
+            && self.glow.prepare(
+                &self.gpu,
+                self.color_format,
+                self.video_rate,
+                (self.scene_pl, self.tp10_eyes.as_ref().map(|t| t.layout)),
+                SLOTS,
+            ) {
+            (self.glow.apply(&mut p, now), self.glow.due(now))
+        } else {
+            self.glow.reset();
+            (false, false)
+        };
+        let glow_eyes = glow.then(|| (self.glow.eye_pipeline(false), self.glow.eye_pipeline(true)));
         let want_focus = video.settings.comfort_focus
             && video.format.can_comfort_focus()
             && self.slots[slot_idx].has_video;
@@ -1725,34 +1788,61 @@ impl Renderer {
         let mut measure = None;
         if want_focus {
             let now = std::time::Instant::now();
-            // Where the head points: between the two eyes' views.
+            // The head's turn: between the two eyes' views.
             let to_world = eyes.map(|e| e.view.inverse());
-            let head = -(to_world[0].z_axis + to_world[1].z_axis).truncate();
-            // The gaze is on hand while foveated rendering follows it.
-            let gaze = self.gaze.filter(|_| self.foveation != Foveation::Off);
-            let aim = self.focus_aim.aim(now, gaze, head);
-            let focus = self.comfort_focus.step(now, aim);
+            let head = crate::focus::head_turn(
+                (to_world[0].z_axis + to_world[1].z_axis).truncate(),
+                (to_world[0].y_axis + to_world[1].y_axis).truncate(),
+            );
+            // Where the eyes look whenever the headset tracks them, foveated
+            // rendering on or not.
+            let aim = self.focus_aim.aim(now, self.gaze, head);
+            // Landed somewhere else: what is read there is acted on at once.
+            if self.focus_aim.take_landed() {
+                self.comfort_focus.landed();
+            }
             // Each eye's offset from the point between them, and the head's
             // up, in the room frame, to draw each eye from where it is.
             let room = |v: Vec3| p.anchor_inv.transform_vector3(v);
             let at = to_world.map(|m| m.w_axis.truncate());
             let mid = (at[0] + at[1]) * 0.5;
             let offsets = at.map(|e| room(e - mid));
+            let (lever, line) = crate::focus::redraw_lever(&p, aim, offsets);
+            self.comfort_focus
+                .follows_eyes(self.focus_aim.from() != crate::focus::AimFrom::Head);
+            let focus = self.comfort_focus.step(now, lever);
             let up = room((to_world[0].y_axis + to_world[1].y_axis).truncate());
-            if let Some([lon, lat]) = crate::focus::aim_angles(&p, aim)
+            if let Some([along, tilt]) = crate::focus::aim_angles(&p, aim)
                 && self.focus.is_some()
-                && self
-                    .focus_measured_at
-                    .is_none_or(|t| now.saturating_duration_since(t) >= MEASURE_EVERY)
+                // Not while the aim sweeps across a jump of the eyes.
+                && self.focus_aim.settled()
+                // Something new to read: another frame, the eyes elsewhere, or
+                // a still picture not read for a while.
+                && self.focus_measured.is_none_or(|(t, at, frame)| {
+                    frame != self.shown_frame
+                        || at.angle_between(aim) > REMEASURE_RAD
+                        || now.saturating_duration_since(t) >= MEASURE_EVERY
+                })
             {
-                p.focus.x = lon;
-                p.focus.y = lat;
-                self.focus_measured_at = Some(now);
-                measure = Some((aim, lat));
+                p.focus.x = along;
+                p.focus.y = tilt;
+                self.focus_measured = Some((now, aim, self.shown_frame));
+                measure = Some(along);
             }
+            self.focus_log
+                .frame(now, self.focus_aim.from(), measure.is_some());
+            self.focus_drawn[slot_idx] = Some(measure.is_some());
             // The measurement reads the video as filmed, without it.
-            params::set_comfort_focus(&mut p, focus.relief, focus.distance, offsets, up);
+            params::set_comfort_focus(
+                &mut p,
+                focus.relief,
+                focus.distance,
+                offsets,
+                up,
+                (line, focus.side_distance),
+            );
         } else {
+            self.focus_drawn[slot_idx] = None;
             self.comfort_focus.reset();
             self.focus_aim = AimFilter::default();
             if let Some(f) = self.focus.as_mut() {
@@ -1911,6 +2001,8 @@ impl Renderer {
                         Some(t) => {
                             if room.is_some() {
                                 t.bind_cinema(gpu, cmd, slot_idx);
+                            } else if let Some((_, glowing)) = glow_eyes {
+                                t.bind_with(gpu, cmd, slot_idx, glowing);
                             } else {
                                 t.bind(gpu, cmd, slot_idx, want_focus);
                             }
@@ -1922,7 +2014,7 @@ impl Renderer {
                             let pipe = match room {
                                 Some((_, room)) => room.scene_pipe,
                                 None if want_focus => self.comfort_pipe,
-                                None => self.scene_pipe,
+                                None => glow_eyes.map_or(self.scene_pipe, |(glowing, _)| glowing),
                             };
                             d.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, pipe);
                             d.cmd_bind_descriptor_sets(
@@ -1992,16 +2084,48 @@ impl Renderer {
                 );
             }
         }
-        if let Some((aim, lat)) = measure {
-            self.record_focus(slot_idx, tp10, aim, lat);
+        if let Some(along) = measure {
+            self.record_focus(slot_idx, tp10, along);
+        }
+        if measure_glow {
+            self.record_glow(slot_idx, tp10, now);
         }
         Ok(())
     }
 
-    /// Draws comfort focus's samples round `aim` (`fs_focus`) with the eye
+    /// Measures the picture's edge colours for screen glow with the eye
+    /// passes' own layout and bindings, as [`Self::record_focus`] does.
+    fn record_glow(&mut self, slot_idx: usize, tp10: bool, now: std::time::Instant) {
+        let slot = &self.slots[slot_idx];
+        let (cmd, scene_set) = (slot.cmd, slot.scene_set);
+        let (gpu, scene_pl) = (&self.gpu, self.scene_pl);
+        let tp10_eyes = self.tp10_eyes.as_ref().filter(|_| tp10);
+        self.glow
+            .record(gpu, cmd, slot_idx, tp10, now, |pipe| match tp10_eyes {
+                Some(t) => t.bind_with(gpu, cmd, slot_idx, pipe),
+                // SAFETY: recording; the pipeline was made with the eye
+                // passes' layout and the slot's scene set is written for
+                // this frame.
+                None => unsafe {
+                    let d = &gpu.device;
+                    d.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, pipe);
+                    d.cmd_bind_descriptor_sets(
+                        cmd,
+                        vk::PipelineBindPoint::GRAPHICS,
+                        scene_pl,
+                        0,
+                        &[scene_set],
+                        &[],
+                    );
+                },
+            });
+    }
+
+    /// Draws comfort focus's samples round the aim, at lattice angle `along`
+    /// (`fs_focus`, which takes it from the scene's parameters), with the eye
     /// passes' own pipeline layout and bindings, so they read the frame as
     /// the eye passes just did, then matches them.
-    fn record_focus(&mut self, slot_idx: usize, tp10: bool, aim: Vec3, lat: f32) {
+    fn record_focus(&mut self, slot_idx: usize, tp10: bool, along: f32) {
         let cmd = self.slots[slot_idx].cmd;
         let Some(focus) = self.focus.as_mut() else {
             return;
@@ -2060,7 +2184,7 @@ impl Renderer {
             d.cmd_draw(cmd, 3, 1, 0, 0);
             d.cmd_end_rendering(cmd);
         }
-        focus.record(&self.gpu, cmd, slot_idx, aim, lat);
+        focus.record(&self.gpu, cmd, slot_idx, along);
     }
 
     /// Ends recording and submits the frame.
@@ -2490,6 +2614,7 @@ impl Drop for Renderer {
             if let Some(mut f) = self.focus.take() {
                 f.destroy(&gpu);
             }
+            self.glow.destroy(&gpu);
             if let Some(mut t) = self.timer.take() {
                 t.destroy(&gpu);
             }

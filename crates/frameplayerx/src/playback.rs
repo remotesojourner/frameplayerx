@@ -112,6 +112,7 @@ pub struct Playback {
     colour_open: bool,
     pub heatmap: Option<Heatmap>,
     pub markers: Vec<Marker>,
+    pub(crate) trickplay: Option<crate::trickplay::Preview>,
     pub subtitle_files: Vec<SubtitleFile>,
     pub active_subtitle_file: Option<usize>,
     pub managed_subtitles: Vec<fp_library::UserSubtitle>,
@@ -740,6 +741,10 @@ pub fn open(
     let markers = markers(&info, entry.as_ref(), record.as_ref(), library);
     let record_id = record.as_ref().map(|r| r.id);
     let session = record_id.and_then(|id| library.start_playback(id).ok());
+    let trickplay = source
+        .as_ref()
+        .zip(entry.as_ref())
+        .and_then(|(source, video)| crate::trickplay::Preview::new(source.clone(), video));
     let watch = source.and_then(|src| {
         let video = entry
             .clone()
@@ -777,6 +782,7 @@ pub fn open(
             settings_dirty: false,
             heatmap,
             markers,
+            trickplay,
             subtitle_files: subs,
             active_subtitle_file,
             managed_subtitles,
@@ -1598,6 +1604,7 @@ impl Playback {
     /// froze the headset's frame loop (quitting while a 10-bit file over
     /// SMB was buffering hung the app).
     pub fn close(mut self, library: &Library) {
+        self.trickplay = None;
         self.save_progress(library, true);
         self.save_key(library, true);
         if let Some(w) = self.watch.take() {
@@ -1675,13 +1682,14 @@ fn has_hardware_decoder(v: &StreamInfo) -> bool {
     hardware_decodes(v, fp_media::hevc_10bit_hardware())
 }
 
-/// 8-bit 4:2:0 HEVC and H.264, and 10-bit 4:2:0 HEVC when `hevc_10bit` (the
-/// renderer shows it, see [`fp_media::set_hevc_10bit_hardware`]). Not
-/// interlaced H.264, nor video being deinterlaced, which takes pictures in
-/// memory.
-fn hardware_decodes(v: &StreamInfo, hevc_10bit: bool) -> bool {
-    let depth = v.bit_depth <= 8 || (hevc_10bit && v.codec == "hevc" && v.bit_depth == 10);
-    matches!(v.codec.as_str(), "hevc" | "h264")
+/// 8-bit 4:2:0 HEVC, H.264 and AV1, and 10-bit 4:2:0 HEVC and AV1 when
+/// `ten_bit_q10c` (the renderer shows Q10C, see
+/// [`fp_media::set_hevc_10bit_hardware`]). Not interlaced H.264, nor video
+/// being deinterlaced, which takes pictures in memory.
+fn hardware_decodes(v: &StreamInfo, ten_bit_q10c: bool) -> bool {
+    let depth = v.bit_depth <= 8
+        || (ten_bit_q10c && matches!(v.codec.as_str(), "hevc" | "av1") && v.bit_depth == 10);
+    matches!(v.codec.as_str(), "hevc" | "h264" | "av1")
         && depth
         && v.chroma() == "4:2:0"
         && !v.deinterlaced
@@ -1722,6 +1730,9 @@ pub(crate) fn software_reason(
     hardware_error: Option<&str>,
 ) -> String {
     match hardware_error {
+        Some(e) if e.contains("no V4L2 decoder") => {
+            tr!("decoder-why-none", stream = stream_desc(v))
+        }
         Some(e) => e.strip_prefix("unsupported: ").unwrap_or(e).to_string(),
         None if !has_hardware_decoder(v) => tr!("decoder-why-none", stream = stream_desc(v)),
         None if !hardware_on => tr!("decoder-why-off").to_string(),
@@ -1765,7 +1776,7 @@ pub(crate) fn slow_decode_notice(
     holders: &fp_media::SessionHolders,
 ) -> Notice {
     let desc = stream_desc(v);
-    if !has_hardware_decoder(v) {
+    if !has_hardware_decoder(v) || hardware_error.is_some_and(|e| e.contains("no V4L2 decoder")) {
         return Notice::new(
             tr!("decoder-pill-none"),
             tr!("decoder-notice-none", stream = desc),
@@ -2615,8 +2626,17 @@ mod tests {
             n.contains("10-bit HEVC") && n.contains("8-bit 4:2:0 H.265"),
             "{n}"
         );
-        let n = slow_decode_notice(&stream("av1", 8), true, None, &nobody).detail;
+        // AV1 on a driver without AV01 reports "no V4L2 decoder", shown as
+        // no hardware decoding (like VP9).
+        let no_av1 = "unsupported: no V4L2 decoder for Av1 with NV12 output";
+        let n = slow_decode_notice(&stream("av1", 8), true, Some(no_av1), &nobody).detail;
         assert!(n.contains("for AV1,"), "{n}");
+        assert_eq!(
+            software_reason(&stream("av1", 8), true, Some(no_av1)),
+            "no hardware decoding for AV1"
+        );
+        let n = slow_decode_notice(&stream("vp9", 8), true, None, &nobody).detail;
+        assert!(n.contains("for VP9,"), "{n}");
         let busy = "hardware decoder busy: other video sessions leave room for 8192x4064, \
                     not 8192x4096 10-bit";
         let n = slow_decode_notice(&stream("hevc", 8), true, Some(busy), &nobody).detail;
@@ -2690,10 +2710,13 @@ mod tests {
         let r = software_reason(&stream("hevc", 8), true, Some(refused));
         assert_eq!(r, "V4L2: stream size unknown");
 
-        // 10-bit HEVC in hardware where the renderer shows it; never other
-        // 10-bit codecs.
+        // 10-bit HEVC and AV1 in hardware where the renderer shows Q10C;
+        // never other 10-bit codecs.
         assert!(hardware_decodes(&stream("hevc", 10), true));
         assert!(!hardware_decodes(&stream("hevc", 10), false));
+        assert!(hardware_decodes(&stream("av1", 10), true));
+        assert!(!hardware_decodes(&stream("av1", 10), false));
+        assert!(hardware_decodes(&stream("av1", 8), false));
         assert!(!hardware_decodes(&stream("h264", 10), true));
         assert!(!hardware_decodes(&stream("vp9", 8), true));
         let mut s12 = stream("hevc", 12);

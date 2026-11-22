@@ -113,9 +113,9 @@ pub fn grab(
 pub struct Grabber {
     input: Input,
     info: MediaInfo,
-    /// The video stream, its clockwise turn and pixel aspect, and its
-    /// decoder, once a frame was asked for.
-    video: Option<(usize, (u32, f64), Decoder)>,
+    /// The video stream, its clockwise turn and pixel aspect, whether it is
+    /// interlaced, and its decoder, once a frame was asked for.
+    video: Option<(usize, (u32, f64), bool, Decoder)>,
     /// Whether it has read on from the start.
     used: bool,
     /// When the last picture grabbed shows.
@@ -141,17 +141,21 @@ impl Grabber {
         })
     }
 
-    /// The video stream, its shape and its decoder, opened on first use:
-    /// in software (the hardware decoder is playback's), keyframes only.
-    fn video(&mut self) -> Result<&mut (usize, (u32, f64), Decoder)> {
+    /// The video stream, its shape, whether it is interlaced, and its decoder,
+    /// opened on first use: in software (the hardware decoder is playback's),
+    /// keyframes only when progressive.
+    fn video(&mut self) -> Result<&mut (usize, (u32, f64), bool, Decoder)> {
         if self.video.is_none() {
             let index = self
                 .input
                 .best_stream(ff::AVMEDIA_TYPE_VIDEO)
                 .ok_or(Error::NoStream("video"))?;
             let shape = crate::info::picture_shape(&self.input, index);
+            // SAFETY: stream belongs to the open input.
+            let interlaced =
+                unsafe { crate::info::interlaced(&*(*self.input.streams()[index]).codecpar) };
             let dec = Decoder::open(&self.input, index, HwDecode::Stills)?;
-            self.video = Some((index, shape, dec));
+            self.video = Some((index, shape, interlaced, dec));
         }
         Ok(self.video.as_mut().expect("just opened"))
     }
@@ -193,7 +197,7 @@ impl Grabber {
     /// shows.
     fn keyframe(&mut self) -> Result<(Frame, Option<f64>)> {
         let Grabber { input, video, .. } = self;
-        let (index, _, dec) = video.as_mut().expect("opened by grab");
+        let (index, _, interlaced, dec) = video.as_mut().expect("opened by grab");
         dec.flush();
         let mut pkt = Packet::new();
         let mut frame = Frame::new();
@@ -209,6 +213,13 @@ impl Grabber {
                 if let Some(true) = dec.receive(&mut frame)? {
                     let t = dec.frame_time(&frame);
                     return Ok((frame, t));
+                }
+                // Field-coded interlaced streams split a picture across two
+                // packets (often an I-field then a P-field); draining and
+                // flushing after one packet discards the first field before
+                // its partner arrives.
+                if *interlaced {
+                    continue;
                 }
             }
             // A decoder holds pictures back to put them in order, until
@@ -519,6 +530,275 @@ mod tests {
             stop,
         );
         assert!(r.is_err());
+    }
+
+    /// Builds a 16x32 Main-profile H.264 PAFF MPEG-TS stream whose each frame
+    /// is split into two packets: a top IDR I-field and a complementary bottom
+    /// P-field predicting from it (the layout 1080i TV / AVCHD files use).
+    fn paff_field_pair_ts() -> Vec<u8> {
+        struct Bits(Vec<u8>);
+        impl Bits {
+            fn u(&mut self, val: u32, n: u32) {
+                for i in (0..n).rev() {
+                    self.0.push(((val >> i) & 1) as u8);
+                }
+            }
+            fn ue(&mut self, val: u32) {
+                let v = val + 1;
+                let n = 31 - v.leading_zeros();
+                self.u(0, n);
+                self.u(v, n + 1);
+            }
+            fn se(&mut self, val: i32) {
+                let code = if val <= 0 {
+                    (-2 * val) as u32
+                } else {
+                    (2 * val - 1) as u32
+                };
+                self.ue(code);
+            }
+            fn finish(mut self) -> Vec<u8> {
+                self.u(1, 1);
+                while !self.0.len().is_multiple_of(8) {
+                    self.u(0, 1);
+                }
+                let raw: Vec<u8> = self
+                    .0
+                    .chunks(8)
+                    .map(|c| c.iter().fold(0u8, |acc, &b| (acc << 1) | b))
+                    .collect();
+                let mut out = Vec::with_capacity(raw.len() + 8);
+                let mut zeros = 0u8;
+                for b in raw {
+                    if zeros == 2 && b <= 3 {
+                        out.push(3);
+                        zeros = 0;
+                    }
+                    out.push(b);
+                    zeros = if b == 0 { zeros + 1 } else { 0 };
+                }
+                out
+            }
+        }
+        let nal = |ref_idc: u8, kind: u8, rbsp: &[u8]| -> Vec<u8> {
+            let mut out = vec![0, 0, 0, 1, (ref_idc << 5) | kind];
+            out.extend_from_slice(rbsp);
+            out
+        };
+
+        // SPS: Main profile, 16x32, frame_mbs_only_flag = 0, PAFF.
+        let mut w = Bits(Vec::new());
+        w.u(77, 8);
+        w.u(0, 8);
+        w.u(30, 8);
+        w.ue(0); // sps_id
+        w.ue(0); // log2_max_frame_num_minus4 (4 bits)
+        w.ue(2); // pic_order_cnt_type = 2
+        w.ue(1); // max_num_ref_frames = 1
+        w.u(0, 1); // gaps_in_frame_num_value_allowed_flag
+        w.ue(0); // pic_width_in_mbs_minus1 (16 px)
+        w.ue(0); // pic_height_in_map_units_minus1 (16 px/field -> 32 px)
+        w.u(0, 1); // frame_mbs_only_flag = 0 (field pictures)
+        w.u(0, 1); // mb_adaptive_frame_field_flag = 0 (PAFF)
+        w.u(1, 1); // direct_8x8_inference_flag
+        w.u(0, 1); // frame_cropping_flag
+        w.u(0, 1); // vui_parameters_present_flag
+        let sps = nal(3, 7, &w.finish());
+
+        // PPS: CAVLC.
+        let mut w = Bits(Vec::new());
+        w.ue(0); // pps_id
+        w.ue(0); // sps_id
+        w.u(0, 1); // entropy_coding_mode_flag = 0 (CAVLC)
+        w.u(0, 1); // bottom_field_pic_order_in_frame_present_flag
+        w.ue(0); // num_slice_groups_minus1
+        w.ue(0); // num_ref_idx_l0_default_active_minus1
+        w.ue(0); // num_ref_idx_l1_default_active_minus1
+        w.u(0, 1); // weighted_pred_flag
+        w.u(0, 2); // weighted_bipred_idc
+        w.se(0); // pic_init_qp_minus26
+        w.se(0); // pic_init_qs_minus26
+        w.se(0); // chroma_qp_index_offset
+        w.u(0, 1); // deblocking_filter_control_present_flag
+        w.u(0, 1); // constrained_intra_pred_flag
+        w.u(0, 1); // redundant_pic_cnt_present_flag
+        let pps = nal(3, 8, &w.finish());
+
+        // Build field access units: (pts_90khz, bytes).
+        let mut fields: Vec<(u64, Vec<u8>)> = Vec::new();
+        for (idx, luma) in [40u8, 120u8].into_iter().enumerate() {
+            let pts_top = idx as u64 * 3600;
+            let mut top = Vec::new();
+            top.extend_from_slice(&nal(0, 9, &[0x10]));
+            top.extend_from_slice(&sps);
+            top.extend_from_slice(&pps);
+            let mut w = Bits(Vec::new());
+            w.ue(0); // first_mb_in_slice
+            w.ue(7); // slice_type = I
+            w.ue(0); // pps_id
+            w.u(0, 4); // frame_num
+            w.u(1, 1); // field_pic_flag = 1
+            w.u(0, 1); // bottom_field_flag = 0 (top field)
+            w.ue(0); // idr_pic_id
+            w.u(0, 1); // no_output_of_prior_pics_flag
+            w.u(0, 1); // long_term_reference_flag
+            w.se(0); // slice_qp_delta
+            w.ue(25); // I_PCM macroblock
+            while !w.0.len().is_multiple_of(8) {
+                w.u(0, 1);
+            }
+            for i in 0..256u32 {
+                w.u(u32::from(luma.wrapping_add((i * 7) as u8)), 8);
+            }
+            for i in 0..64u32 {
+                w.u(0x60 + i, 8);
+            }
+            for i in 0..64u32 {
+                w.u(0xa0 + i, 8);
+            }
+            top.extend_from_slice(&nal(3, 5, &w.finish()));
+            fields.push((pts_top, top));
+
+            // Complementary bottom P-field predicting from the top I-field.
+            let mut bot = Vec::new();
+            bot.extend_from_slice(&nal(0, 9, &[0x30]));
+            let mut w = Bits(Vec::new());
+            w.ue(0); // first_mb_in_slice
+            w.ue(5); // slice_type = P
+            w.ue(0); // pps_id
+            w.u(0, 4); // same frame_num
+            w.u(1, 1); // field_pic_flag = 1
+            w.u(1, 1); // bottom_field_flag = 1 (bottom field)
+            w.u(0, 1); // num_ref_idx_active_override_flag
+            w.u(0, 1); // ref_pic_list_modification_flag_l0
+            w.u(0, 1); // adaptive_ref_pic_marking_mode_flag
+            w.se(0); // slice_qp_delta
+            w.ue(1); // mb_skip_run = 1
+            bot.extend_from_slice(&nal(2, 1, &w.finish()));
+            fields.push((pts_top + 1800, bot));
+        }
+
+        // Minimal MPEG-TS wrapper (PAT PID 0, PMT PID 0x1000, H.264 PID 0x100).
+        let crc32_mpeg2 = |data: &[u8]| -> u32 {
+            let mut crc = 0xffff_ffffu32;
+            for &b in data {
+                crc ^= u32::from(b) << 24;
+                for _ in 0..8 {
+                    crc = if crc & 0x8000_0000 != 0 {
+                        (crc << 1) ^ 0x04c1_1db7
+                    } else {
+                        crc << 1
+                    };
+                }
+            }
+            crc
+        };
+        let psi_packet = |pid: u16, section: &[u8]| -> [u8; 188] {
+            let mut p = [0xffu8; 188];
+            p[0] = 0x47;
+            p[1] = 0x40 | ((pid >> 8) as u8 & 0x1f);
+            p[2] = pid as u8;
+            p[3] = 0x10;
+            p[4] = 0x00; // pointer_field
+            p[5..5 + section.len()].copy_from_slice(section);
+            let crc = crc32_mpeg2(section).to_be_bytes();
+            p[5 + section.len()..9 + section.len()].copy_from_slice(&crc);
+            p
+        };
+        let mut ts = Vec::new();
+        // PAT: program 1 -> PMT PID 0x1000.
+        let pat = [
+            0x00, 0xb0, 0x0d, 0x00, 0x01, 0xc1, 0x00, 0x00, 0x00, 0x01, 0xf0, 0x00,
+        ];
+        ts.extend_from_slice(&psi_packet(0x0000, &pat));
+        // PMT: PCR PID 0x0100, stream_type 0x1b (H.264) on PID 0x0100.
+        let pmt = [
+            0x02, 0xb0, 0x12, 0x00, 0x01, 0xc1, 0x00, 0x00, 0xe1, 0x00, 0xf0, 0x00, 0x1b, 0xe1,
+            0x00, 0xf0, 0x00,
+        ];
+        ts.extend_from_slice(&psi_packet(0x1000, &pmt));
+
+        let mut cc = 0u8;
+        for (pts, au) in fields {
+            let mut pes = vec![
+                0x00,
+                0x00,
+                0x01,
+                0xe0, // video stream
+                0x00,
+                0x00, // unbounded length
+                0x80,
+                0x80, // PTS present
+                0x05, // PTS header length
+                0x21 | (((pts >> 29) as u8) & 0x0e),
+                ((pts >> 22) as u8),
+                0x01 | (((pts >> 14) as u8) & 0xfe),
+                ((pts >> 7) as u8),
+                0x01 | (((pts << 1) as u8) & 0xfe),
+            ];
+            pes.extend_from_slice(&au);
+            let mut first = true;
+            let mut rest = pes.as_slice();
+            while !rest.is_empty() {
+                let mut pkt = [0xffu8; 188];
+                pkt[0] = 0x47;
+                pkt[1] = if first { 0x41 } else { 0x01 };
+                pkt[2] = 0x00;
+                let take = rest.len().min(184);
+                if take < 184 {
+                    pkt[3] = 0x30 | (cc & 0x0f);
+                    let pad = 184 - take;
+                    pkt[4] = (pad - 1) as u8;
+                    if pad > 1 {
+                        pkt[5] = 0x00;
+                    }
+                    pkt[188 - take..].copy_from_slice(&rest[..take]);
+                } else {
+                    pkt[3] = 0x10 | (cc & 0x0f);
+                    pkt[4..].copy_from_slice(&rest[..184]);
+                }
+                cc = (cc + 1) & 0x0f;
+                first = false;
+                rest = &rest[take..];
+                ts.extend_from_slice(&pkt);
+            }
+        }
+        ts
+    }
+
+    #[test]
+    fn grabs_interlaced_mbaff_and_separate_field_paff() {
+        // MBAFF (one packet per frame).
+        let mbaff = grab(
+            src("interlaced_h264.mp4"),
+            "interlaced_h264.mp4",
+            0.0,
+            160,
+            160,
+            Crop::Full,
+            no_interrupt(),
+        )
+        .unwrap();
+        assert_eq!((mbaff.width, mbaff.height), (128, 96));
+
+        // PAFF (two field packets per frame: top I-field + bottom P-field).
+        let paff = grab(
+            Arc::new(fp_core::source::MemorySource(paff_field_pair_ts())),
+            "fields.ts",
+            0.0,
+            160,
+            160,
+            Crop::Full,
+            no_interrupt(),
+        )
+        .unwrap();
+        assert_eq!((paff.width, paff.height), (16, 32));
+        let distinct: std::collections::HashSet<_> = paff
+            .pixels
+            .chunks(4)
+            .map(|p| (p[0] / 32, p[1] / 32, p[2] / 32))
+            .collect();
+        assert!(distinct.len() > 5, "PAFF thumbnail looks blank");
     }
 
     /// What making one video's pictures costs, as the library worker does

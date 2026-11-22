@@ -6,6 +6,7 @@ mod frame;
 mod input;
 mod plex;
 mod remote;
+mod seek_preview;
 mod sources;
 mod subtitle_search;
 mod tasks;
@@ -13,6 +14,7 @@ mod tasks;
 use frame::{escape, key};
 use tasks::Job;
 
+use crate::hands_free;
 use crate::jobs::Jobs;
 use crate::playback::{self, OpenRequest, Opened, Playback};
 use crate::services::Services;
@@ -42,6 +44,9 @@ pub struct FrameInput {
     pub time: f64,
     pub dt: f32,
     pub head: Option<(Vec3, Quat)>,
+    /// The head pose while it is tracked and the session has input focus:
+    /// what hands-free navigation points with.
+    pub head_aim: Option<(Vec3, Quat)>,
     pub hands: [Hand; 2],
     pub passthrough_available: bool,
     /// The compositor can draw panels and rays as quad layers (OpenXR);
@@ -96,9 +101,15 @@ const ADJUST: usize = 2;
 const KEYBOARD: usize = 3;
 /// The audio and subtitles picker, above the control bar.
 const TRACKS: usize = 4;
+/// Show controls, above the picture while the control bar is hidden: with
+/// hands-free navigation there is no trigger to bring the bar back.
+const WAKE: usize = 5;
+/// Show controls shows only while the head points this close to it, so it is
+/// out of sight while you watch.
+const WAKE_REVEAL_DEG: f32 = 12.0;
 /// A toast over the video, above where the control bar sits. Nothing to point
 /// at, so the rays pass through it and don't show for it.
-const TOAST: usize = 5;
+const TOAST: usize = 6;
 /// How long a toast stays over the video.
 const VIDEO_TOAST_SECS: f32 = 3.0;
 /// The control bar's body in pixels.
@@ -107,6 +118,13 @@ const BAR_PX: [u32; 2] = [1400, 268];
 const BAR_M_PER_PX: f32 = 1.2 / 1400.0;
 /// The performance overlay's quad layer (the panels' are their indices).
 const PERF_LAYER: u64 = 8;
+/// The panels with a strip of keys beside them that scroll their lists
+/// hands-free, and the strips' first quad layer.
+const SCROLLED: [usize; 3] = [MAIN, ADJUST, TRACKS];
+const SCROLL_LAYER: u64 = PERF_LAYER + 1;
+/// A scroll strip's width in points: two keys and the room round them (see
+/// `ui::widgets::scroll_strip`).
+const SCROLL_STRIP_PTS: f32 = 120.0;
 /// The performance overlay's place when routing input: after the panels that
 /// take it, which the toast doesn't.
 const PERF: usize = TOAST;
@@ -176,8 +194,11 @@ pub struct App {
     services: Services,
     pub ui: UiState,
     thumbs: ui::thumbs::Thumbs,
-    panels: [Panel; 6],
+    panels: [Panel; 7],
+    seek_preview: Option<seek_preview::SeekPreview>,
     subs: Panel,
+    /// Beside each of [`SCROLLED`], in that order.
+    scroll_strips: [Panel; 3],
     /// The performance overlay, its sampler and readings while it shows, and
     /// what it last showed.
     perf: Panel,
@@ -192,6 +213,10 @@ pub struct App {
     sub_shaper: Option<ui::subtitle_text::SubtitleText>,
     sub_fonts: Jobs<ui::subtitle_text::SubtitleText>,
     pointer: Pointer,
+    head_pointer: hands_free::HeadPointer,
+    /// What the panels last heard of Settings › Controller › Hands-free
+    /// navigation.
+    hands_free_ui: bool,
     pub playback: Option<Playback>,
     open_seq: u64,
     reopen_tracks: bool,
@@ -282,6 +307,25 @@ fn perf_panel() -> Panel {
     perf
 }
 
+/// The strip of scroll keys beside `owner`: as tall as it, with points the
+/// same size, so each key sits level with its list. Wide enough for the
+/// largest interface size, unless the owner grows instead.
+fn scroll_strip_panel(owner: &Panel) -> Panel {
+    let most = if owner.grows() { 1.0 } else { *UI_SCALES.end() };
+    let width = (SCROLL_STRIP_PTS * owner.ppp * most).round() as u32;
+    let metres_per_px = owner.base_size().x / owner.px[0] as f32;
+    let strip = Panel::new(
+        [width, owner.px[1]],
+        Vec2::new(width as f32 * metres_per_px, owner.base_size().y),
+        owner.ppp,
+    );
+    if owner.grows() {
+        strip.growing()
+    } else {
+        strip
+    }
+}
+
 fn floating_panel(px: [u32; 2], width_m: f32, ppp: f32) -> Panel {
     let room = ui::widgets::SHADOW_ROOM;
     let extra = [
@@ -304,6 +348,8 @@ impl App {
             growing_panel([1200, 456], 1.0, 1.25),
             // As fine as the bar it sits on, and growing with it.
             growing_panel([850, 560], 850.0 * BAR_M_PER_PX, 1.25),
+            // As fine as the bar it stands in for.
+            growing_panel([400, 100], 400.0 * BAR_M_PER_PX, 1.25),
             growing_panel([1100, 90], 1100.0 * BAR_M_PER_PX, 1.25),
         ];
         panels[BAR].refresh = Some(Duration::from_millis(250));
@@ -313,6 +359,7 @@ impl App {
         panels[MAIN].refresh = Some(Duration::from_millis(1000));
         let subs = panel([1600, 320], 1.6, 1.0);
         let perf = perf_panel();
+        let scroll_strips = SCROLLED.map(|owner| scroll_strip_panel(&panels[owner]));
         subs.ctx
             .style_mut(|s| s.visuals.panel_fill = egui::Color32::TRANSPARENT);
         let sub_fonts = Jobs::new();
@@ -327,7 +374,9 @@ impl App {
             ui: UiState::default(),
             thumbs,
             panels,
+            seek_preview: None,
             subs,
+            scroll_strips,
             perf,
             perf_monitor: None,
             perf_readings: None,
@@ -338,6 +387,8 @@ impl App {
             sub_shaper: None,
             sub_fonts,
             pointer: Pointer::default(),
+            head_pointer: hands_free::HeadPointer::default(),
+            hands_free_ui: false,
             playback: None,
             open_seq: 0,
             reopen_tracks: false,
@@ -396,10 +447,13 @@ impl App {
             .settings
             .ui_scale
             .clamp(*UI_SCALES.start(), *UI_SCALES.end());
-        for p in self.panels.iter_mut() {
+        for p in self.panels.iter_mut().chain(&mut self.scroll_strips) {
             p.set_scale(scale);
         }
         self.perf.set_scale(scale);
+        if let Some(preview) = self.seek_preview.as_mut() {
+            preview.panel.set_scale(scale);
+        }
     }
 
     pub fn set_about(&mut self, about: Vec<(String, String)>) {
@@ -446,6 +500,7 @@ impl App {
             "adjust" => ADJUST,
             "keyboard" => KEYBOARD,
             "tracks" => TRACKS,
+            "wake" => WAKE,
             "toast" => TOAST,
             _ => return None,
         })
@@ -453,7 +508,7 @@ impl App {
 
     /// Repaints every panel next frame (the preview changed the UI state).
     pub fn repaint_all(&mut self) {
-        for p in self.panels.iter_mut() {
+        for p in self.panels.iter_mut().chain(&mut self.scroll_strips) {
             p.request_repaint();
         }
     }
@@ -463,6 +518,8 @@ impl App {
         let p = match name {
             "subs" => &self.subs,
             "perf" => &self.perf,
+            "scroll" => &self.scroll_strips[0],
+            "seek-preview" => &self.seek_preview.as_ref()?.panel,
             _ => &self.panels[Self::panel_index(name)?],
         };
         p.visible.then_some(p.id).flatten()
@@ -471,6 +528,7 @@ impl App {
     pub fn panel_point(&self, name: &str, x: f32, y: f32) -> Option<Vec3> {
         let p = match name {
             "perf" => &self.perf,
+            "scroll" => &self.scroll_strips[0],
             _ => &self.panels[Self::panel_index(name)?],
         };
         if !p.visible {

@@ -7,7 +7,8 @@ use fp_media::PixelLayout;
 use fp_render::capture::OffscreenEyes;
 use fp_render::math::{Fov, projection, view};
 use fp_render::{
-    CinemaParams, CinemaRoom, EyeView, Foveation, Gpu, QuadDraw, QuadTexture, Renderer, VideoParams,
+    CinemaParams, CinemaRoom, EyeView, Foveation, Gpu, QuadDraw, QuadTexture, Renderer, ScreenGlow,
+    VideoParams,
 };
 use glam::{Mat4, Quat, Vec3};
 use std::sync::Arc;
@@ -393,6 +394,151 @@ fn flat_screen_sits_in_front_and_background_surrounds_it() {
     assert!(is_blue(px(&l, 2, 2)), "corner {:?}", px(&l, 2, 2));
     let [l, _] = render(&mut r, &mut e, None, &p, &[]);
     assert!(is_blue(centre(&l)), "no video {:?}", centre(&l));
+    e.destroy(&r);
+}
+
+/// A flat screen 4 m away on black, its picture red on the left half and
+/// blue on the right, for screen glow.
+fn glow_scene() -> (Arc<fp_media::VideoFrame>, VideoParams) {
+    let f = frame(160, 90, |u, _| {
+        if u < 0.5 {
+            [240, 20, 20]
+        } else {
+            [20, 20, 240]
+        }
+    });
+    let mut p = params(
+        Projection::Flat,
+        StereoLayout::Mono,
+        ViewSettings::default(),
+    );
+    p.screen_pose = Mat4::from_translation(Vec3::new(0.0, 1.6, -4.0));
+    p.background = [0.0, 0.0, 0.0, 1.0];
+    (f, p)
+}
+
+const FULL_GLOW: ScreenGlow = ScreenGlow {
+    brightness: 1.0,
+    spread: 1.0,
+};
+
+#[test]
+fn screen_glow_takes_each_edges_colour_and_leaves_the_picture_alone() {
+    let Some((mut r, mut e)) = setup() else {
+        return;
+    };
+    let (f, p) = glow_scene();
+    let off = render(&mut r, &mut e, Some(&f), &p, &[]);
+    r.set_screen_glow(Some(FULL_GLOW));
+    // The colours come back once their frame slot comes round again.
+    for _ in 0..2 {
+        render(&mut r, &mut e, Some(&f), &p, &[]);
+    }
+    let on = render(&mut r, &mut e, Some(&f), &p, &[]);
+    // The screen spans x 16 to 111 of the 128 px view.
+    let (left, right, y) = (10, SIZE - 11, SIZE / 2);
+    for (lit, unlit) in on.iter().zip(&off) {
+        let (red, blue) = (px(lit, left, y), px(lit, right, y));
+        assert!(red[0] > red[2] && red[0] > 15, "left glow: {red:?}");
+        assert!(blue[2] > blue[0] && blue[2] > 15, "right glow: {blue:?}");
+        assert_eq!(px(unlit, left, y), [0; 3]);
+        for x in [SIZE / 4, SIZE / 2, 3 * SIZE / 4] {
+            assert_eq!(px(lit, x, y), px(unlit, x, y), "picture at {x}");
+        }
+    }
+
+    // Less spread fades it out sooner, less brightness dims it.
+    for look in [
+        ScreenGlow {
+            spread: 0.1,
+            ..FULL_GLOW
+        },
+        ScreenGlow {
+            brightness: 0.1,
+            ..FULL_GLOW
+        },
+    ] {
+        r.set_screen_glow(Some(look));
+        let [less, _] = render(&mut r, &mut e, Some(&f), &p, &[]);
+        assert!(px(&less, 4, y)[0] < px(&on[0], 4, y)[0], "{look:?}");
+    }
+
+    r.set_screen_glow(None);
+    assert_eq!(render(&mut r, &mut e, Some(&f), &p, &[]), off);
+    e.destroy(&r);
+}
+
+#[test]
+fn screen_glow_looks_inside_a_letterbox() {
+    let Some((mut r, mut e)) = setup() else {
+        return;
+    };
+    let (_, p) = glow_scene();
+    // Black bars 12% deep above and below a picture red at the top.
+    let film = frame(160, 90, |_, v| {
+        if !(0.12..0.88).contains(&v) {
+            [0, 0, 0]
+        } else if v < 0.5 {
+            [240, 20, 20]
+        } else {
+            [20, 20, 240]
+        }
+    });
+    r.set_screen_glow(Some(FULL_GLOW));
+    // Above the screen's top edge (y 37), in the middle.
+    let above = |img: &[u8]| px(img, SIZE / 2, 30);
+    // Until the bars are found, the strip along the top is in the bar.
+    for _ in 0..3 {
+        render(&mut r, &mut e, Some(&film), &p, &[]);
+    }
+    let [first, _] = render(&mut r, &mut e, Some(&film), &p, &[]);
+    assert!(above(&first)[0] < 15, "before: {:?}", above(&first));
+    // Once they have held for a second, the colours come from inside them.
+    let started = Instant::now();
+    let lit = loop {
+        let [l, _] = render(&mut r, &mut e, Some(&film), &p, &[]);
+        let c = above(&l);
+        if c[0] > 30 || started.elapsed() > Duration::from_secs(5) {
+            break c;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    assert!(
+        lit[0] > 30 && lit[0] > 2 * lit[2],
+        "inside the bars: {lit:?}"
+    );
+    e.destroy(&r);
+}
+
+#[test]
+fn screen_glow_stays_off_over_passthrough_and_without_a_video() {
+    let Some((mut r, mut e)) = setup() else {
+        return;
+    };
+    let (f, mut p) = glow_scene();
+    r.set_screen_glow(Some(FULL_GLOW));
+    for _ in 0..2 {
+        render(&mut r, &mut e, Some(&f), &p, &[]);
+    }
+    let [lit, _] = render(&mut r, &mut e, Some(&f), &p, &[]);
+    let (x, y) = (10, SIZE / 2);
+    assert!(px(&lit, x, y)[0] > 15, "a red glow: {:?}", px(&lit, x, y));
+
+    let [empty, _] = render(&mut r, &mut e, None, &p, &[]);
+    assert_eq!(px(&empty, x, y), [0; 3]);
+
+    // Back on the next video once its colours are in.
+    for _ in 0..2 {
+        render(&mut r, &mut e, Some(&f), &p, &[]);
+    }
+    let [relit, _] = render(&mut r, &mut e, Some(&f), &p, &[]);
+    assert_eq!(px(&relit, x, y), px(&lit, x, y));
+
+    p.background = [0.0; 4];
+    let [passthrough, _] = render(&mut r, &mut e, Some(&f), &p, &[]);
+    assert_eq!(px(&passthrough, x, y), [0; 3]);
+    assert_eq!(alpha(&passthrough, x, y), 0);
+    assert_eq!(centre(&passthrough), centre(&lit));
     e.destroy(&r);
 }
 

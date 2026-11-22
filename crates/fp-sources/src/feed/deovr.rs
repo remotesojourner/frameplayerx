@@ -10,6 +10,36 @@ use fp_core::format::{Projection, StereoLayout, VideoFormat, detect_from_name};
 use fp_core::source::{Entry, EntryKind, is_video_name};
 use serde_json::Value;
 
+/// DeoVR puts a sheet's tile size in its filename, even on signed URLs.
+pub(super) fn timeline_tile_size(url: &str) -> Option<[u32; 2]> {
+    let url = url::Url::parse(url).ok()?;
+    if !matches!(url.scheme(), "http" | "https")
+        || !url.username().is_empty()
+        || url.password().is_some()
+    {
+        return None;
+    }
+    let name = last_segment(url.as_str()).to_ascii_lowercase();
+    let (stem, extension) = name.rsplit_once('.')?;
+    if !matches!(extension, "jpg" | "jpeg" | "png" | "webp") {
+        return None;
+    }
+    let (_, size) = stem.rsplit_once("timelinepreview")?;
+    let (width, height) = size.split_once('x')?;
+    let (width, height): (u32, u32) = (width.parse().ok()?, height.parse().ok()?);
+    let valid_side = |side| (1..=crate::TRICKPLAY_MAX_DIMENSION).contains(&side);
+    (valid_side(width)
+        && valid_side(height)
+        && u64::from(width) * u64::from(height) <= crate::TRICKPLAY_MAX_PIXELS)
+        .then_some([width, height])
+}
+
+fn timeline_preview(v: &Value, base: &str) -> Option<String> {
+    let preview = url_field(v, "timelinePreview", base)?;
+    timeline_tile_size(&preview)?;
+    Some(preview)
+}
+
 /// Projection for a DeoVR `screenType`.
 fn deovr_projection(screen_type: &str) -> Option<Projection> {
     Some(match screen_type.trim().to_ascii_lowercase().as_str() {
@@ -88,6 +118,7 @@ pub fn parse_deovr_scene(v: &Value, base: &str) -> SceneInfo {
         title: text(v, "title").unwrap_or_default(),
         duration: num(v, "videoLength").filter(|d| *d > 0.0),
         thumbnail_url: url_field(v, "thumbnailUrl", base),
+        trickplay_url: timeline_preview(v, base),
         format: deovr_format(v),
         sources,
         scripts: array(v, "fleshlight")
@@ -127,6 +158,7 @@ pub fn parse_deovr_root(v: &Value, base: &str) -> Vec<SceneGroup> {
                     let mut e = Entry::new(title, url, EntryKind::Video);
                     e.duration = num(s, "videoLength").filter(|d| *d > 0.0);
                     e.thumbnail_url = url_field(s, "thumbnailUrl", base);
+                    e.trickplay_url = timeline_preview(s, base);
                     e.format = detect_from_name(&e.name);
                     Some(e)
                 })
@@ -148,7 +180,8 @@ mod tests {
                     {"title": "Beach_180_LR", "videoLength": 1800, "thumbnailUrl": "/img/1.jpg",
                      "video_url": "http://vr:9999/deovr/1"},
                     {"title": "No URL"},
-                    {"title": "Rel", "videoLength": "60", "video_url": "/deovr/2"}
+                    {"title": "Rel", "videoLength": "60", "video_url": "/deovr/2",
+                     "timelinePreview": "/asset/4096_timelinePreview341x195.jpg"}
                 ]},
                 {"list": []}
             ]
@@ -165,6 +198,10 @@ mod tests {
         assert_eq!(s.format.unwrap().stereo, StereoLayout::SideBySide);
         assert_eq!(g[0].scenes[1].duration, Some(60.0));
         assert_eq!(g[0].scenes[1].location, "http://vr:9999/deovr/2");
+        assert_eq!(
+            g[0].scenes[1].trickplay_url.as_deref(),
+            Some("http://vr:9999/asset/4096_timelinePreview341x195.jpg")
+        );
         assert!(parse_deovr_root(&json!({"x": 1}), "http://h/").is_empty());
     }
 
@@ -177,6 +214,7 @@ mod tests {
             "screenType": "mkx200",
             "stereoMode": "sbs",
             "thumbnailUrl": "http://vr/img/1.jpg",
+            "timelinePreview": " ../img/4096_timelinePreview341x195.jpg?signature=a%2Fb ",
             "encodings": [
                 {"name": "h265", "videoSources": [
                     {"resolution": 4096, "height": 4096, "width": 8192, "url": "http://vr/f/8k.mp4"},
@@ -218,6 +256,28 @@ mod tests {
         assert_eq!(e.scripts.len(), 1);
         assert_eq!(e.markers.len(), 2);
         assert_eq!(e.format, s.format);
+        let sheet = e.trickplay_url.as_deref().unwrap();
+        assert_eq!(
+            sheet,
+            "http://vr/img/4096_timelinePreview341x195.jpg?signature=a%2Fb"
+        );
+        assert_eq!(timeline_tile_size(sheet), Some([341, 195]));
+    }
+
+    #[test]
+    fn timeline_ignores_unknown_sizes_and_unsafe_urls() {
+        for value in [
+            "file:///tmp/timelinePreview341x195.jpg",
+            "http://user:pass@vr/img/timelinePreview341x195.jpg",
+            "/img/timelinePreview0x195.jpg",
+            "/img/timelinePreview8192x8192.jpg",
+            "/img/timelinePreview341x4294967296.jpg",
+            "/img/timelinePreview.jpg",
+            "/img/sheet.jpg?hint=timelinePreview341x195.jpg",
+        ] {
+            let s = parse_deovr_scene(&json!({"timelinePreview": value}), "http://vr/scene");
+            assert!(s.trickplay_url.is_none(), "{value}");
+        }
     }
 
     #[test]

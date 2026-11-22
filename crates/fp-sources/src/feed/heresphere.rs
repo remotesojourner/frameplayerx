@@ -74,6 +74,7 @@ pub fn parse_heresphere_video(v: &Value, base: &str) -> SceneInfo {
             .filter(|d| *d > 0.0)
             .map(|ms| ms / 1000.0),
         thumbnail_url: url_field(v, "thumbnailImage", base),
+        trickplay_url: None,
         format: heresphere_format(v),
         sources,
         scripts: array(v, "scripts")

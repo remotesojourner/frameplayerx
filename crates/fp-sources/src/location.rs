@@ -70,6 +70,29 @@ pub fn owner(location: &str) -> Option<String> {
     decode(location).map(|l| l.source_id)
 }
 
+/// Where an item of a source without readable paths is, for people to read:
+/// the server's address `base` (for `None`), then the item's key. `None` for
+/// a location the source doesn't own.
+pub fn display_opaque(
+    source: &dyn crate::Source,
+    base: &str,
+    location: Option<&str>,
+) -> Option<String> {
+    let base = base.trim_end_matches('/');
+    let Some(location) = location else {
+        return Some(base.to_string());
+    };
+    let location = source
+        .canonical_location(location)
+        .unwrap_or_else(|| location.to_string());
+    let l = decode(&location).filter(|l| l.source_id == source.id())?;
+    Some(if l.key.is_empty() {
+        base.to_string()
+    } else {
+        format!("{base} · {}", l.key)
+    })
+}
+
 fn root_url(root: &str) -> Option<Url> {
     let mut root = Url::parse(root).ok()?;
     if !matches!(root.scheme(), "http" | "https")

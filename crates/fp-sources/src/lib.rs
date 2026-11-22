@@ -85,6 +85,12 @@ use fp_core::source::{ByteSource, Entry, EntryKind, is_video_name};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
+mod trickplay;
+pub use trickplay::{
+    TRICKPLAY_MAX_DIMENSION, TRICKPLAY_MAX_FRAMES, TRICKPLAY_MAX_PIXELS, TRICKPLAY_SHEET_BYTES,
+    Trickplay, TrickplayTiming,
+};
+
 /// A place media can be browsed and read from.
 ///
 /// Locations are opaque strings produced by the source itself (in
@@ -161,9 +167,22 @@ pub trait Source: Send + Sync {
         None
     }
 
-    /// Where a folder of this source is (its root for `None`), for people
-    /// to read while browsing it. `None` when the source has no address
-    /// worth showing. Performs no I/O.
+    /// Whether this item can offer seek previews. Performs no I/O.
+    fn has_trickplay(&self, _entry: &Entry) -> bool {
+        false
+    }
+
+    /// Describes the selected video's seek previews and how to read them.
+    /// Called off the frame loop, only when a preview is first requested.
+    fn trickplay(&self, _entry: &Entry) -> Result<Option<Trickplay>> {
+        Ok(None)
+    }
+
+    /// Where a folder or video of this source is (its root for `None`), for
+    /// people to read: under the title while browsing a folder, and in the
+    /// File row of a video's details. `None` when the source has no address
+    /// worth showing, or doesn't own `location`. Performs no I/O: it is
+    /// called every frame.
     fn display_location(&self, _location: Option<&str>) -> Option<String> {
         None
     }

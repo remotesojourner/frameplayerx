@@ -22,19 +22,19 @@ A VR video player for the Valve Steam Frame. It plays flat, 180°, 360° and fis
 
 - **Video formats**: 180°, 360°, fisheye, flat and interlaced (1080i, DVD) videos, in 2D or 3D: side by side or top/bottom at full or half size, frame sequential, and 3D Blu-ray (disc images, MKV rips and `.ssif` files) in full 3D. The format is detected automatically, and you can change it for any video
 - **Cinema**: watch flat videos in a full-size cinema instead of on a floating screen: the Classic, a stadium hall with red velvet seats, or the Luxe, an open room with neon lights and leather recliners. Pick your row and how much the screen curves around you, and the house lights dim as the film starts and come up when you pause
-- **Hardware decoding**: HEVC (H.265) in 8 and 10 bits and H.264, up to 8K, play on the Frame's own video decoder, even past a damaged stretch of a file; AV1, VP9, interlaced video and anything else play with software decoding
+- **Hardware decoding**: HEVC (H.265) and AV1 (on SteamOS 0.5.10 and later) in 8 and 10 bits, and H.264, up to 8K, play on the Frame's own video decoder, even past a damaged stretch of a file; VP9, interlaced video, AV1 on earlier SteamOS versions and anything else play with software decoding
 - **Performance**: out of the box, 8K 60 fps video, 10-bit included, plays at full frame rate with the display at 120 Hz and 3744 pixels per eye, and the CPU stays almost idle: the decoder's pictures are drawn without being copied, and foveated rendering that follows your eyes keeps full detail where you look. Refresh rate, resolution and foveation can be changed in Settings, even while a video plays
 - **HDR**: HDR10 and HLG videos are fitted to the Frame's screen scene by scene, and colours it can't show are toned down instead of cut off
 - **Adjustments**: position, zoom, depth, comfort focus to keep what you look at whole as you tilt your head or lie down and ease its depth up close, picture settings and fisheye lens calibration, kept for each video or saved as presets to use on any video, and a screen that follows your head for watching lying down
 - **Passthrough videos**: see your room around the people in passthrough videos, and behind green or blue screens
 - **Subtitles and spatial audio**: subtitles from a file, inside the video or found on OpenSubtitles from the player and kept on your headset with their timing set for each video, picked in your language and shown in any script, and 360° audio that follows your head
 - **Videos on the headset**: browse any folder on the headset, a microSD card or a USB drive, including cards formatted on Windows or a Mac, and make libraries of your folders, with thumbnails, filters and sorting
-- **Media servers**: browse and play from Jellyfin, Emby and Plex, which can transcode while you watch and sync watch state; any server with a DeoVR feed or HereSphere API, transcoding when it offers that and, with HereSphere, syncing watch state; and network shares (SMB, NFS), SFTP servers, WebDAV, DLNA servers and web folders
+- **Media servers**: browse and play from Jellyfin, Emby and Plex, which can transcode while you watch, sync watch state and show their preview pictures above the seek bar; any server with a DeoVR feed or HereSphere API, transcoding when it offers that, syncing watch state with HereSphere and showing timeline previews with DeoVR; and network shares (SMB, NFS), SFTP servers, WebDAV, DLNA servers and web folders
 - **Watch history, Up next and playlists**: carry on where you left off, queue videos to play one after another, a folder's subfolders included, in order or shuffled, and loop the queue or a single video; keep playlists of videos from any source, mark favorites and ratings, and delete the files of videos you're done with
 - **PIN locks**: hide a source behind a PIN until you unlock it
 - **Haptic devices**: optional, off until turned on; syncs supported haptic devices with videos that have scripts
 - **Phone remote**: control the player from your phone's browser, which pairs with a code the headset shows and can type into the headset too, or from apps made for DeoVR's remote
-- **Custom controls**: choose what each controller button does
+- **Custom controls**: choose what each controller button does, or go hands-free: point with your head, and rest its dot on a button to press it
 - **Languages**: English, German, Spanish, French, Japanese and Simplified Chinese, following the language Steam is set to; the phone remote follows the headset
 - **Updates**: checks for a new version when it starts, and installs it from Settings when you choose to, on a Stable or a Beta channel
 - **No FramePlayerX account or tracking**: it connects to the servers you add, to Plex's account services if you link Plex (to sign in, find your servers and renew access), to OpenSubtitles when you use Find subtitles or sign in to it (the video's title, year, episode and IDs, and a fingerprint of the file) and to GitHub to check for updates, and sends nothing after a crash unless you choose to send the report, which you can read first (no video names, folders or server addresses)
@@ -107,7 +107,7 @@ FramePlayerX comes in English, German, Spanish, French, Japanese and Simplified 
 | VR | OpenXR, talking to the runtime directly (no Khronos loader) |
 | Graphics | Vulkan through [ash](https://github.com/ash-rs/ash); the projections are drawn per pixel in a shader, straight from the decoder's buffers, and foveated through variable-rate shading guided by eye tracking |
 | Interface | [egui](https://github.com/emilk/egui) panels in VR, with the [Inter](https://rsms.me/inter/) font and [Phosphor](https://phosphoricons.com/) icons; subtitle text set by [cosmic-text](https://github.com/pop-os/cosmic-text) |
-| Video | [FFmpeg](https://ffmpeg.org/) 7.1 for demuxing and software decoding, the Frame's V4L2 hardware decoder (H.264, and 8- and 10-bit HEVC), [dav1d](https://code.videolan.org/videolan/dav1d) for AV1 |
+| Video | [FFmpeg](https://ffmpeg.org/) 7.1 for demuxing and software decoding, the Frame's V4L2 hardware decoder (H.264, 8- and 10-bit HEVC, and 8- and 10-bit AV1 on SteamOS 0.5.10+), [dav1d](https://code.videolan.org/videolan/dav1d) for software AV1 fallback |
 | Audio | ALSA |
 | Storage | SQLite (videos, watch history, adjustments), JSON settings |
 | Builds | `cargo zigbuild` for Linux ARM64 against glibc 2.28 |
@@ -157,7 +157,7 @@ No. FramePlayerX is built only for the Steam Frame, so it can use the Frame's de
 
 ### Which videos play best?
 
-HEVC (H.265) and H.264: the Frame's hardware decoder plays them smoothly up to 8K. The Frame has no hardware decoder for AV1 or 4:2:2 video, so those play on the CPU, which can fall behind at VR sizes; a pill on the control bar shows when a video plays this way. Converted once to HEVC on a PC, they play as smoothly as the rest; the [user guide](docs/USER-GUIDE.md#hardware-decoding) has the commands.
+HEVC (H.265), H.264, and AV1 (on SteamOS 0.5.10 and later): the Frame's hardware decoder plays them smoothly up to 8K. The Frame has no hardware decoder for 4:2:2 video (or AV1 on earlier SteamOS versions), so those play on the CPU, which can fall behind at VR sizes; a pill on the control bar shows when a video plays this way. Converted once to HEVC on a PC, they play as smoothly as the rest; the [user guide](docs/USER-GUIDE.md#hardware-decoding) has the commands.
 
 ---
 

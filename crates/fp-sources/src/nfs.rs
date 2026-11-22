@@ -472,17 +472,25 @@ impl Source for NfsSource {
         self.open_file(&loc)
     }
 
-    /// `nfs://host/folder/sub-folder`, with names as they are on the server:
-    /// `nfs://host` for a whole server's list of exports, `nfs://host/` for
-    /// the export `/`.
+    /// `nfs://host/folder/sub-folder` for a folder,
+    /// `nfs://host/folder/My Film.mkv` for a video, with names as they are
+    /// on the server: `nfs://host` for a whole server's list of exports,
+    /// `nfs://host/` for the export `/`.
     fn display_location(&self, location: Option<&str>) -> Option<String> {
         let loc =
             NfsLocation::parse(&self.current_url(location.unwrap_or(&self.root)).ok()?).ok()?;
         self.check_owned(&loc).ok()?;
-        let mut out = nfs_url(&loc.host, loc.port, "");
-        if !self.is_export_list(&loc) {
+        let export_list = self.is_export_list(&loc);
+        let path = if export_list {
+            String::new()
+        } else {
+            format!("/{}", loc.path.join("/"))
+        };
+        let mut out = crate::urlutil::display_url(&nfs_url(&loc.host, loc.port, &path));
+        // The export `/` keeps its slash, which is all that tells it from
+        // the server's list of exports (`nfs://host`).
+        if !export_list && loc.path.is_empty() {
             out.push('/');
-            out.push_str(&loc.path.join("/"));
         }
         Some(out)
     }

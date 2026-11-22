@@ -167,6 +167,15 @@ impl Source for WebDavSource {
             .map(|key| location::encode(&self.id, "webdav", &key))
     }
 
+    /// The folder's or file's address, with names as they are on the server.
+    fn display_location(&self, location: Option<&str>) -> Option<String> {
+        let location = location.unwrap_or(&self.root);
+        self.canonical_location(location)?;
+        Some(crate::urlutil::display_url(
+            &self.current_url(location).ok()?,
+        ))
+    }
+
     fn list(&self, location: Option<&str>) -> Result<Vec<Entry>> {
         let url = with_trailing_slash(&self.current_url(location.unwrap_or(&self.root))?);
         let reply = self
@@ -336,6 +345,39 @@ pub fn parse_multistatus(xml_text: &str, request_url: &str) -> Result<Vec<Entry>
 mod tests {
     use super::*;
     use fp_core::source::EntryKind;
+
+    #[test]
+    fn display_location_names_folders_and_files_on_the_server() {
+        let s = WebDavSource::new(&HttpConfig {
+            id: "w".into(),
+            name: "W".into(),
+            url: "https://bob:hunter2@nas.local/dav".into(),
+            credentials: None,
+            insecure_tls: false,
+            parallel_downloads: false,
+        })
+        .unwrap();
+        assert_eq!(
+            s.display_location(None).as_deref(),
+            Some("https://nas.local/dav")
+        );
+        let folder = s
+            .canonical_location("https://nas.local/dav/My%20Films/")
+            .unwrap();
+        assert_eq!(
+            s.display_location(Some(&folder)).as_deref(),
+            Some("https://nas.local/dav/My Films")
+        );
+        let file = s
+            .canonical_location("https://nas.local/dav/My%20Films/a%C3%A9.mp4")
+            .unwrap();
+        assert_eq!(
+            s.display_location(Some(&file)).as_deref(),
+            Some("https://nas.local/dav/My Films/aé.mp4")
+        );
+        let other = location::encode("other", "webdav", "a.mp4");
+        assert_eq!(s.display_location(Some(&other)), None);
+    }
 
     #[test]
     fn the_parallel_downloads_switch_reaches_the_client() {

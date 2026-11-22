@@ -1291,7 +1291,7 @@ fn show_list_along<R>(
 ) -> egui::scroll_area::ScrollAreaOutput<R> {
     let key = ui.next_auto_id().with("list");
     drag_list(ui, key, axis);
-    let out = area
+    let mut out = area
         .scroll_source(egui::scroll_area::ScrollSource {
             scroll_bar: true,
             drag: false,
@@ -1309,6 +1309,9 @@ fn show_list_along<R>(
         rect.set_height(out.content_size.y);
     }
     let rect = rect.intersect(ui.clip_rect());
+    if crate::hands_free::enabled(ui.ctx()) {
+        hands_free_list(ui, rect, axis, max, &mut out);
+    }
     let id = out.id;
     ui.data_mut(|d| {
         let last = d.get_temp::<ListGrip>(key);
@@ -1325,6 +1328,129 @@ fn show_list_along<R>(
         );
     });
     out
+}
+
+/// A [`scroll_strip`] key's size, and the room round it.
+const PAGE_KEY: f32 = 48.0;
+const PAGE_GAP: f32 = 8.0;
+
+/// A list with hands-free navigation, which a head can't drag: it takes a
+/// page the keys beside its panel asked for, a little less than its view so
+/// something on show carries over, and is noted for those keys while it has
+/// more than fits.
+fn hands_free_list<R>(
+    ui: &Ui,
+    rect: Rect,
+    axis: usize,
+    max: f32,
+    out: &mut egui::scroll_area::ScrollAreaOutput<R>,
+) {
+    if let Some(dir) = crate::hands_free::take_scroll(ui.ctx(), out.id) {
+        let to = out.state.offset[axis] + dir * rect.size()[axis] * 0.8;
+        out.state.offset[axis] = to.clamp(0.0, max);
+        out.state.store(ui.ctx(), out.id);
+        ui.ctx().request_repaint();
+    }
+    if max > 1.0 && rect.width() >= PAGE_KEY && rect.height() >= PAGE_KEY {
+        let offset = out.state.offset[axis];
+        crate::hands_free::note_list(
+            ui.ctx(),
+            crate::hands_free::ScrollList {
+                id: out.id,
+                axis,
+                rect,
+                order: ui.layer_id().order,
+                can_back: offset > 1.0,
+                can_on: offset < max - 1.0,
+            },
+        );
+    }
+}
+
+/// The keys beside a panel that scroll its `lists` hands-free, level with
+/// them: up and down at the top and bottom of its page (the rightmost list
+/// that scrolls that way, a drawer's over the page under it), and back and
+/// on beside each row that scrolls sideways where they have room. Returns
+/// the list a key asked to scroll, and which way.
+pub fn scroll_strip(
+    ctx: &egui::Context,
+    lists: &[crate::hands_free::ScrollList],
+) -> Option<(egui::Id, f32)> {
+    use super::icons;
+    let x = |column: f32| PAGE_GAP + PAGE_KEY / 2.0 + column * (PAGE_KEY + PAGE_GAP);
+    let mut keys = Vec::new();
+    let page = lists.iter().filter(|l| l.axis == 1).max_by(|a, b| {
+        a.order
+            .cmp(&b.order)
+            .then(a.rect.right().total_cmp(&b.rect.right()))
+    });
+    if let Some(p) = page {
+        let (top, bottom) = (
+            p.rect.top() + PAGE_KEY / 2.0,
+            p.rect.bottom() - PAGE_KEY / 2.0,
+        );
+        keys.push((
+            p,
+            -1.0,
+            Pos2::new(x(0.0), top),
+            icons::CARET_UP,
+            tr!("hands-free-scroll-up"),
+        ));
+        keys.push((
+            p,
+            1.0,
+            Pos2::new(x(0.0), bottom),
+            icons::CARET_DOWN,
+            tr!("hands-free-scroll-down"),
+        ));
+    }
+    for row in lists.iter().filter(|l| l.axis == 0) {
+        let y = row.rect.center().y;
+        if keys.iter().any(|k| (k.2.y - y).abs() < PAGE_KEY + PAGE_GAP) {
+            continue;
+        }
+        keys.push((
+            row,
+            -1.0,
+            Pos2::new(x(0.0), y),
+            icons::CARET_LEFT,
+            tr!("hands-free-scroll-left"),
+        ));
+        keys.push((
+            row,
+            1.0,
+            Pos2::new(x(1.0), y),
+            icons::CARET_RIGHT,
+            tr!("hands-free-scroll-right"),
+        ));
+    }
+    let mut asked = None;
+    egui::CentralPanel::default()
+        .frame(egui::Frame::NONE)
+        .show(ctx, |ui| {
+            for (list, way, at, icon, tip) in keys {
+                let can = if way < 0.0 {
+                    list.can_back
+                } else {
+                    list.can_on
+                };
+                let bounds = Rect::from_center_size(at, Vec2::splat(PAGE_KEY));
+                let sense = if can { Sense::click() } else { Sense::hover() };
+                let resp = ui.interact(bounds, list.id.with(("hands-free-key", way as i32)), sense);
+                let (face, fg) = key_face(ui, &resp, PAGE_KEY, false);
+                ui.painter().text(
+                    face.center(),
+                    Align2::CENTER_CENTER,
+                    icon,
+                    theme::icon(24.0),
+                    if can { fg } else { theme::TEXT_3 },
+                );
+                if can && resp.tip(tip).clicked() {
+                    asked = Some((list.id, way));
+                }
+            }
+        });
+    asked
 }
 
 /// Scroll areas that scroll by their bar, the thumbstick and a press past

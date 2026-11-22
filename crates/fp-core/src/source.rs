@@ -183,6 +183,9 @@ pub struct Entry {
     pub duration: Option<f64>,
     #[serde(default)]
     pub thumbnail_url: Option<String>,
+    /// A source-provided seek preview sheet. It may be a short-lived signed URL.
+    #[serde(skip)]
+    pub trickplay_url: Option<String>,
     /// Format the source declares (DeoVR feeds, DLNA metadata).
     #[serde(default)]
     pub format: Option<crate::format::VideoFormat>,
@@ -252,6 +255,7 @@ impl Entry {
             modified: None,
             duration: None,
             thumbnail_url: None,
+            trickplay_url: None,
             format: None,
             scripts: Vec::new(),
             subtitles: Vec::new(),

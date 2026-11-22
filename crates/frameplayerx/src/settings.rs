@@ -59,6 +59,45 @@ pub const DEFAULT_PLAY_ALL_LIMIT: usize = 300;
 /// the floating screen's default.
 pub const DEFAULT_CINEMA_ROW: u8 = 2;
 
+/// Settings › Video position's screen glow: the background round a flat
+/// screen lit by the colours at the picture's edges. Brightness and spread
+/// are each a share of their most.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ScreenGlow {
+    pub on: bool,
+    pub brightness: f32,
+    pub spread: f32,
+}
+
+impl Default for ScreenGlow {
+    fn default() -> Self {
+        ScreenGlow {
+            on: false,
+            brightness: 0.5,
+            spread: 0.5,
+        }
+    }
+}
+
+impl ScreenGlow {
+    /// What the renderer draws for a video with `view`'s adjustments: its
+    /// own where it has them, else these; nothing while it is off.
+    pub fn look(&self, view: &ViewSettings) -> Option<fp_render::ScreenGlow> {
+        view.screen_glow
+            .unwrap_or(self.on)
+            .then(|| fp_render::ScreenGlow {
+                brightness: view.glow_brightness.unwrap_or(self.brightness),
+                spread: view.glow_spread.unwrap_or(self.spread),
+            })
+    }
+}
+
+/// Settings › Controller › Hold time, in seconds. Below the least, a glance
+/// across the panel would press what it passes.
+pub const HANDS_FREE_HOLD_SECS: std::ops::RangeInclusive<f32> = 0.4..=2.0;
+pub const DEFAULT_HANDS_FREE_HOLD_SECS: f32 = 0.75;
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
@@ -79,6 +118,7 @@ pub struct Settings {
     pub presets: Vec<Preset>,
     /// Show the real world around flat screens and the UI.
     pub passthrough: bool,
+    pub screen_glow: ScreenGlow,
     /// Resume videos where they were left.
     pub resume: bool,
     /// The format a video starts in when nothing identifies it (no
@@ -92,6 +132,11 @@ pub struct Settings {
     pub fisheye_start: f32,
     /// Seconds of inactivity before the playback UI hides.
     pub auto_hide_secs: f32,
+    /// Pointing along the seek bar shows the server's picture of that moment.
+    pub seek_previews: bool,
+    /// Point with the head; holding the dot on a control presses it.
+    pub hands_free: bool,
+    pub hands_free_hold_secs: f32,
     /// Thumbstick seek step in seconds.
     pub seek_step: f64,
     pub remote: RemoteConfig,
@@ -249,11 +294,15 @@ impl Default for Settings {
             default_view: ViewSettings::default(),
             presets: Vec::new(),
             passthrough: false,
+            screen_glow: ScreenGlow::default(),
             resume: true,
             default_format: fp_core::format::VideoFormat::FALLBACK,
             fisheye_presets: FISHEYE_PRESETS.to_vec(),
             fisheye_start: FISHEYE_START,
             auto_hide_secs: 4.0,
+            seek_previews: true,
+            hands_free: false,
+            hands_free_hold_secs: DEFAULT_HANDS_FREE_HOLD_SECS,
             seek_step: 10.0,
             remote: RemoteConfig::default(),
             haptics_enabled: false,
@@ -340,7 +389,8 @@ impl Settings {
     }
 
     /// Adjustments for a video that has none saved: the defaults, following
-    /// the global chroma key, comfort focus, background and cinema seat.
+    /// the global chroma key, comfort focus, background, cinema seat and
+    /// screen glow.
     pub fn new_video_view(&self) -> ViewSettings {
         ViewSettings {
             key_own: Some(false),
@@ -348,6 +398,9 @@ impl Settings {
             environment: BackgroundEnvironment::UseGlobal,
             cinema_row: None,
             cinema_curvature: None,
+            screen_glow: None,
+            glow_brightness: None,
+            glow_spread: None,
             ..self.default_view
         }
     }
@@ -375,6 +428,9 @@ impl Settings {
             Ok(text) => match serde_json::from_str::<Settings>(&text) {
                 Ok(mut s) => {
                     s.display = s.display.offered();
+                    s.hands_free_hold_secs = s
+                        .hands_free_hold_secs
+                        .clamp(*HANDS_FREE_HOLD_SECS.start(), *HANDS_FREE_HOLD_SECS.end());
                     // Saved before the global chroma key existed: its key
                     // was never chosen, so take the current default.
                     if s.default_view.key_own.is_none() {
@@ -475,6 +531,18 @@ mod tests {
     }
 
     #[test]
+    fn a_hold_time_too_short_to_use_loads_as_the_shortest() {
+        let dir = std::env::temp_dir().join(format!("fp-hold-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("settings.json");
+        std::fs::write(&path, r#"{"hands_free": true, "hands_free_hold_secs": 0}"#).unwrap();
+        let s = Settings::load(&path);
+        assert!(s.hands_free);
+        assert_eq!(s.hands_free_hold_secs, *HANDS_FREE_HOLD_SECS.start());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn round_trip_and_partial_files() {
         let dir = std::env::temp_dir().join(format!("fp-settings-{}", std::process::id()));
         let path = dir.join("settings.json");
@@ -501,6 +569,7 @@ mod tests {
         assert_eq!(p.volume, 0.25);
         assert_eq!(p.seek_step, 10.0);
         assert!(!p.haptics_enabled, "haptics stay off until turned on");
+        assert!(!p.hands_free, "and hands-free navigation");
         assert_eq!(p.environment(), BackgroundEnvironment::Colour);
         let mut cinema = Settings::default();
         assert_eq!(cinema.cinema_row(), DEFAULT_CINEMA_ROW);

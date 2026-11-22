@@ -8,7 +8,6 @@
 //! Video details (subtitles and chapter markers) are resolved in [`Source::details`].
 //! Playback progress can be reported back to the server using the session API.
 
-use crate::Source;
 use crate::config::{Credentials, MediaBrowserConfig, SourceKind};
 use crate::dir_entry;
 use crate::error::{Error, Result};
@@ -21,6 +20,7 @@ use crate::sidecar::Sidecars;
 use crate::transcode::{self, Streamed, TranscodeTarget};
 use crate::urlutil::{encode_form_value, redact};
 use crate::watch::{WatchEvent, WatchKind, WatchSession};
+use crate::{Source, Trickplay};
 use fp_core::format::{Projection, StereoLayout, VideoFormat, detect_from_name};
 use fp_core::source::{ByteSource, Entry, EntryKind};
 use fp_core::sync::lock;
@@ -31,6 +31,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 mod catalog;
+mod trickplay;
 pub use catalog::{MbFacets, MbFilter, MbHome, MbItem, MbKind, MbPage, MbQuery, MbSort, MbVersion};
 
 /// Largest JSON document accepted from a MediaBrowser API endpoint (64 MiB).
@@ -1111,6 +1112,12 @@ impl Source for MediaBrowserSource {
         format!("MediaBrowser server {}", redact(&self.base_url))
     }
 
+    /// The server's address, then the item's.
+    fn display_location(&self, location: Option<&str>) -> Option<String> {
+        let base = crate::urlutil::display_url(&self.base_url);
+        crate::location::display_opaque(self, &base, location)
+    }
+
     fn canonical_location(&self, location: &str) -> Option<String> {
         if crate::is_source_location(location) {
             let reference = crate::location::decode(location)?;
@@ -1358,6 +1365,20 @@ impl Source for MediaBrowserSource {
         }
         let url = crate::location::resolve_url(&self.base_url, &reference.key)?;
         Some((self.client().ok()?.0, url))
+    }
+
+    fn has_trickplay(&self, entry: &Entry) -> bool {
+        entry.kind == EntryKind::Video
+            && self
+                .resolved_location(&entry.location)
+                .ok()
+                .as_deref()
+                .and_then(decode_location)
+                .is_some_and(|(kind, _)| kind == "item")
+    }
+
+    fn trickplay(&self, entry: &Entry) -> Result<Option<Trickplay>> {
+        self.trickplay_for(entry)
     }
 
     fn parent(&self, location: &str) -> Option<String> {
@@ -1612,6 +1633,33 @@ mod tests {
     use crate::media_identity::movie_hash;
     use crate::test_server::{TestServer, resp, serve_bytes};
     use serde_json::json;
+
+    #[test]
+    fn display_location_is_the_servers_address_then_the_items() {
+        let s = MediaBrowserSource::new(&MediaBrowserConfig {
+            id: "jf".into(),
+            name: "Jellyfin".into(),
+            url: "https://bob:hunter2@media.local:8920/jellyfin/".into(),
+            credentials: None,
+            insecure_tls: false,
+            parallel_downloads: false,
+            max_height: None,
+            access_token: Some("secret-token".into()),
+            user_id: Some("u".into()),
+        })
+        .unwrap();
+        assert_eq!(
+            s.display_location(None).as_deref(),
+            Some("https://media.local:8920/jellyfin")
+        );
+        let item = crate::location::encode("jf", "mb", "item=abc");
+        assert_eq!(
+            s.display_location(Some(&item)).as_deref(),
+            Some("https://media.local:8920/jellyfin · item=abc")
+        );
+        let other = crate::location::encode("other", "mb", "item=abc");
+        assert_eq!(s.display_location(Some(&other)), None);
+    }
 
     #[test]
     fn fingerprints_only_the_permitted_selected_original() {

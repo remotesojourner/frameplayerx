@@ -108,6 +108,7 @@ pub const TRASH: &str = "\u{E4A6}";
 pub const TREE_STRUCTURE: &str = "\u{E67C}";
 pub const USB: &str = "\u{E956}";
 pub const USER: &str = "\u{E4C2}";
+pub const USER_FOCUS: &str = "\u{E6FC}";
 pub const VIBRATE: &str = "\u{E4D8}";
 pub const VIRTUAL_REALITY: &str = "\u{E7B8}";
 pub const WARNING: &str = "\u{E4E0}";

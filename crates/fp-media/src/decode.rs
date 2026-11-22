@@ -20,14 +20,15 @@ pub fn hardware_sessions() -> usize {
 
 static HEVC_10BIT_HARDWARE: AtomicBool = AtomicBool::new(false);
 
-/// Lets 10-bit HEVC decode in hardware. The Frame's decoder writes those
-/// pictures only as [`PixelLayout::Q10c`](crate::PixelLayout::Q10c), so this
-/// stays off unless the renderer can show them.
+/// Lets 10-bit HEVC and AV1 decode in hardware. The Frame's decoder writes
+/// those pictures only as [`PixelLayout::Q10c`](crate::PixelLayout::Q10c), so
+/// this stays off unless the renderer can show them.
 pub fn set_hevc_10bit_hardware(on: bool) {
     HEVC_10BIT_HARDWARE.store(on, Ordering::Relaxed);
 }
 
-/// Whether 10-bit HEVC decodes in hardware (see [`set_hevc_10bit_hardware`]).
+/// Whether 10-bit HEVC and AV1 decode in hardware (see
+/// [`set_hevc_10bit_hardware`]).
 pub fn hevc_10bit_hardware() -> bool {
     HEVC_10BIT_HARDWARE.load(Ordering::Relaxed)
 }
@@ -166,19 +167,20 @@ enum Candidate {
 
 /// Decoders to try for a stream: the native V4L2 path, FFmpeg's V4L2
 /// wrapper, dav1d for AV1, then FFmpeg's default software decoder.
-/// `ten_bit_hevc`: whether 10-bit HEVC may use the native path (see
-/// [`set_hevc_10bit_hardware`]); FFmpeg's wrapper only gets 8-bit streams,
-/// as it would ask for NV12, which the decoder fills with clamped samples.
-/// `interlaced`: coded as fields ([`crate::info::interlaced`]), which the
-/// hardware decoder doesn't take for H.264: FFmpeg's wrapper is refused every
-/// packet of 1080i, and the native path gives up after seconds.
+/// `ten_bit_q10c`: whether 10-bit HEVC and AV1 may use the native path
+/// (see [`set_hevc_10bit_hardware`]); FFmpeg's wrapper only gets 8-bit
+/// streams, as it would ask for NV12, which the decoder fills with clamped
+/// samples. `interlaced`: coded as fields ([`crate::info::interlaced`]),
+/// which the hardware decoder doesn't take for H.264: FFmpeg's wrapper is
+/// refused every packet of 1080i, and the native path gives up after
+/// seconds.
 fn candidates(
     video: bool,
     codec: ff::AVCodecID,
     format: ff::AVPixelFormat,
     hw: HwDecode,
     native: bool,
-    ten_bit_hevc: bool,
+    ten_bit_q10c: bool,
     interlaced: bool,
 ) -> Vec<Candidate> {
     let mut c = Vec::new();
@@ -202,8 +204,8 @@ fn candidates(
     if video
         && hw == HwDecode::Auto
         && native
-        && ten_bit_hevc
-        && codec == ff::AV_CODEC_ID_HEVC
+        && ten_bit_q10c
+        && matches!(codec, ff::AV_CODEC_ID_HEVC | ff::AV_CODEC_ID_AV1)
         && format == ff::AV_PIX_FMT_YUV420P10LE
     {
         c.push(Candidate::NativeV4l2);
@@ -735,10 +737,16 @@ impl Decoder {
                 // Only keyframes (the first picture after a seek is one),
                 // skipping the rest unparsed past their headers, and no
                 // deblocking: invisible once scaled down to a thumbnail.
+                // Interlaced streams can code each picture as two separate
+                // field packets whose second field is a P-field predicting
+                // from the first I-field, so AVDISCARD_NONINTRA would drop
+                // the second field and leave every picture incomplete.
                 // One thread: frame threads would hold back pictures to
                 // decode several at once, for nothing here.
                 (*ctx).thread_count = 1;
-                (*ctx).skip_frame = ff::AVDISCARD_NONINTRA;
+                if !crate::info::interlaced(&*par) {
+                    (*ctx).skip_frame = ff::AVDISCARD_NONINTRA;
+                }
                 (*ctx).skip_loop_filter = ff::AVDISCARD_ALL;
                 (*ctx).flags2 |= ff::AV_CODEC_FLAG2_FAST as i32;
             } else if !hardware {
@@ -1354,6 +1362,34 @@ mod tests {
         }
         assert_eq!(
             candidates(true, ff::AV_CODEC_ID_AV1, yuv420, auto, true, false, false),
+            vec![NativeV4l2, Named(c"libdav1d", false), Default]
+        );
+        assert_eq!(
+            candidates(true, ff::AV_CODEC_ID_AV1, yuv420, auto, false, false, false),
+            vec![Named(c"libdav1d", false), Default]
+        );
+        assert_eq!(
+            candidates(
+                true,
+                ff::AV_CODEC_ID_AV1,
+                yuv420p10,
+                auto,
+                true,
+                true,
+                false
+            ),
+            vec![NativeV4l2, Named(c"libdav1d", false), Default]
+        );
+        assert_eq!(
+            candidates(
+                true,
+                ff::AV_CODEC_ID_AV1,
+                yuv420p10,
+                auto,
+                true,
+                false,
+                false
+            ),
             vec![Named(c"libdav1d", false), Default]
         );
         let aac = ff::AV_CODEC_ID_AAC;

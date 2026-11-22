@@ -376,11 +376,10 @@ pub(crate) fn sps_dpb(hevc: bool, nal: &[u8]) -> Option<Dpb> {
 }
 
 /// An HEVC SPS of the base layer (7.3.2.2) up to its sub-layer ordering
-/// information, from its RBSP with the 2-byte NAL unit header. The decoder
-/// decodes every temporal sub-layer, so the highest one's figures count;
-/// they are also the largest (7.4.3.2.1), which is what is taken, so a
-/// stream that breaks that rule still gets room.
-fn hevc_sps_dpb(rbsp: &[u8]) -> Result<Dpb, Bad> {
+/// information, from its RBSP with the 2-byte NAL unit header: a reader
+/// standing at the first sub-layer's `sps_max_dec_pic_buffering_minus1`,
+/// and how many sub-layers' ordering triplets follow.
+fn hevc_sps_ordering(rbsp: &[u8]) -> Result<(Reader<'_>, usize), Bad> {
     fn skip(r: &mut Reader, bits: u32) -> Result<(), Bad> {
         (0..bits.div_ceil(32)).try_for_each(|i| r.u((bits - 32 * i).min(32)).map(drop))
     }
@@ -427,16 +426,196 @@ fn hevc_sps_dpb(rbsp: &[u8]) -> Result<Dpb, Bad> {
     // Without sps_sub_layer_ordering_info_present_flag, only the highest
     // sub-layer's figures are sent, and hold for those below.
     let first = if r.flag()? { 0 } else { sub_layers };
+    Ok((r, sub_layers + 1 - first))
+}
+
+/// An HEVC SPS of the base layer (7.3.2.2) up to its sub-layer ordering
+/// information, from its RBSP with the 2-byte NAL unit header. The decoder
+/// decodes every temporal sub-layer, so the highest one's figures count;
+/// they are also the largest (7.4.3.2.1), which is what is taken, so a
+/// stream that breaks that rule still gets room.
+fn hevc_sps_dpb(rbsp: &[u8]) -> Result<Dpb, Bad> {
+    let (mut r, entries) = hevc_sps_ordering(rbsp)?;
     let mut dpb = Dpb {
         pictures: 0,
         reorder: 0,
     };
-    for _ in first..=sub_layers {
+    for _ in 0..entries {
         dpb.pictures = dpb.pictures.max(r.ue()?.saturating_add(1));
         dpb.reorder = dpb.reorder.max(r.ue()?);
         r.ue()?; // sps_max_latency_increase_plus1
     }
     Ok(dpb)
+}
+
+/// The in-place bit flips `(clear_byte, clear_mask, set_byte, set_mask)` in
+/// an HEVC base-layer SPS NAL unit that lower an over-declared DPB of 6
+/// (`sps_max_dec_pic_buffering_minus1` 5, `00110` in `ue(v)`) to 5 (`4`,
+/// `00101` — the same 5 bits), and the [`Dpb`] the SPS declares after them.
+///
+/// Many 8K HEVC encoders (`hevc_nvenc`, among others) always stamp level
+/// 6.1's static ceiling of 5 (`pictures` 6) with
+/// `sps_max_latency_increase_plus1` 0 into the SPS even when their slices
+/// keep at most 4 references (`pictures` 5), whereas an encoder configured
+/// for 5 references (`x265 --ref 5`) sets `sps_max_latency_increase_plus1`
+/// or `sps_max_num_reorder_pics` accordingly. `None` unless the SPS's
+/// largest DPB is 6, every sub-layer declaring 6 reorders at most 4 and sets
+/// `sps_max_latency_increase_plus1` to 0, and flipping the two bits in `nal`
+/// neither disturbs nor forms an emulation-prevention sequence
+/// (`00 00 00..=03`).
+struct DpbClamp {
+    flips: [(usize, u8, usize, u8); 7],
+    len: usize,
+    dpb: Dpb,
+}
+
+impl DpbClamp {
+    fn of(nal: &[u8]) -> Option<DpbClamp> {
+        let [h0, h1, ..] = *nal else {
+            return None;
+        };
+        if (h0 >> 1) & 0x3f != 33 || h0 & 1 != 0 || h1 >> 3 != 0 {
+            return None;
+        }
+        let mut rbsp = Vec::with_capacity(nal.len());
+        let mut rmap = Vec::with_capacity(nal.len());
+        let mut zeros = 0;
+        for (i, &b) in nal.iter().enumerate() {
+            if zeros >= 2 && b == 3 {
+                zeros = 0;
+                continue;
+            }
+            zeros = if b == 0 { zeros + 1 } else { 0 };
+            rbsp.push(b);
+            rmap.push(i);
+        }
+        let (mut r, entries) = hevc_sps_ordering(&rbsp).ok()?;
+        let mut clamp = DpbClamp {
+            flips: [(0, 0, 0, 0); 7],
+            len: 0,
+            dpb: Dpb {
+                pictures: 0,
+                reorder: 0,
+            },
+        };
+        for _ in 0..entries {
+            let start = r.pos();
+            let minus1 = r.ue().ok()?;
+            let end = r.pos();
+            let reorder = r.ue().ok()?;
+            let latency_plus1 = r.ue().ok()?;
+            if minus1 > 5 {
+                return None;
+            }
+            let pictures = if minus1 == 5 {
+                if reorder > 4 || latency_plus1 != 0 || end - start != 5 {
+                    return None;
+                }
+                let (clear, set) = (start + 3, start + 4);
+                clamp.flips[clamp.len] = (
+                    *rmap.get(clear / 8)?,
+                    1 << (7 - clear % 8),
+                    *rmap.get(set / 8)?,
+                    1 << (7 - set % 8),
+                );
+                clamp.len += 1;
+                5
+            } else {
+                minus1 + 1
+            };
+            clamp.dpb.pictures = clamp.dpb.pictures.max(pictures);
+            clamp.dpb.reorder = clamp.dpb.reorder.max(reorder);
+        }
+        if clamp.len == 0 {
+            return None;
+        }
+        let clean = |slice: &[u8], at: usize| {
+            let from = at.saturating_sub(2);
+            let to = (at + 3).min(slice.len());
+            !slice[from..to]
+                .windows(3)
+                .any(|w| w[0] == 0 && w[1] == 0 && w[2] <= 3)
+        };
+        if !clamp.flips[..clamp.len]
+            .iter()
+            .all(|&(cb, _, sb, _)| clean(nal, cb) && clean(nal, sb))
+        {
+            return None;
+        }
+        let mut after = nal.to_vec();
+        clamp.apply(&mut after);
+        let valid = clamp.flips[..clamp.len]
+            .iter()
+            .all(|&(cb, _, sb, _)| clean(&after, cb) && clean(&after, sb))
+            && sps_dpb(true, &after) == Some(clamp.dpb);
+        valid.then_some(clamp)
+    }
+
+    fn apply(&self, nal: &mut [u8]) {
+        for &(cb, cm, sb, sm) in &self.flips[..self.len] {
+            nal[cb] &= !cm;
+            nal[sb] |= sm;
+        }
+    }
+}
+
+/// [`extradata_dpb`] for an HEVC stream after lowering any over-declared
+/// DPB of 6 to 5 ([`clamp_hevc_packet_dpb`]).
+pub(crate) fn clamp_extradata_dpb(extradata: &[u8]) -> Option<Dpb> {
+    parameter_sets(true, extradata)
+        .into_iter()
+        .filter_map(|nal| {
+            DpbClamp::of(nal)
+                .map(|c| c.dpb)
+                .or_else(|| sps_dpb(true, nal))
+        })
+        .max()
+}
+
+/// Whether any HEVC SPS ahead of the first picture of an Annex B packet
+/// declares an over-declared DPB of 6 that [`clamp_hevc_packet_dpb`] lowers
+/// to 5.
+pub(crate) fn hevc_packet_has_overdeclared_dpb(data: &[u8]) -> bool {
+    let mut at = 0;
+    while let Some(code) = data.get(at..).and_then(start_code) {
+        let begin = at + code + 3;
+        let Some(&h0) = data.get(begin) else {
+            break;
+        };
+        if (h0 >> 1) & 0x3f < 32 {
+            break;
+        }
+        let end = start_code(&data[begin..]).map_or(data.len(), |n| begin + n);
+        if DpbClamp::of(&data[begin..end]).is_some() {
+            return true;
+        }
+        at = end;
+    }
+    false
+}
+
+/// Lowers any over-declared DPB of 6 (`sps_max_dec_pic_buffering_minus1` 5
+/// with `sps_max_num_reorder_pics` at most 4 and
+/// `sps_max_latency_increase_plus1` 0) to 5 in the HEVC SPSs ahead of the
+/// first picture of an Annex B packet, in place.
+pub(crate) fn clamp_hevc_packet_dpb(data: &mut [u8]) -> bool {
+    let (mut clamped, mut at) = (false, 0);
+    while let Some(code) = data.get(at..).and_then(start_code) {
+        let begin = at + code + 3;
+        let Some(&h0) = data.get(begin) else {
+            break;
+        };
+        if (h0 >> 1) & 0x3f < 32 {
+            break;
+        }
+        let end = start_code(&data[begin..]).map_or(data.len(), |n| begin + n);
+        if let Some(clamp) = DpbClamp::of(&data[begin..end]) {
+            clamp.apply(&mut data[begin..end]);
+            clamped = true;
+        }
+        at = end;
+    }
+    clamped
 }
 
 /// The largest DPB the SPSs in a stream's extradata declare.
@@ -794,6 +973,17 @@ mod tests {
 
     /// [`hevc_sps`] with `sps_seq_parameter_set_id` `id`.
     fn numbered_hevc_sps(id: u32, layer: u8, sub_layers: u32, ordering: &[(u32, u32)]) -> Vec<u8> {
+        hevc_sps_with_latency(id, layer, sub_layers, ordering, 0)
+    }
+
+    /// [`numbered_hevc_sps`] with `sps_max_latency_increase_plus1` `latency_plus1`.
+    fn hevc_sps_with_latency(
+        id: u32,
+        layer: u8,
+        sub_layers: u32,
+        ordering: &[(u32, u32)],
+        latency_plus1: u32,
+    ) -> Vec<u8> {
         use crate::mvc::bits::{Writer, escape_into};
         let mut w = Writer::new();
         w.u(4, 0); // sps_video_parameter_set_id
@@ -844,7 +1034,7 @@ mod tests {
         for &(buffering, reorder) in ordering {
             w.ue(buffering);
             w.ue(reorder);
-            w.ue(0);
+            w.ue(latency_plus1);
         }
         w.trailing();
         let mut nal = vec![33 << 1 | layer >> 5, (layer & 0x1f) << 3 | 1];
@@ -947,6 +1137,64 @@ mod tests {
         assert_eq!(most(5760, 2880), 12);
         assert_eq!(most(3840, 2160), 16);
         assert_eq!(most(1920, 1080), 16);
+    }
+
+    #[test]
+    fn an_overdeclared_hevc_dpb_of_6_is_lowered_to_5_in_place() {
+        let idr: &[u8] = &[19 << 1, 1, 0xaf];
+        // Level 6.1's static ceiling (minus1 5, reorder 2, latency_plus1 0)
+        // becomes minus1 4, byte for byte the same SPS as one written with 4.
+        let overdeclared = hevc_sps(0, 0, &[(5, 2)]);
+        let five = hevc_sps(0, 0, &[(4, 2)]);
+        let mut pkt = annex_b(&[&overdeclared[..], idr]);
+        assert!(hevc_packet_has_overdeclared_dpb(&pkt));
+        assert!(clamp_hevc_packet_dpb(&mut pkt));
+        assert_eq!(pkt, annex_b(&[&five[..], idr]));
+        assert_eq!(packet_dpb(true, &pkt), Some(HEVC10_DPB));
+        assert!(!hevc_packet_has_overdeclared_dpb(&pkt));
+        assert!(!clamp_hevc_packet_dpb(&mut pkt));
+
+        // Across multiple temporal sub-layers, with emulation prevention
+        // bytes ahead in the SPS.
+        let multi = hevc_sps(0, 2, &[(1, 0), (5, 2), (5, 3)]);
+        let multi_five = hevc_sps(0, 2, &[(1, 0), (4, 2), (4, 3)]);
+        let mut pkt = annex_b(&[&multi[..], idr]);
+        assert!(clamp_hevc_packet_dpb(&mut pkt));
+        assert_eq!(pkt, annex_b(&[&multi_five[..], idr]));
+        let dpb_5_3 = Dpb {
+            pictures: 5,
+            reorder: 3,
+        };
+        assert_eq!(packet_dpb(true, &pkt), Some(dpb_5_3));
+        assert_eq!(clamp_extradata_dpb(&annex_b(&[&multi[..]])), Some(dpb_5_3));
+
+        // Left alone: x265 with 5 reference pictures (latency_plus1 5), an
+        // SPS reordering 5 pictures, one declaring a DPB of 7, one already
+        // at 5, a non-base-layer SPS, or an SPS after the first picture.
+        let x265_ref5 = hevc_sps_with_latency(0, 0, 0, &[(5, 2)], 5);
+        let reorders_5 = hevc_sps(0, 0, &[(5, 5)]);
+        let dpb_7 = hevc_sps(0, 0, &[(6, 2)]);
+        let layer_1 = hevc_sps(1, 0, &[(5, 2)]);
+        for untouched in [
+            annex_b(&[&x265_ref5[..], idr]),
+            annex_b(&[&reorders_5[..], idr]),
+            annex_b(&[&dpb_7[..], idr]),
+            annex_b(&[&five[..], idr]),
+            annex_b(&[&layer_1[..], idr]),
+            annex_b(&[idr, &overdeclared[..]]),
+        ] {
+            let mut copy = untouched.clone();
+            assert!(!hevc_packet_has_overdeclared_dpb(&copy));
+            assert!(!clamp_hevc_packet_dpb(&mut copy));
+            assert_eq!(copy, untouched);
+        }
+        assert_eq!(
+            clamp_extradata_dpb(&annex_b(&[&x265_ref5[..]])),
+            Some(Dpb {
+                pictures: 6,
+                reorder: 2,
+            })
+        );
     }
 
     #[test]

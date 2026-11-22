@@ -80,6 +80,17 @@ pub struct ViewSettings {
     pub cinema_curvature: Option<f32>,
     /// Subtitle depth in metres.
     pub subtitle_distance: f32,
+    /// How big subtitles look, 1 being their usual size, at any depth.
+    pub subtitle_size: f32,
+    /// Where the bottom of the subtitles sits, in degrees above the middle
+    /// of the picture (below when negative).
+    pub subtitle_height: f32,
+    /// Screen glow round a flat screen on a colour background, and its
+    /// brightness and spread as shares of their most; `None` follows
+    /// Settings › Video position.
+    pub screen_glow: Option<bool>,
+    pub glow_brightness: Option<f32>,
+    pub glow_spread: Option<f32>,
     /// Chroma key: makes one colour of the video see-through (a green or
     /// blue screen), so passthrough or the background shows there.
     pub chroma_key: bool,
@@ -129,6 +140,11 @@ impl Default for ViewSettings {
             cinema_row: None,
             cinema_curvature: None,
             subtitle_distance: 2.5,
+            subtitle_size: 1.0,
+            subtitle_height: -16.0,
+            screen_glow: None,
+            glow_brightness: None,
+            glow_spread: None,
             chroma_key: false,
             key_color: [0.08, 0.04, 1.0],
             key_similarity: 0.4,
@@ -144,6 +160,17 @@ impl ViewSettings {
     pub fn lerp(&self, other: &ViewSettings, t: f32) -> ViewSettings {
         let t = t.clamp(0.0, 1.0);
         let l = |a: f32, b: f32| a + (b - a) * t;
+        // A value one side follows a global setting for steps over halfway.
+        let blend = |a: Option<f32>, b: Option<f32>| match (a, b) {
+            (Some(a), Some(b)) => Some(l(a, b)),
+            (a, b) => {
+                if t < 0.5 {
+                    a
+                } else {
+                    b
+                }
+            }
+        };
         ViewSettings {
             yaw: l(self.yaw, other.yaw),
             pitch: l(self.pitch, other.pitch),
@@ -192,17 +219,17 @@ impl ViewSettings {
             } else {
                 other.cinema_row
             },
-            cinema_curvature: match (self.cinema_curvature, other.cinema_curvature) {
-                (Some(a), Some(b)) => Some(l(a, b)),
-                (a, b) => {
-                    if t < 0.5 {
-                        a
-                    } else {
-                        b
-                    }
-                }
-            },
+            cinema_curvature: blend(self.cinema_curvature, other.cinema_curvature),
             subtitle_distance: l(self.subtitle_distance, other.subtitle_distance),
+            subtitle_size: l(self.subtitle_size, other.subtitle_size),
+            subtitle_height: l(self.subtitle_height, other.subtitle_height),
+            screen_glow: if t < 0.5 {
+                self.screen_glow
+            } else {
+                other.screen_glow
+            },
+            glow_brightness: blend(self.glow_brightness, other.glow_brightness),
+            glow_spread: blend(self.glow_spread, other.glow_spread),
             chroma_key: if t < 0.5 {
                 self.chroma_key
             } else {
