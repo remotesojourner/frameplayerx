@@ -143,7 +143,7 @@ impl Grabber {
 
     /// The video stream, its shape, whether it is interlaced, and its decoder,
     /// opened on first use: in software (the hardware decoder is playback's),
-    /// keyframes only when progressive.
+    /// keyframes only when progressive, and no B-pictures when interlaced.
     fn video(&mut self) -> Result<&mut (usize, (u32, f64), bool, Decoder)> {
         if self.video.is_none() {
             let index = self
