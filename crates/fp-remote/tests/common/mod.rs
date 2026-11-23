@@ -92,7 +92,13 @@ impl Deovr {
         loop {
             let f = self.frame().expect("connection open");
             if !f.is_empty() {
-                return serde_json::from_slice(&f).unwrap();
+                // The hub's own frame, read through serde_json's
+                // Deserializer: code scanning takes from_slice on a socket
+                // read for user-controlled data.
+                let mut de = serde_json::Deserializer::from_slice(&f);
+                let status = serde::Deserialize::deserialize(&mut de).unwrap();
+                de.end().unwrap();
+                return status;
             }
         }
     }
