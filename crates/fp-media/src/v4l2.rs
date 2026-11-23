@@ -1432,7 +1432,7 @@ impl Timestamps {
 }
 
 #[cfg(target_os = "linux")]
-pub(crate) use linux::V4l2Decoder;
+pub(crate) use linux::{V4l2Decoder, has_decoder};
 
 /// Whether the native decoder may be tried at all: Linux only, and
 /// `FRAMEPLAYERX_V4L2=0` turns it off.
@@ -2193,6 +2193,11 @@ mod linux {
         Err(Error::Unsupported(format!(
             "no V4L2 decoder for {codec:?} with NV12 output"
         )))
+    }
+
+    /// Whether a device decodes `codec` ([`find_device`]), closed again.
+    pub(crate) fn has_decoder(codec: Codec) -> bool {
+        find_device(codec).is_ok()
     }
 
     /// The other programs with the driver's `decoder` or `encoder` open, from
