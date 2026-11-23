@@ -2193,6 +2193,35 @@ fn glow_rows(
     });
 }
 
+/// How much of a cinema's light stays on while a video plays, and how long
+/// it takes to go down, for every video in one.
+pub(super) fn house_lights(ui: &mut egui::Ui, lights: &mut crate::settings::HouseLights) {
+    use crate::settings::{DEFAULT_HOUSE_LIGHTS_DIM_SECS, HOUSE_LIGHTS_DIM_SECS};
+    let mut percent = lights.playing * 100.0;
+    widgets::rows(ui, |r| {
+        if r.slider(
+            tr!("settings-lights-playing"),
+            Some(tr!("settings-lights-playing-desc")),
+            &mut percent,
+            0.0..=100.0,
+            100.0,
+            "%",
+            0,
+        ) {
+            lights.playing = percent / 100.0;
+        }
+        r.slider(
+            tr!("settings-dimming-time"),
+            Some(tr!("settings-dimming-time-desc")),
+            &mut lights.dim_secs,
+            HOUSE_LIGHTS_DIM_SECS,
+            DEFAULT_HOUSE_LIGHTS_DIM_SECS,
+            " s",
+            1,
+        );
+    });
+}
+
 /// Where a cinema seats you: its row and how much its screen curves, now
 /// and when reset.
 struct Seat {

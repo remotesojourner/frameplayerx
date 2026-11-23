@@ -153,6 +153,12 @@ background-classic = Classic
 # Short: a chip. A modern cinema room with neon lights and leather recliners.
 background-luxe = Luxe
 background-room-desc = Around flat videos as they play. Your room replaces it while it shows.
+settings-cinema = Cinema
+settings-cinema-desc = These apply to every video that plays in a cinema, and to nothing else.
+settings-lights-playing = Lights while playing
+settings-lights-playing-desc = How much of the cinema's light stays on while a video plays. At 0% even the exit signs go out, and only the screen shows.
+settings-dimming-time = Dimming time
+settings-dimming-time-desc = How long the lights take to go down when a video starts. They still come up quickly when you pause.
 # Short: a chip.
 background-black = Black
 # Short: a chip.

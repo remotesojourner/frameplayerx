@@ -8,6 +8,8 @@ struct PushConstants {
     // its radius, centred on the seats' side of the screen's centre.
     curvature: f32,
     screen_x: f32,
+    // How much of the dimmed light stays on with the lights down, 0 to 1.
+    lights_down: f32,
     // The screen's centre (height, depth) and its width and height, room
     // metres.
     screen: vec4<f32>,
@@ -64,12 +66,12 @@ fn vs_main(
     out.pattern = ((flags >> 1u) & 3u) | (flags & 64u);
     // With the lights down, the screen's light still reaches what is low and
     // near it. Step lights and the exit signs at the back stay lit; lights by
-    // the screen go out.
+    // the screen go out. All of it keeps only lights_down of that.
     let sc = pc.screen;
     let spill = (1.0 - smoothstep(sc.x - 0.39 * sc.w, sc.x + 0.53 * sc.w, pos.y))
         * (1.0 - smoothstep(sc.y + 0.18 * sc.z, sc.y + 1.43 * sc.z, pos.z));
-    let glow = f32(flags & 1u);
-    let dimmed = select(0.042 + 0.041 * spill, 0.0, (flags & 32u) != 0u);
+    let glow = f32(flags & 1u) * mix(pc.lights_down, 1.0, pc.lights);
+    let dimmed = pc.lights_down * select(0.042 + 0.041 * spill, 0.0, (flags & 32u) != 0u);
     let exposure = max(mix(dimmed, 0.95, pc.lights), 0.95 * glow);
     out.shade = vec2<f32>(exposure, f32(packed.y) / 255.0);
     return out;

@@ -30,12 +30,14 @@ impl Default for Cinema {
 pub(super) const ROW_PULL: f32 = 0.4;
 
 impl Cinema {
-    /// The house lights `dt` seconds on: going down while a video plays,
-    /// up when it stops, held while it buffers.
-    fn lights_at(&mut self, state: PlayerState, has_frame: bool, dt: f32) -> f32 {
+    /// The house lights `dt` seconds on: going down over `dim_secs` while a
+    /// video plays, up when it stops, held while it buffers.
+    fn lights_at(&mut self, state: PlayerState, has_frame: bool, dt: f32, dim_secs: f32) -> f32 {
         let dt = dt.max(0.0);
         match state {
-            PlayerState::Playing if has_frame => self.lights = (self.lights - dt / 1.4).max(0.0),
+            PlayerState::Playing if has_frame => {
+                self.lights = (self.lights - dt / dim_secs).max(0.0);
+            }
             PlayerState::Playing | PlayerState::Buffering => {}
             PlayerState::Paused | PlayerState::Ended | PlayerState::Failed => {
                 self.lights = (self.lights + dt / 0.7).min(1.0);
@@ -805,14 +807,19 @@ impl App {
                     showing = true;
                     let seat = room.seat(p.cinema_row(&self.settings));
                     let pose = room.pose(player, seat);
-                    let lights = self
-                        .cinema
-                        .lights_at(p.player.state(), frame.is_some(), input.dt);
+                    let house = self.settings.house_lights;
+                    let lights = self.cinema.lights_at(
+                        p.player.state(),
+                        frame.is_some(),
+                        input.dt,
+                        house.dim_secs,
+                    );
                     let curvature = room.curvature(p.cinema_curvature(&self.settings));
                     video.cinema = Some(CinemaParams {
                         room,
                         pose,
                         lights,
+                        lights_down: house.playing,
                         curvature,
                     });
                     video.screen_pose = pose * Mat4::from_translation(room.screen_centre());
@@ -1111,13 +1118,17 @@ mod tests {
     #[test]
     fn house_lights_dim_for_playback_hold_through_buffering_and_rise_on_pause() {
         let mut cinema = Cinema::default();
-        assert_eq!(cinema.lights_at(PlayerState::Buffering, false, 0.5), 1.0);
-        assert_eq!(cinema.lights_at(PlayerState::Playing, false, 0.7), 1.0);
-        assert!((cinema.lights_at(PlayerState::Playing, true, 0.7) - 0.5).abs() < 1e-6);
-        assert!((cinema.lights_at(PlayerState::Buffering, true, 0.5) - 0.5).abs() < 1e-6);
-        assert_eq!(cinema.lights_at(PlayerState::Playing, true, 0.7), 0.0);
-        assert!((cinema.lights_at(PlayerState::Paused, true, 0.35) - 0.5).abs() < 1e-6);
-        assert_eq!(cinema.lights_at(PlayerState::Ended, true, 1.0), 1.0);
+        let at = |c: &mut Cinema, state, frame, dt| c.lights_at(state, frame, dt, 1.4);
+        assert_eq!(at(&mut cinema, PlayerState::Buffering, false, 0.5), 1.0);
+        assert_eq!(at(&mut cinema, PlayerState::Playing, false, 0.7), 1.0);
+        assert!((at(&mut cinema, PlayerState::Playing, true, 0.7) - 0.5).abs() < 1e-6);
+        assert!((at(&mut cinema, PlayerState::Buffering, true, 0.5) - 0.5).abs() < 1e-6);
+        assert_eq!(at(&mut cinema, PlayerState::Playing, true, 0.7), 0.0);
+        assert!((at(&mut cinema, PlayerState::Paused, true, 0.35) - 0.5).abs() < 1e-6);
+        assert_eq!(at(&mut cinema, PlayerState::Ended, true, 1.0), 1.0);
+        // Dimming over 8 s takes as long; coming back up doesn't change.
+        assert!((cinema.lights_at(PlayerState::Playing, true, 2.0, 8.0) - 0.75).abs() < 1e-6);
+        assert!((cinema.lights_at(PlayerState::Paused, true, 0.07, 8.0) - 0.85).abs() < 1e-6);
     }
 
     #[test]

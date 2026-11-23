@@ -887,6 +887,14 @@ they are for when the cinema doesn't show. Recentering, **Put back** and
 dragging the picture turn the whole cinema with it, and recentering lying
 back tips it back with you. **Screen follows you** stays off in a cinema.
 
+Under **Cinema** in Settings › Video position, whatever background is
+picked there, **Lights while playing** and **Dimming time** set how much of
+the cinema's light stays on while a video plays, down to 0%, where even
+the exit signs go out and only the screen shows, and how long the lights
+take to go down, from 0.5 to 10 seconds. They apply to every video that
+plays in a cinema and to nothing else, and the lights still come up
+quickly when you pause.
+
 The cinema doesn't show while your room does, or for a chroma-keyed video.
 
 ### Presets

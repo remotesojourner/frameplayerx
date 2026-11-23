@@ -93,6 +93,29 @@ impl ScreenGlow {
     }
 }
 
+/// Settings › Video position's house lights in a cinema: how much of the
+/// room's dimmed light stays on while a video plays (all of it at 1, none at
+/// 0, the step lights and exit signs too), and how long in seconds they take
+/// to go down when it starts ([`HOUSE_LIGHTS_DIM_SECS`]).
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct HouseLights {
+    pub playing: f32,
+    pub dim_secs: f32,
+}
+
+impl Default for HouseLights {
+    fn default() -> Self {
+        HouseLights {
+            playing: 1.0,
+            dim_secs: DEFAULT_HOUSE_LIGHTS_DIM_SECS,
+        }
+    }
+}
+
+pub const HOUSE_LIGHTS_DIM_SECS: std::ops::RangeInclusive<f32> = 0.5..=10.0;
+pub const DEFAULT_HOUSE_LIGHTS_DIM_SECS: f32 = 1.4;
+
 /// Settings › Controller › Hold time, in seconds. Below the least, a glance
 /// across the panel would press what it passes.
 pub const HANDS_FREE_HOLD_SECS: std::ops::RangeInclusive<f32> = 0.4..=2.0;
@@ -119,6 +142,7 @@ pub struct Settings {
     /// Show the real world around flat screens and the UI.
     pub passthrough: bool,
     pub screen_glow: ScreenGlow,
+    pub house_lights: HouseLights,
     /// Resume videos where they were left.
     pub resume: bool,
     /// The format a video starts in when nothing identifies it (no
@@ -295,6 +319,7 @@ impl Default for Settings {
             presets: Vec::new(),
             passthrough: false,
             screen_glow: ScreenGlow::default(),
+            house_lights: HouseLights::default(),
             resume: true,
             default_format: fp_core::format::VideoFormat::FALLBACK,
             fisheye_presets: FISHEYE_PRESETS.to_vec(),
@@ -431,6 +456,11 @@ impl Settings {
                     s.hands_free_hold_secs = s
                         .hands_free_hold_secs
                         .clamp(*HANDS_FREE_HOLD_SECS.start(), *HANDS_FREE_HOLD_SECS.end());
+                    s.house_lights.playing = s.house_lights.playing.clamp(0.0, 1.0);
+                    s.house_lights.dim_secs = s
+                        .house_lights
+                        .dim_secs
+                        .clamp(*HOUSE_LIGHTS_DIM_SECS.start(), *HOUSE_LIGHTS_DIM_SECS.end());
                     // Saved before the global chroma key existed: its key
                     // was never chosen, so take the current default.
                     if s.default_view.key_own.is_none() {
@@ -539,6 +569,25 @@ mod tests {
         let s = Settings::load(&path);
         assert!(s.hands_free);
         assert_eq!(s.hands_free_hold_secs, *HANDS_FREE_HOLD_SECS.start());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn house_lights_load_within_their_sliders() {
+        let dir = std::env::temp_dir().join(format!("fp-lights-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("settings.json");
+        std::fs::write(&path, r#"{"house_lights": {"playing": 2, "dim_secs": 0}}"#).unwrap();
+        let s = Settings::load(&path);
+        assert_eq!(s.house_lights.playing, 1.0);
+        assert_eq!(s.house_lights.dim_secs, *HOUSE_LIGHTS_DIM_SECS.start());
+        // Saved before they existed: as the room was lit then.
+        std::fs::write(&path, "{}").unwrap();
+        let s = Settings::load(&path);
+        assert_eq!(
+            (s.house_lights.playing, s.house_lights.dim_secs),
+            (1.0, 1.4)
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

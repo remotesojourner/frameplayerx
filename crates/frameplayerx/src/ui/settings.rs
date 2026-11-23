@@ -573,6 +573,13 @@ fn video_position(ui: &mut egui::Ui, v: &mut View) {
     });
     heading(ui, tr!("settings-background"));
     super::player::global_background(ui, v.settings);
+    // Whatever the background here: a video can pick a cinema of its own.
+    if fp_render::CinemaRoom::any_available() {
+        heading(ui, tr!("settings-cinema"));
+        note(ui, tr!("settings-cinema-desc"));
+        ui.add_space(6.0);
+        super::player::house_lights(ui, &mut v.settings.house_lights);
+    }
 }
 
 /// How videos look until they are adjusted: the picture, and a 3D video's
