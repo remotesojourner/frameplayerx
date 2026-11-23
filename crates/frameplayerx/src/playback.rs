@@ -1679,17 +1679,25 @@ fn falling_behind(stalls: u64, dropped: u64, shown: u64) -> bool {
 
 /// Whether the Frame's hardware decoder takes this stream.
 fn has_hardware_decoder(v: &StreamInfo) -> bool {
-    hardware_decodes(v, fp_media::hevc_10bit_hardware())
+    // Only an AV1 video asks the device.
+    let av1 = v.codec == "av1" && fp_media::av1_hardware();
+    hardware_decodes(v, fp_media::hevc_10bit_hardware(), av1)
 }
 
-/// 8-bit 4:2:0 HEVC, H.264 and AV1, and 10-bit 4:2:0 HEVC and AV1 when
+/// 8-bit 4:2:0 HEVC and H.264, and AV1 where the device takes it (`av1`,
+/// [`fp_media::av1_hardware`]), and 10-bit 4:2:0 HEVC and AV1 when
 /// `ten_bit_q10c` (the renderer shows Q10C, see
 /// [`fp_media::set_hevc_10bit_hardware`]). Not interlaced H.264, nor video
 /// being deinterlaced, which takes pictures in memory.
-fn hardware_decodes(v: &StreamInfo, ten_bit_q10c: bool) -> bool {
+fn hardware_decodes(v: &StreamInfo, ten_bit_q10c: bool, av1: bool) -> bool {
+    let codec = match v.codec.as_str() {
+        "hevc" | "h264" => true,
+        "av1" => av1,
+        _ => false,
+    };
     let depth = v.bit_depth <= 8
         || (ten_bit_q10c && matches!(v.codec.as_str(), "hevc" | "av1") && v.bit_depth == 10);
-    matches!(v.codec.as_str(), "hevc" | "h264" | "av1")
+    codec
         && depth
         && v.chroma() == "4:2:0"
         && !v.deinterlaced
@@ -2626,15 +2634,18 @@ mod tests {
             n.contains("10-bit HEVC") && n.contains("8-bit 4:2:0 H.265"),
             "{n}"
         );
-        // AV1 on a driver without AV01 reports "no V4L2 decoder", shown as
-        // no hardware decoding (like VP9).
+        // AV1 where the device lists no AV01, as on SteamOS 0.5.9 and where
+        // tests run: no hardware decoding (like VP9), whether it was tried
+        // or hardware decoding is off.
         let no_av1 = "unsupported: no V4L2 decoder for Av1 with NV12 output";
-        let n = slow_decode_notice(&stream("av1", 8), true, Some(no_av1), &nobody).detail;
-        assert!(n.contains("for AV1,"), "{n}");
-        assert_eq!(
-            software_reason(&stream("av1", 8), true, Some(no_av1)),
-            "no hardware decoding for AV1"
-        );
+        for (on, error) in [(true, Some(no_av1)), (false, None)] {
+            let n = slow_decode_notice(&stream("av1", 8), on, error, &nobody).detail;
+            assert!(n.contains("for AV1,"), "{n}");
+            assert_eq!(
+                software_reason(&stream("av1", 8), on, error),
+                "no hardware decoding for AV1"
+            );
+        }
         let n = slow_decode_notice(&stream("vp9", 8), true, None, &nobody).detail;
         assert!(n.contains("for VP9,"), "{n}");
         let busy = "hardware decoder busy: other video sessions leave room for 8192x4064, \
@@ -2711,33 +2722,35 @@ mod tests {
         assert_eq!(r, "V4L2: stream size unknown");
 
         // 10-bit HEVC and AV1 in hardware where the renderer shows Q10C;
-        // never other 10-bit codecs.
-        assert!(hardware_decodes(&stream("hevc", 10), true));
-        assert!(!hardware_decodes(&stream("hevc", 10), false));
-        assert!(hardware_decodes(&stream("av1", 10), true));
-        assert!(!hardware_decodes(&stream("av1", 10), false));
-        assert!(hardware_decodes(&stream("av1", 8), false));
-        assert!(!hardware_decodes(&stream("h264", 10), true));
-        assert!(!hardware_decodes(&stream("vp9", 8), true));
+        // never other 10-bit codecs. AV1 only where the device takes it.
+        assert!(hardware_decodes(&stream("hevc", 10), true, false));
+        assert!(!hardware_decodes(&stream("hevc", 10), false, false));
+        assert!(hardware_decodes(&stream("av1", 10), true, true));
+        assert!(!hardware_decodes(&stream("av1", 10), false, true));
+        assert!(hardware_decodes(&stream("av1", 8), false, true));
+        assert!(!hardware_decodes(&stream("av1", 8), false, false));
+        assert!(!hardware_decodes(&stream("av1", 10), true, false));
+        assert!(!hardware_decodes(&stream("h264", 10), true, false));
+        assert!(!hardware_decodes(&stream("vp9", 8), true, true));
         let mut s12 = stream("hevc", 12);
         s12.pixel_format = "yuv420p12le".into();
-        assert!(!hardware_decodes(&s12, true));
+        assert!(!hardware_decodes(&s12, true, false));
         let mut s422 = stream("hevc", 10);
         s422.pixel_format = "yuv422p10le".into();
-        assert!(!hardware_decodes(&s422, true));
-        assert!(hardware_decodes(&stream("h264", 8), false));
+        assert!(!hardware_decodes(&s422, true, false));
+        assert!(hardware_decodes(&stream("h264", 8), false, false));
 
         // Interlaced H.264, and video being deinterlaced, decode in software.
         let mut tv = stream("h264", 8);
         tv.interlaced = true;
-        assert!(!hardware_decodes(&tv, false));
+        assert!(!hardware_decodes(&tv, false, false));
         assert_eq!(
             software_reason(&tv, true, None),
             "no hardware decoding for interlaced H.264"
         );
         let mut forced = stream("hevc", 8);
         forced.deinterlaced = true;
-        assert!(!hardware_decodes(&forced, false));
+        assert!(!hardware_decodes(&forced, false, false));
     }
 
     #[test]

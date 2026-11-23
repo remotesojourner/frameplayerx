@@ -33,6 +33,19 @@ pub fn hevc_10bit_hardware() -> bool {
     HEVC_10BIT_HARDWARE.load(Ordering::Relaxed)
 }
 
+/// Whether the hardware decoder takes AV1: the driver SteamOS 0.5.10 brought
+/// lists it, the one before doesn't. Asked of the device the first time.
+#[cfg(target_os = "linux")]
+pub fn av1_hardware() -> bool {
+    static LISTED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *LISTED.get_or_init(|| crate::v4l2::has_decoder(crate::v4l2::Codec::Av1))
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn av1_hardware() -> bool {
+    false
+}
+
 static SHARED_FRAMES: AtomicBool = AtomicBool::new(false);
 
 /// Lets the player's hardware decoder hand its pictures over in its own
