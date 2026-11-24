@@ -233,7 +233,12 @@ fn nav(ui: &mut egui::Ui, v: &mut View) {
                     + 64.0
             })
             .sum();
-        let right = if v.playback.is_some() { 326.0 } else { 176.0 };
+        let clock = ui.painter().layout_no_wrap(
+            crate::clock::time_at(crate::clock::unix_now()),
+            theme::font(Weight::SemiBold, 16.0),
+            theme::TEXT_2,
+        );
+        let right = if v.playback.is_some() { 326.0 } else { 176.0 } + clock.size().x + 8.0;
         let labelled = ui.available_width() >= labels + right;
         for (s, icon, label) in tabs {
             let selected =
@@ -292,6 +297,7 @@ fn nav(ui: &mut egui::Ui, v: &mut View) {
             {
                 v.actions.push(Action::ToggleHandsFree);
             }
+            ui.label(clock);
             if let Some(s) = &v.state.worker_status {
                 ui.label(
                     RichText::new(s)

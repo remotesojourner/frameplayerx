@@ -11,6 +11,7 @@
 mod i18n;
 mod app;
 mod bindings;
+mod clock;
 mod controls;
 mod crash;
 mod drives;

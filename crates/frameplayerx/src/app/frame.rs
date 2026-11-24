@@ -466,6 +466,7 @@ impl App {
         self.panels[BAR].visible = playing && self.ui_visible && !self.show_browser;
         self.panels[ADJUST].visible = self.panels[BAR].visible && self.ui.adjust_open;
         self.panels[TRACKS].visible = self.panels[BAR].visible && self.ui.tracks_open;
+        self.panels[CLOCK].visible = self.panels[BAR].visible;
         let over_video = playing && !browser;
         let live = self
             .ui
@@ -519,6 +520,7 @@ impl App {
             strip.pose = owner.pose * Mat4::from_translation(Vec3::new(x, 0.0, 0.0));
         }
         self.panels[TRACKS].pose = above_bar(&self.panels[BAR], &self.panels[TRACKS]);
+        self.panels[CLOCK].pose = clock_pose(&self.panels[BAR], &self.panels[CLOCK]);
         self.panels[TOAST].pose = toast_pose(
             &self.panels[BAR],
             self.panels[TRACKS]
@@ -657,8 +659,8 @@ impl App {
         }
         let devices = self.services.haptic_statuses();
         let passthrough_available = input.passthrough_available;
-        let mut painted = [false; 7];
-        for idx in [MAIN, BAR, ADJUST, TRACKS, TOAST, WAKE] {
+        let mut painted = [false; 8];
+        for idx in [MAIN, BAR, ADJUST, TRACKS, TOAST, WAKE, CLOCK] {
             if !self.panels[idx].needs_paint() {
                 continue;
             }
@@ -700,6 +702,7 @@ impl App {
                 }
                 TRACKS => ui::player::tracks_panel(ctx, &mut view),
                 TOAST => ui::player::toast_panel(ctx, &mut view),
+                CLOCK => ui::player::clock_panel(ctx, &mut view),
                 WAKE => ui::player::wake_panel(ctx, &mut view),
                 _ => ui::player::adjust_panel(ctx, &mut view),
             });
@@ -1009,14 +1012,14 @@ pub(super) fn key(key: egui::Key) -> egui::Event {
 }
 
 /// What a pointer can land on, in the order of its panel indices: the
-/// panels up to the toast, which rays pass through, the performance overlay
-/// at [`PERF`], then the scroll strips.
+/// panels up to the toast, which rays pass through as they do the clock, the
+/// performance overlay at [`PERF`], then the scroll strips.
 fn pointable<'a>(
-    panels: &'a mut [Panel; 7],
+    panels: &'a mut [Panel; 8],
     perf: &'a mut Panel,
     strips: &'a mut [Panel; 3],
 ) -> [&'a mut Panel; 10] {
-    let [a, b, c, d, e, wake, _toast] = panels;
+    let [a, b, c, d, e, wake, _toast, _clock] = panels;
     let [s0, s1, s2] = strips;
     [a, b, c, d, e, wake, perf, s0, s1, s2]
 }
@@ -1041,6 +1044,21 @@ fn above_bar(bar: &Panel, picker: &Panel) -> Mat4 {
     let right = bar.size.x / 2.0 - (room.right as f32 + ui::player::BAR_MARGIN as f32) * b;
     let x = right + room.right as f32 * p - picker.size.x / 2.0;
     let y = top + picker.size.y / 2.0;
+    bar.pose * Mat4::from_translation(Vec3::new(x, y, 0.0))
+}
+
+/// Where the clock goes: on the control bar's plane, its bottom edge on the
+/// top of the bar's body and its pill's left edge over the start of what the
+/// bar holds.
+fn clock_pose(bar: &Panel, clock: &Panel) -> Mat4 {
+    let room = ui::widgets::SHADOW_ROOM;
+    // Metres per point of each.
+    let b = bar.size.x / bar.points().x;
+    let c = clock.size.x / clock.points().x;
+    let top = bar.size.y / 2.0 - room.top as f32 * b;
+    let left = -bar.size.x / 2.0 + (room.left as f32 + ui::player::BAR_MARGIN as f32) * b;
+    let x = left - room.left as f32 * c + clock.size.x / 2.0;
+    let y = top + clock.size.y / 2.0;
     bar.pose * Mat4::from_translation(Vec3::new(x, y, 0.0))
 }
 

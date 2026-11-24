@@ -195,6 +195,9 @@ pub struct Settings {
     /// Up next starts again from the first video after the last, and X and
     /// Y step round it.
     pub loop_playlist: bool,
+    /// The control bar shows how much of the video is left rather than its
+    /// length (pressing the time after the seek bar swaps them).
+    pub remaining_time: bool,
     /// The performance overlay (Settings › General › Diagnostics).
     pub perf_overlay: bool,
     /// What the controller buttons and thumbsticks do.
@@ -354,6 +357,7 @@ impl Default for Settings {
             loop_video: false,
             autoplay: false,
             loop_playlist: false,
+            remaining_time: false,
             perf_overlay: false,
             controls: crate::bindings::Bindings::default(),
             panel_offsets: PanelOffsets::default(),

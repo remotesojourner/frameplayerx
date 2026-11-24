@@ -1215,7 +1215,12 @@ press the speaker to mute. Pointing along the seek bar shows the time there,
 and a picture of that moment where the server has made them: Jellyfin's
 trickplay images, Emby's and Plex's video preview thumbnails, or a DeoVR
 feed's timeline preview. **Settings › Playback › Seek bar previews** turns
-the pictures off. What a controller shortcut changes, such as the
+the pictures off. Press the video's length after the seek bar to show how
+much is left instead, and again for the length; FramePlayerX keeps your
+choice. Above the bar's left end are the time of day and, unless the video
+loops, when it ends at the speed playing; the library's top bar shows the
+time too, in the headset's time zone and its locale's 12- or 24-hour
+clock. What a controller shortcut changes, such as the
 volume or a minute's skip, shows for a moment in a small message above where
 the control bar sits.
 

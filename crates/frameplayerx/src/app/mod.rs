@@ -110,6 +110,11 @@ const WAKE_REVEAL_DEG: f32 = 12.0;
 /// A toast over the video, above where the control bar sits. Nothing to point
 /// at, so the rays pass through it and don't show for it.
 const TOAST: usize = 6;
+/// The time of day and when the video ends, above the control bar's left end
+/// and shown with it. Nothing to point at, like the toast.
+const CLOCK: usize = 7;
+/// The clock pill's widest, in points.
+const CLOCK_PTS: f32 = 440.0;
 /// How long a toast stays over the video.
 const VIDEO_TOAST_SECS: f32 = 3.0;
 /// The control bar's body in pixels.
@@ -194,7 +199,7 @@ pub struct App {
     services: Services,
     pub ui: UiState,
     thumbs: ui::thumbs::Thumbs,
-    panels: [Panel; 7],
+    panels: [Panel; 8],
     seek_preview: Option<seek_preview::SeekPreview>,
     subs: Panel,
     /// Beside each of [`SCROLLED`], in that order.
@@ -298,6 +303,19 @@ fn growing_panel(px: [u32; 2], width_m: f32, ppp: f32) -> Panel {
     floating_panel(px, width_m, ppp * s).growing()
 }
 
+/// The clock's panel, growing with the control bar at its scale: room round
+/// the pill for its shadow, but below, where the bar is.
+fn clock_panel() -> Panel {
+    let room = ui::widgets::SHADOW_ROOM;
+    let pts = [
+        CLOCK_PTS + (room.left + room.right) as f32,
+        room.top as f32 + ui::player::CLOCK_HEIGHT + ui::player::CLOCK_GAP,
+    ];
+    let ppp = 1.25 * *UI_SCALES.end();
+    let px = pts.map(|n| (n * ppp).round() as u32);
+    panel(px, pts[0] * 1.25 * BAR_M_PER_PX, ppp).growing()
+}
+
 /// Fine enough for the largest interface size, like the control bar.
 fn perf_panel() -> Panel {
     let finest = *UI_SCALES.end();
@@ -351,11 +369,13 @@ impl App {
             // As fine as the bar it stands in for.
             growing_panel([400, 100], 400.0 * BAR_M_PER_PX, 1.25),
             growing_panel([1100, 90], 1100.0 * BAR_M_PER_PX, 1.25),
+            clock_panel(),
         ];
         panels[BAR].refresh = Some(Duration::from_millis(250));
         panels[ADJUST].refresh = Some(Duration::from_millis(1000));
         panels[TRACKS].refresh = Some(Duration::from_millis(1000));
         panels[TOAST].refresh = Some(Duration::from_millis(100));
+        panels[CLOCK].refresh = Some(Duration::from_millis(1000));
         panels[MAIN].refresh = Some(Duration::from_millis(1000));
         let subs = panel([1600, 320], 1.6, 1.0);
         let perf = perf_panel();
@@ -502,6 +522,7 @@ impl App {
             "tracks" => TRACKS,
             "wake" => WAKE,
             "toast" => TOAST,
+            "clock" => CLOCK,
             _ => return None,
         })
     }
