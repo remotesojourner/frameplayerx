@@ -601,6 +601,7 @@ adjust-forward-desc = Move closer to or back from the scene.
 # Short: under a card on Home.
 sources-local-facts = Folders, microSD and USB
 sources-desc = Browse the headset and your servers. What you watch is kept in Watch history.
+sources-desc-no-history = Browse the headset and your servers.
 # Short: a button.
 sources-add = Add source
 sources-heading = On this device and your network
@@ -959,6 +960,10 @@ sort-recently-watched = Recently watched
 # Short: a sort.
 sort-most-watched = Most watched
 library-history-empty-desc = Videos you play from any source show up here, with where you left off.
+history-keep = Keep watch history
+history-keep-desc = What you play is kept in Watch history and Continue watching on Home, with where you left off. Off, videos resume only where their server keeps your place.
+history-off-warning = Turning this off deletes your whole watch history from this headset, with where you left each video. Videos will then resume only where their server keeps your place.
+history-off-confirm = Turn off and delete
 # Short: a button.
 library-browse-sources = Browse sources
 # Short: a button.

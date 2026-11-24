@@ -199,6 +199,10 @@ impl App {
                 self.ui.toast(tr!("toast-retrying", count = n));
             }
             Action::ClearHistory => self.clear_history(),
+            Action::TurnOffHistory => {
+                self.settings.watch_history = false;
+                self.clear_history();
+            }
             Action::ClearImageCache => {
                 // Pictures on screen load again from their servers.
                 self.thumbs.forget_remote();

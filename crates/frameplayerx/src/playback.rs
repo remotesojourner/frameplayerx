@@ -416,16 +416,14 @@ pub fn open(
         e
     };
 
-    // A server that keeps resume points knows where the video was left on
-    // any device; the library only where it was left here.
     let start_at = req
         .start_at
         .or_else(|| {
-            entry
-                .as_ref()
-                .and_then(|e| e.resume)
-                .or_else(|| record.as_ref().map(|r| r.resume_position))
-                .filter(|p| settings.resume && *p > 1.0)
+            resume_point(
+                entry.as_ref().and_then(|e| e.resume),
+                record.as_ref().map(|r| r.resume_position),
+                settings,
+            )
         })
         .unwrap_or(0.0);
     // The previous video's decoder must be released first (see
@@ -740,7 +738,11 @@ pub fn open(
         .unwrap_or_else(|| title_from_name(&name));
     let markers = markers(&info, entry.as_ref(), record.as_ref(), library);
     let record_id = record.as_ref().map(|r| r.id);
-    let session = record_id.and_then(|id| library.start_playback(id).ok());
+    // Without a session nothing of this play is kept: no history, no
+    // resume point.
+    let session = record_id
+        .filter(|_| settings.watch_history)
+        .and_then(|id| library.start_playback(id).ok());
     let trickplay = source
         .as_ref()
         .zip(entry.as_ref())
@@ -806,6 +808,16 @@ pub fn open(
 }
 
 /// Asks `source` to transcode `location` to `t` from a time (seconds).
+/// Where a video starts when its request doesn't say: its server's resume
+/// point, which knows where it was left on any device, else the library's
+/// (`local`), which knows only this headset and is kept only with the watch
+/// history on. Neither with resuming off, or within a second of the start.
+fn resume_point(server: Option<f64>, local: Option<f64>, settings: &Settings) -> Option<f64> {
+    server
+        .or(local.filter(|_| settings.watch_history))
+        .filter(|p| settings.resume && *p > 1.0)
+}
+
 fn restart_at(
     source: Arc<dyn Source>,
     location: &str,
@@ -2032,6 +2044,61 @@ mod tests {
         );
         assert_eq!(library.get(id).unwrap().unwrap().title, "Private title");
         assert!(library.history(10).unwrap().is_empty());
+    }
+
+    #[test]
+    fn videos_resume_from_their_server_else_the_headset_with_history_kept() {
+        let on = Settings::default();
+        let off = Settings {
+            watch_history: false,
+            ..Default::default()
+        };
+        let no_resume = Settings {
+            resume: false,
+            ..Default::default()
+        };
+        assert_eq!(resume_point(Some(30.0), Some(60.0), &on), Some(30.0));
+        assert_eq!(resume_point(None, Some(60.0), &on), Some(60.0));
+        assert_eq!(resume_point(Some(30.0), Some(60.0), &off), Some(30.0));
+        assert_eq!(resume_point(None, Some(60.0), &off), None);
+        assert_eq!(resume_point(Some(30.0), Some(60.0), &no_resume), None);
+        assert_eq!(resume_point(Some(0.5), None, &on), None);
+    }
+
+    #[test]
+    fn with_the_watch_history_off_a_play_keeps_nothing() {
+        let library = Library::open_in_memory().unwrap();
+        let stable = fp_sources::location::encode("rooted", "http", "clip.mp4");
+        let id = library
+            .upsert(&fp_library::MediaUpsert::new(&stable, "rooted"))
+            .unwrap()
+            .id;
+        let opener = Opener::new();
+        opener.insert_source(Arc::new(RootedClip {
+            root: "http://old.example/videos/",
+            opened: Default::default(),
+        }));
+        let settings = Settings {
+            hardware_decoding: false,
+            haptics_enabled: false,
+            watch_history: false,
+            ..Default::default()
+        };
+        let request = OpenRequest {
+            location: stable.clone(),
+            source_id: Some("rooted".into()),
+            entry: Some(Entry::new("Clip", &stable, EntryKind::Video)),
+            paused: true,
+            ..Default::default()
+        };
+        let reports = Reports::start();
+        let playback = open(request, &opener, &library, &settings, &reports)
+            .unwrap()
+            .playback;
+        assert_eq!(playback.record_id, Some(id));
+        playback.close(&library);
+        assert!(library.history(10).unwrap().is_empty());
+        assert!(!library.has_history().unwrap());
     }
 
     #[test]

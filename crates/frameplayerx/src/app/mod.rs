@@ -675,7 +675,7 @@ impl App {
                         .find(|p| p.visible && p.wants_keyboard())
                     {
                         p.push(egui::Event::Text(t));
-                    } else {
+                    } else if self.settings.watch_history {
                         // A search of what was watched.
                         self.ui.history.search = t;
                         self.ui.screen = Screen::History;

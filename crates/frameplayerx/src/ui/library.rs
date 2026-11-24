@@ -60,7 +60,12 @@ pub fn browser(ctx: &egui::Context, v: &mut View) {
             }
             match v.state.screen {
                 Screen::Home => home(ui, v),
-                Screen::History => history(ui, v),
+                Screen::History if v.settings.watch_history => history(ui, v),
+                // Gone with the watch history it showed.
+                Screen::History => {
+                    v.state.screen = Screen::Home;
+                    home(ui, v);
+                }
                 Screen::Playlists => super::playlists::page(ui, v),
                 Screen::Sources => super::sources::sources(ui, v),
                 Screen::Settings => super::settings::settings(ui, v),
@@ -205,13 +210,16 @@ fn nav(ui: &mut egui::Ui, v: &mut View) {
         ui.add_space(4.0);
         wordmark(ui, 22.0);
         ui.add_space(28.0);
-        let tabs = [
+        let mut tabs = vec![
             (Screen::Home, icons::HOUSE, tr!("nav-home")),
             (Screen::History, icons::CLOCK, tr!("nav-history")),
             (Screen::Playlists, icons::PLAYLIST, tr!("nav-playlists")),
             (Screen::Sources, icons::HARD_DRIVES, tr!("nav-sources")),
             (Screen::Settings, icons::GEAR_SIX, tr!("nav-settings")),
         ];
+        if !v.settings.watch_history {
+            tabs.retain(|&(s, ..)| s != Screen::History);
+        }
         // At a large interface size the labels would run into the buttons
         // on the right: the tabs then show their icons alone.
         let labels: f32 = tabs
@@ -489,6 +497,7 @@ fn hero(ui: &mut egui::Ui, v: &mut View, rows: &HomeRows) {
 }
 
 fn home(ui: &mut egui::Ui, v: &mut View) {
+    let history = v.settings.watch_history;
     if v.state.home.is_none() {
         let lib = &v.services.library;
         let favorites = lib
@@ -507,9 +516,15 @@ fn home(ui: &mut egui::Ui, v: &mut View) {
                 ..Default::default()
             })
             .unwrap_or_default()
-            .pop();
+            .pop()
+            .filter(|_| history);
+        let continue_watching = if history {
+            lib.continue_watching(20).unwrap_or_default()
+        } else {
+            Vec::new()
+        };
         v.state.home = Some(HomeRows {
-            continue_watching: lib.continue_watching(20).unwrap_or_default(),
+            continue_watching,
             last_watched,
             favorites,
         });
@@ -522,7 +537,8 @@ fn home(ui: &mut egui::Ui, v: &mut View) {
         let nothing = rows.continue_watching.is_empty()
             && rows.last_watched.is_none()
             && rows.favorites.is_empty();
-        if nothing {
+        // With no history kept, "nothing watched yet" would never change.
+        if nothing && history {
             page::empty_state(
                 ui,
                 icons::PLAY_CIRCLE,
@@ -536,7 +552,9 @@ fn home(ui: &mut egui::Ui, v: &mut View) {
         }
         record_row(ui, v, tr!("jf-continue"), &rows.continue_watching);
         record_row(ui, v, tr!("filter-favorites"), &rows.favorites);
-        super::sources::source_row(ui, v, Screen::Home);
+        // Without a history the page is the sources': a grid rather than a
+        // row to scroll through sideways.
+        super::sources::source_row(ui, v, Screen::Home, !history);
     });
     v.state.home = Some(rows);
 }
