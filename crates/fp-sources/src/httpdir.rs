@@ -92,6 +92,15 @@ impl HttpDirSource {
 }
 
 impl Source for HttpDirSource {
+    fn download_allowed(&self, _location: &str) -> Option<bool> {
+        Some(true)
+    }
+
+    fn open_download(&self, video: &Entry) -> Result<crate::OriginalFile> {
+        let reader = self.client.open_bulk(&self.current_url(&video.location)?)?;
+        Ok(crate::file_download(video, reader))
+    }
+
     fn id(&self) -> &str {
         &self.id
     }

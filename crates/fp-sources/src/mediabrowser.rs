@@ -549,6 +549,9 @@ pub struct MediaBrowserSource {
     versions: Mutex<HashMap<String, String>>,
     /// Per-item `CanDelete` cached from server listings and details.
     deletable: Mutex<HashMap<String, bool>>,
+    /// Per-item `CanDownload`, cached the same way: false when the user
+    /// may not download.
+    downloadable: Mutex<HashMap<String, bool>>,
     /// The play session of the transcode the server is encoding for us.
     encoding: Arc<Mutex<Option<String>>>,
 }
@@ -682,6 +685,7 @@ impl MediaBrowserSource {
             tags: Mutex::new(None),
             versions: Mutex::new(HashMap::new()),
             deletable: Mutex::new(HashMap::new()),
+            downloadable: Mutex::new(HashMap::new()),
             encoding: Arc::default(),
         })
     }
@@ -695,6 +699,17 @@ impl MediaBrowserSource {
             cache.clear();
         }
         cache.insert(id.to_string(), can_delete);
+    }
+
+    pub(crate) fn record_downloadable(&self, id: &str, can_download: bool) {
+        if id.is_empty() {
+            return;
+        }
+        let mut cache = lock(&self.downloadable);
+        if cache.len() >= 4096 {
+            cache.clear();
+        }
+        cache.insert(id.to_string(), can_download);
     }
 
     fn delete_item_by_id(&self, id: &str) -> Result<()> {
@@ -1181,7 +1196,8 @@ impl Source for MediaBrowserSource {
                 loop {
                     let query = format!(
                         "/Users/{user_id}/Items?ParentId={id}&Recursive=false\
-                        &Fields=Path,MediaSources,Overview,DateCreated,CanDelete&SortBy=SortName&SortOrder=Ascending\
+                        &Fields=Path,MediaSources,Overview,DateCreated,CanDelete,CanDownload\
+                        &SortBy=SortName&SortOrder=Ascending\
                         &StartIndex={start_index}&Limit={PAGE_SIZE}"
                     );
                     let v = self.api_get_json(&query)?;
@@ -1191,6 +1207,7 @@ impl Source for MediaBrowserSource {
                     for raw in raw_items {
                         if let Some(item) = catalog::parse_item(raw, &self.base_url) {
                             self.record_deletable(&item.id, item.can_delete);
+                            self.record_downloadable(&item.id, item.can_download);
                         }
                     }
                     let mut entries = parse_items(&v, &self.base_url);
@@ -1393,11 +1410,12 @@ impl Source for MediaBrowserSource {
         };
         let (_, user_id) = self.client()?;
         let path = format!(
-            "/Users/{user_id}/Items/{id}?Fields=MediaSources,Chapters,Path,Overview,Tags,CanDelete"
+            "/Users/{user_id}/Items/{id}?Fields=MediaSources,Chapters,Path,Overview,Tags,CanDelete,CanDownload"
         );
         let v = self.api_get_json(&path)?;
         if let Some(parsed) = catalog::parse_item(&v, &self.base_url) {
             self.record_deletable(&parsed.id, parsed.can_delete);
+            self.record_downloadable(&parsed.id, parsed.can_download);
         }
         let mut out = entry.clone();
         let chosen = location_version(&resolved)
@@ -1560,6 +1578,84 @@ impl Source for MediaBrowserSource {
         Ok(self.item(id)?.can_delete)
     }
 
+    /// As the server's `CanDownload` says, which is false for a user whose
+    /// policy forbids downloading.
+    fn download_allowed(&self, location: &str) -> Option<bool> {
+        let resolved = self.resolved_location(location).ok()?;
+        let (kind, id) = decode_location(&resolved)?;
+        if kind != "item" {
+            return Some(false);
+        }
+        lock(&self.downloadable).get(id).copied()
+    }
+
+    fn ask_download_allowed(&self, location: &str) -> Result<bool> {
+        let resolved = self.resolved_location(location)?;
+        let Some((kind, id)) = decode_location(&resolved) else {
+            return Err(Error::invalid(location, "not a MediaBrowser location"));
+        };
+        if kind != "item" {
+            return Ok(false);
+        }
+        if let Some(can) = lock(&self.downloadable).get(id).copied() {
+            return Ok(can);
+        }
+        Ok(self.item(id)?.can_download)
+    }
+
+    /// The version that plays, as the server keeps it (`static=true`):
+    /// only a file the server holds, not a live or remote stream, and only
+    /// when `CanDownload` allows it.
+    fn open_download(&self, video: &Entry) -> Result<crate::OriginalFile> {
+        let resolved = self.resolved_location(&video.location)?;
+        let id = item_id(&resolved)?;
+        let (client, user_id) = self.client()?;
+        let item = self.api_get_json(&format!(
+            "/Users/{user_id}/Items/{}?Fields=MediaSources,Path,CanDownload",
+            encode_form_value(&id)
+        ))?;
+        let allowed = boolean(&item, "CanDownload") == Some(true);
+        self.record_downloadable(&id, allowed);
+        if !allowed {
+            return Err(Error::Auth(format!(
+                "{} does not allow downloading {}",
+                self.name, video.name
+            )));
+        }
+        let version = self
+            .playing_version(&video.location, &item)
+            .ok_or_else(|| Error::NotFound(format!("a file of {}", video.name)))?;
+        let version_id = text(&version, "Id")
+            .ok_or_else(|| Error::NotFound(format!("a file of {}", video.name)))?;
+        let file = matches!(text(&version, "Protocol").as_deref(), Some("File" | "0"));
+        if !file
+            || ["RequiresOpening", "IsInfiniteStream", "IsRemote"]
+                .iter()
+                .any(|field| boolean(&version, field) == Some(true))
+        {
+            return Err(Error::Unsupported(format!(
+                "{} has no file of {} to download",
+                self.name, video.name
+            )));
+        }
+        let mut url = format!(
+            "{}/Videos/{}/stream?static=true&MediaSourceId={}",
+            self.base_url,
+            encode_form_value(&id),
+            encode_form_value(&version_id)
+        );
+        if let Some((token, _)) = self.auth_credentials() {
+            url.push_str(&format!("&api_key={token}"));
+        }
+        let name = text(&version, "Path")
+            .and_then(|path| release_basename(&path))
+            .unwrap_or_else(|| video.name.clone());
+        Ok(crate::OriginalFile {
+            reader: client.open_bulk(&url)?,
+            name,
+        })
+    }
+
     fn delete(&self, location: &str) -> Result<()> {
         let resolved = self.resolved_location(location)?;
         let Some((kind, id)) = decode_location(&resolved) else {
@@ -1659,6 +1755,97 @@ mod tests {
         );
         let other = crate::location::encode("other", "mb", "item=abc");
         assert_eq!(s.display_location(Some(&other)), None);
+    }
+
+    #[test]
+    fn downloads_follow_can_download_and_take_only_a_file_the_server_holds() {
+        let server = TestServer::start(|req| {
+            let item = |id: &str, can: bool, source: Value| {
+                let item = json!({"Id": id, "Name": id, "Type": "Movie", "CanDownload": can,
+                                  "MediaSources": [source]});
+                resp(200, serde_json::to_vec(&item).unwrap(), &[])
+            };
+            match req.path() {
+                "/Users/u/Items/film" => item(
+                    "film",
+                    true,
+                    json!({"Id": "v1", "Path": "/media/Film (2020).mkv", "Protocol": "File"}),
+                ),
+                "/Users/u/Items/locked" => item(
+                    "locked",
+                    false,
+                    json!({"Id": "v2", "Path": "/media/Locked.mkv", "Protocol": "File"}),
+                ),
+                "/Users/u/Items/live" => item(
+                    "live",
+                    true,
+                    json!({"Id": "v3", "Path": "/media/Live.ts", "Protocol": "Http",
+                           "IsInfiniteStream": true}),
+                ),
+                "/Videos/film/stream" => {
+                    assert!(req.url.contains("static=true"));
+                    assert!(req.url.contains("MediaSourceId=v1"));
+                    serve_bytes(req, b"the whole film", true)
+                }
+                _ => resp(404, "", &[]),
+            }
+        });
+        let source = MediaBrowserSource::new(&MediaBrowserConfig {
+            id: "jf".into(),
+            name: "Jellyfin".into(),
+            url: server.base.clone(),
+            credentials: None,
+            insecure_tls: false,
+            parallel_downloads: false,
+            max_height: None,
+            access_token: Some("token".into()),
+            user_id: Some("u".into()),
+        })
+        .unwrap();
+        let video = |id: &str| {
+            Entry::new(
+                id,
+                crate::location::encode("jf", "mb", &format!("item={id}")),
+                EntryKind::Video,
+            )
+        };
+        let folder = crate::location::encode("jf", "mb", "folder=f");
+        assert_eq!(source.download_allowed(&folder), Some(false));
+        assert_eq!(source.download_allowed(&video("film").location), None);
+        assert!(
+            source
+                .ask_download_allowed(&video("film").location)
+                .unwrap()
+        );
+        assert!(
+            !source
+                .ask_download_allowed(&video("locked").location)
+                .unwrap()
+        );
+        assert_eq!(source.download_allowed(&video("film").location), Some(true));
+        assert_eq!(
+            source.download_allowed(&video("locked").location),
+            Some(false)
+        );
+
+        let file = source.open_download(&video("film")).unwrap();
+        assert_eq!(file.name, "Film (2020).mkv");
+        let mut bytes = vec![0; 64];
+        let n = file.reader.read_at(0, &mut bytes).unwrap();
+        assert_eq!(&bytes[..n], b"the whole film");
+        assert!(matches!(
+            source.open_download(&video("locked")),
+            Err(Error::Auth(_))
+        ));
+        assert!(matches!(
+            source.open_download(&video("live")),
+            Err(Error::Unsupported(_))
+        ));
+        assert_eq!(
+            server.count(|req| req.path() == "/Videos/locked/stream"),
+            0,
+            "nothing is fetched for a user who may not download"
+        );
     }
 
     #[test]

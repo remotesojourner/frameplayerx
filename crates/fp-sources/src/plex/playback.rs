@@ -224,6 +224,49 @@ impl PlexSource {
         Ok(session)
     }
 
+    /// The file of the version that plays, as the server keeps it, asked
+    /// for as a download, which the server refuses a user without Allow
+    /// Downloads.
+    pub(super) fn open_original_part(
+        &self,
+        location: &str,
+        title: &str,
+    ) -> Result<crate::OriginalFile> {
+        let location = self.parse_location(location)?;
+        if location.kind != "item" {
+            return Err(Error::Unsupported("Plex location is not a video".into()));
+        }
+        if !self.allow_sync()? {
+            return Err(Error::Auth(format!(
+                "{} does not allow downloads",
+                self.name
+            )));
+        }
+        let raw = self.raw_item(&location.id)?;
+        let selected = location
+            .media
+            .or_else(|| lock(&self.versions).get(&location.id).cloned());
+        let media = self.choose_media(&raw, selected.as_deref())?;
+        let [part] = array(media, "Part") else {
+            return Err(Error::Unsupported(
+                "a Plex video in several parts has no one file to download".into(),
+            ));
+        };
+        let path =
+            text(part, "key").ok_or_else(|| Error::NotFound("Plex media part address".into()))?;
+        let endpoint = self.client()?;
+        let mut url = url::Url::parse(&resource_url(&endpoint.base, &path)?)
+            .map_err(|_| Error::invalid(&path, "invalid part address"))?;
+        url.query_pairs_mut().append_pair("download", "1");
+        let name = text(part, "file")
+            .and_then(|file| release_basename(&file))
+            .unwrap_or_else(|| title.to_string());
+        Ok(crate::OriginalFile {
+            reader: endpoint.client.open_bulk(url.as_str())?,
+            name,
+        })
+    }
+
     pub(super) fn open_resource(
         &self,
         location: &str,

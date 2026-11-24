@@ -158,7 +158,7 @@ pub fn page(ui: &mut egui::Ui, v: &mut View, trail: &[String], b: &mut Browse) -
                     v.state.picking = Some(super::Picking {
                         reqs: queue(&[e]),
                         title: e.name.clone(),
-                        with_delete: true,
+                        from_row: true,
                     });
                 } else if open {
                     match e.kind {

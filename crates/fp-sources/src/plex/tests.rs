@@ -322,6 +322,79 @@ fn deletion_respects_allow_media_deletion_and_invalidates_metadata_cache() {
 }
 
 #[test]
+fn downloads_follow_allow_sync_and_ask_for_the_part_as_a_download() {
+    for allow_sync in [true, false] {
+        let server = TestServer::start(move |r| {
+            let json_resp = |v: Value| {
+                resp(
+                    200,
+                    serde_json::to_vec(&v).unwrap(),
+                    &[("Content-Type", "application/json")],
+                )
+            };
+            let part = |id: u32| {
+                json!({"id": id, "key": format!("/library/parts/{id}/1/file.mkv"),
+                                         "file": format!("/media/Film {id}.mkv")})
+            };
+            match r.path() {
+                "/identity" => json_resp(json!({"MediaContainer":{"machineIdentifier":"machine"}})),
+                "/" => json_resp(json!({"MediaContainer":{"allowSync": allow_sync}})),
+                "/library/metadata/100" => json_resp(json!({"MediaContainer":{"Metadata":[
+                    {"ratingKey":"100","type":"movie","title":"Film",
+                     "Media":[{"id": 1, "height": 1080, "Part":[part(7)]}]}]}})),
+                "/library/metadata/200" => json_resp(json!({"MediaContainer":{"Metadata":[
+                    {"ratingKey":"200","type":"movie","title":"Two parts",
+                     "Media":[{"id": 2, "height": 1080, "Part":[part(8), part(9)]}]}]}})),
+                "/library/parts/7/1/file.mkv" => {
+                    assert!(r.url.contains("download=1"), "{}", r.url);
+                    crate::test_server::serve_bytes(r, b"film bytes", true)
+                }
+                _ => resp(404, Vec::new(), &[]),
+            }
+        });
+        let source = PlexSource::new(&PlexConfig {
+            id: "source".into(),
+            name: "Plex".into(),
+            url: server.base.clone(),
+            machine_identifier: "machine".into(),
+            access_token: "token".into(),
+            connections: Vec::new(),
+            auth: None,
+            insecure_tls: false,
+            parallel_downloads: false,
+            max_height: None,
+            local_only: false,
+            allow_relay: false,
+        })
+        .unwrap();
+        let film = "plex://source/source/machine/item/100";
+        assert_eq!(source.download_allowed(film), None, "not asked yet");
+        assert_eq!(source.ask_download_allowed(film).unwrap(), allow_sync);
+        assert_eq!(source.download_allowed(film), Some(allow_sync));
+        let video = Entry::new("Film", film, fp_core::source::EntryKind::Video);
+        if allow_sync {
+            let file = source.open_download(&video).unwrap();
+            assert_eq!(file.name, "Film 7.mkv");
+            let mut bytes = [0; 32];
+            let n = file.reader.read_at(0, &mut bytes).unwrap();
+            assert_eq!(&bytes[..n], b"film bytes");
+            let parts = Entry::new(
+                "Two parts",
+                "plex://source/source/machine/item/200",
+                fp_core::source::EntryKind::Video,
+            );
+            assert!(matches!(
+                source.open_download(&parts),
+                Err(Error::Unsupported(_))
+            ));
+        } else {
+            assert!(matches!(source.open_download(&video), Err(Error::Auth(_))));
+            assert_eq!(server.count(|r| r.path().starts_with("/library/parts/")), 0);
+        }
+    }
+}
+
+#[test]
 fn display_location_is_the_servers_address_then_the_items() {
     let config = |id: &str| PlexConfig {
         id: id.into(),

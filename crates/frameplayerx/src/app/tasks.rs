@@ -69,6 +69,19 @@ pub(super) enum Job {
         target: ui::DeleteTarget,
         result: Result<(), String>,
     },
+    /// Whether a video may be downloaded, as its server answered; `None`
+    /// when it couldn't be asked.
+    DownloadCheck {
+        source_id: String,
+        location: String,
+        allowed: Option<bool>,
+    },
+    /// A download noted, for the downloads to take in turn, or why not.
+    DownloadAdded {
+        location: String,
+        title: String,
+        result: Result<(), String>,
+    },
     Toast(String),
     /// Nothing to show (a server took a change).
     Done,
@@ -385,6 +398,7 @@ impl App {
             self.on_job(job);
         }
         self.poll_worker();
+        self.poll_downloads();
     }
 
     fn on_job(&mut self, job: Job) {
@@ -473,13 +487,30 @@ impl App {
                 allowed,
             } => {
                 let check = match allowed {
-                    Some(allowed) => ui::DeleteCheck::Answered(allowed),
-                    None => ui::DeleteCheck::Failed(Instant::now()),
+                    Some(allowed) => ui::ServerCheck::Answered(allowed),
+                    None => ui::ServerCheck::Failed(Instant::now()),
                 };
                 self.ui.delete_checks.insert((source_id, location), check);
                 self.panels[MAIN].request_repaint();
             }
             Job::Deleted { target, result } => self.on_deleted(target, result),
+            Job::DownloadCheck {
+                source_id,
+                location,
+                allowed,
+            } => {
+                let check = match allowed {
+                    Some(allowed) => ui::ServerCheck::Answered(allowed),
+                    None => ui::ServerCheck::Failed(Instant::now()),
+                };
+                self.ui.download_checks.insert((source_id, location), check);
+                self.panels[MAIN].request_repaint();
+            }
+            Job::DownloadAdded {
+                location,
+                title,
+                result,
+            } => self.download_added(location, title, result),
             Job::Toast(t) => self.ui.toast(t),
             Job::Done | Job::WebPageOpened(Ok(())) => {}
             Job::SubtitleSearch(job) => self.subtitle_search_finished(*job),
@@ -663,6 +694,13 @@ impl App {
                 if self.ui.format_drawer == Some(rec.id) {
                     self.ui.format_drawer = None;
                 }
+                // Its download goes with it, found before its row is gone.
+                if let Some(folder) = self.services.downloads.release(rec.id) {
+                    self.jobs.spawn("download-delete", move || {
+                        crate::downloads::delete_folders(&[folder]);
+                        Job::Done
+                    });
+                }
                 if let Err(e) = self.services.library.remove_media(rec.id) {
                     log::warn!("removing deleted media {} from library: {e}", rec.location);
                 }
@@ -710,6 +748,8 @@ impl App {
                         });
                     }
                 }
+                // Its rows are read again with the downloads' generation.
+                SourcePage::Downloads(_) => {}
             }
         }
         // A feed opens from its saved listing, so a video deleted elsewhere

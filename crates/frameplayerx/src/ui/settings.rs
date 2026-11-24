@@ -370,6 +370,7 @@ fn general(ui: &mut egui::Ui, v: &mut View) {
             },
         );
     });
+    download_to(ui, s);
     heading(ui, tr!("settings-diagnostics"));
     widgets::rows(ui, |r| {
         r.switch(
@@ -381,6 +382,63 @@ fn general(ui: &mut egui::Ui, v: &mut View) {
             tr!("settings-perf-overlay"),
             Some(tr!("settings-perf-panel-desc")),
             &mut s.perf_overlay,
+        );
+    });
+}
+
+/// Where new downloads go: the headset or a card inserted, each with the
+/// room it has; a card chosen that is out stays offered until another is.
+fn download_to(ui: &mut egui::Ui, s: &mut crate::settings::Settings) {
+    let room = |card: Option<&fp_sources::CardRef>| {
+        crate::downloads::room_at(&crate::downloads::root_location(card)).map(super::fmt_size)
+    };
+    let cards: Vec<fp_sources::CardRef> = fp_core::volume::mounted()
+        .into_iter()
+        .filter_map(|v| {
+            Some(fp_sources::CardRef {
+                label: v.name(),
+                id: v.id?,
+            })
+        })
+        .collect();
+    heading(ui, tr!("downloads"));
+    widgets::rows(ui, |r| {
+        r.row_with(
+            tr!("settings-download-to"),
+            Some(tr!("settings-download-to-desc")),
+            |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    ui.spacing_mut().item_spacing = Vec2::new(8.0, 8.0);
+                    let headset = match room(None) {
+                        Some(size) => tr!("settings-download-headset", size = size),
+                        None => tr!("downloads-on-headset").to_string(),
+                    };
+                    if widgets::chip(ui, &headset, s.download_to.is_none()).clicked() {
+                        s.download_to = None;
+                    }
+                    for card in &cards {
+                        let label = match room(Some(card)) {
+                            Some(size) => tr!(
+                                "settings-download-card",
+                                card = card.label.as_str(),
+                                size = size
+                            ),
+                            None => card.label.clone(),
+                        };
+                        let on = s.download_to.as_ref().is_some_and(|c| c.id == card.id);
+                        if widgets::chip(ui, &label, on).clicked() {
+                            s.download_to = Some(card.clone());
+                        }
+                    }
+                    if let Some(chosen) = &s.download_to
+                        && !cards.iter().any(|c| c.id == chosen.id)
+                    {
+                        let label = tr!("settings-download-card-out", card = chosen.label.as_str());
+                        widgets::chip(ui, &label, true);
+                    }
+                });
+            },
+            |_| {},
         );
     });
 }

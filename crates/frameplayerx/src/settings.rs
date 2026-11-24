@@ -182,6 +182,9 @@ pub struct Settings {
     /// Room for server pictures kept on the headset, in MB
     /// ([`crate::image_cache`]).
     pub image_cache_mb: u32,
+    /// The card new downloads go to; `None` for the headset.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub download_to: Option<fp_sources::CardRef>,
     /// Make thumbnails for videos whose server offers no picture.
     pub make_thumbnails: bool,
     /// A partly watched video shows the frame where it was left off.
@@ -351,6 +354,7 @@ impl Default for Settings {
             ui_scale: 1.0,
             display: Default::default(),
             image_cache_mb: 500,
+            download_to: None,
             make_thumbnails: true,
             resume_frames: true,
             follow: false,

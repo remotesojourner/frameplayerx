@@ -68,6 +68,9 @@ pub struct Opener {
     sources: RwLock<HashMap<String, Arc<dyn Source>>>,
     http: fp_sources::http::HttpClient,
     subtitles: SubtitleStore,
+    /// Videos downloaded to the headset or a card: their locations, and
+    /// where the downloaded file is ([`crate::downloads`]).
+    local_copies: RwLock<HashMap<String, String>>,
 }
 
 impl Opener {
@@ -76,6 +79,7 @@ impl Opener {
             sources: RwLock::new(HashMap::new()),
             http: fp_sources::http::HttpClient::new(Default::default(), None),
             subtitles: SubtitleStore::default(),
+            local_copies: RwLock::new(HashMap::new()),
         }
     }
 
@@ -116,12 +120,33 @@ impl Opener {
         write(&self.sources).insert(source.id().to_string(), source);
     }
 
-    /// Opens `location`, preferring the source `source_id` when given.
+    /// From now on the video at `location` is read from its download at
+    /// `local` (a path or a `volume:` location), or from its source again.
+    pub fn set_local_copy(&self, location: &str, local: Option<String>) {
+        match local {
+            Some(local) => write(&self.local_copies).insert(location.to_string(), local),
+            None => write(&self.local_copies).remove(location),
+        };
+    }
+
+    /// Where the video at `location` was downloaded to.
+    pub fn local_copy(&self, location: &str) -> Option<String> {
+        read(&self.local_copies).get(location).cloned()
+    }
+
+    /// Opens `location`, preferring the source `source_id` when given; a
+    /// video downloaded is read from its download while that is there.
     pub fn open_in(
         &self,
         source_id: Option<&str>,
         location: &str,
     ) -> Result<Arc<dyn ByteSource>, String> {
+        if let Some(local) = self.local_copy(location) {
+            match self.open_in(None, &local) {
+                Ok(file) => return Ok(file),
+                Err(e) => log::debug!("download of {location} not read ({e}): from its source"),
+            }
+        }
         if location.starts_with(SUBTITLE_SCHEME) {
             return self
                 .subtitles
@@ -245,6 +270,26 @@ impl Opener {
                 .ask_delete_allowed(location)
                 .map_err(|e| crate::ui::errors::source(&e)),
             DeleteRoute::None => Ok(false),
+        }
+    }
+
+    /// Whether the video at `location` of `source_id` may be downloaded,
+    /// when known without asking its server.
+    pub fn download_allowed_in(&self, source_id: &str, location: &str) -> Option<bool> {
+        match self.source(source_id) {
+            Some(src) => src.download_allowed(location),
+            None => Some(false),
+        }
+    }
+
+    /// Whether the video at `location` of `source_id` may be downloaded,
+    /// asking its server when [`Self::download_allowed_in`] can't tell.
+    pub fn ask_download_allowed_in(&self, source_id: &str, location: &str) -> Result<bool, String> {
+        match self.source(source_id) {
+            Some(src) => src
+                .ask_download_allowed(location)
+                .map_err(|e| crate::ui::errors::source(&e)),
+            None => Ok(false),
         }
     }
 
@@ -377,6 +422,8 @@ pub const REMOVABLE_SOURCE: &str = "device-removable";
 /// The headset's folders and drives as one place to browse (not a
 /// [`Source`] of its own).
 pub const LOCAL_HUB: &str = "on-device";
+/// Every network source's downloads, as one place (not a [`Source`]).
+pub const DOWNLOADS_HUB: &str = "downloads";
 
 pub struct Services {
     device_identifier: String,
@@ -400,6 +447,8 @@ pub struct Services {
     pub remote_error: Option<String>,
     /// Sends watch sync reports to servers.
     pub watch: crate::watch::Reports,
+    /// Videos being downloaded to the headset or a card.
+    pub downloads: Arc<crate::downloads::Downloads>,
 }
 
 /// A configured haptic device and how connecting it went.
@@ -571,6 +620,11 @@ impl Services {
             log::warn!("source unavailable: {e}");
         }
         migrate_source_locations(&library, &opener, &source_configs);
+        let downloads = Arc::new(crate::downloads::Downloads::start(
+            library.clone(),
+            opener.clone(),
+            crate::downloads::root_location(None),
+        ));
         let mut s = Services {
             device_identifier,
             source_save_retry: None,
@@ -593,6 +647,7 @@ impl Services {
             remote: None,
             remote_error: None,
             watch: crate::watch::Reports::start(),
+            downloads,
         };
         s.set_haptics(settings);
         s.start_worker(settings);

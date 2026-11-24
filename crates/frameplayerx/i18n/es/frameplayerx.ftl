@@ -506,7 +506,7 @@ source-nfs-ids-desc = Números con los que el servidor comprueba los permisos. E
 source-self-signed = Aceptar certificados autofirmados
 source-self-signed-desc = Para servidores HTTPS de tu propia red.
 source-parallel-downloads = Descargas en paralelo
-source-parallel-downloads-desc = Descarga varias partes de un vídeo a la vez por conexiones separadas, como un gestor de descargas. Ayuda si el servidor limita la velocidad de cada conexión. Si no, puede que no gane nada, y un servidor con discos duros puede ir más lento.
+source-parallel-downloads-play-desc = Mientras se reproduce un vídeo, descarga varias partes a la vez por conexiones separadas, como un gestor de descargas. Ayuda si el servidor limita la velocidad de cada conexión. Si no, puede que no gane nada, y un servidor con discos duros puede ir más lento. Al descargar un vídeo al visor siempre se hace así.
 source-play-all-limit = Limitar los vídeos de subcarpetas
 source-play-all-limit-desc = Cuántos vídeos toma como máximo «Reproducir todo» al incluir subcarpetas. Desactivado, los toma todos y «Cancelar» lo detiene.
 source-play-all-limit-invalid = Escribe un número entero mayor que cero para el límite de vídeos.
@@ -1192,3 +1192,56 @@ subtitle-earlier = Adelantar
 subtitle-later = Retrasar
 subtitle-remove = Eliminar descarga
 subtitle-review = Comprueba la sincronización para esta versión
+
+download-no-space = No hay espacio suficiente
+download-ended-early = el servidor dejó de enviarlo antes del final
+download = Descargar
+download-tip = Guárdalo en el visor o en una tarjeta para verlo sin conexión
+download-starting = Iniciando…
+download-progress = Descargando { $percent } %
+download-under-way = Descargando…
+download-waiting = Esperando para descargar
+download-waits-streaming = Espera mientras se transmite un vídeo
+download-retrying = Esperando para reintentar: { $error }
+download-cancel = Cancelar descarga
+download-cancel-confirm = ¿Cancelarla?
+download-remove = Eliminar descarga
+download-remove-confirm = ¿Eliminarla?
+download-retry-video = Reintentar descarga
+download-retry = Reintentar
+download-failed = Detenida: { $error }
+download-of = { $done } de { $size }
+download-speed = { $speed }/s
+download-not-allowed = el servidor no permite descargarlo
+download-remove-failed = No se pudo eliminar la descarga: { $error }
+toast-download-started = Descargando { $title }
+toast-downloaded = { $title } descargado
+toast-download-failed = No se pudo descargar { $title }: { $error }
+downloads = Descargas
+downloads-desc = Vídeos de tus fuentes guardados en el visor o en una tarjeta, para verlos sin conexión
+downloads-none = Sin descargas
+downloads-count = { $count ->
+    [one] { $count } descarga
+   *[other] { $count } descargas
+}
+downloads-unfinished = { $count ->
+    [one] { $count } sin terminar
+   *[other] { $count } sin terminar
+}
+downloads-to-headset = Las nuevas descargas van al visor
+downloads-to-card = Las nuevas descargas van a { $card }
+downloads-free = { $size } libres
+downloads-card-missing = la tarjeta no está insertada
+downloads-on-headset = En el visor
+downloads-on-card = En { $card }
+downloads-card-out = En una tarjeta que no está insertada
+downloads-open = Abrir
+downloads-no-sources = Sin fuentes de red
+downloads-no-sources-desc = Añade una fuente en Fuentes para descargar sus vídeos.
+downloads-empty = Aún no hay nada descargado
+downloads-empty-desc = Descarga un vídeo desde su página o desde el ⋯ que tiene al lado en una carpeta.
+settings-download-to = Descargar en
+settings-download-to-desc = Dónde van las nuevas descargas. Las ya descargadas se quedan donde están.
+settings-download-headset = Visor · { $size } libres
+settings-download-card = { $card } · { $size } libres
+settings-download-card-out = { $card } · no insertada

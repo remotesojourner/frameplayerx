@@ -6,6 +6,7 @@ pub mod catalog;
 pub mod controller_map;
 pub mod crash;
 pub mod depth;
+pub mod downloads;
 pub mod errors;
 pub mod feeds;
 pub mod folders;
@@ -386,6 +387,20 @@ pub enum Action {
         source_id: Option<String>,
         location: String,
     },
+    /// Asks a video's server whether it may be downloaded.
+    CheckDownload {
+        source_id: String,
+        location: String,
+    },
+    /// Downloads a video to where Settings › General › Download to says.
+    Download {
+        req: OpenRequest,
+        title: String,
+    },
+    /// Stops a download, or deletes a finished one; the video stays.
+    RemoveDownload(MediaId),
+    /// Tries a failed download again.
+    RetryDownload(MediaId),
     /// Deletes a file for good (Delete file was pressed twice).
     DeleteFile(DeleteTarget),
     DiscoverDlna,
@@ -552,6 +567,8 @@ pub enum SourcePage {
     Catalog(catalog::CatalogView),
     /// A DeoVR feed's or HereSphere API's scenes.
     Feed(feeds::FeedView),
+    /// Each network source's downloads.
+    Downloads(downloads::DownloadsView),
 }
 
 /// What going back in a source browser did.
@@ -597,6 +614,7 @@ impl SourceView {
             }
             SourcePage::Catalog(j) => trail.extend(j.pages.iter().skip(1).map(catalog::page_name)),
             SourcePage::Feed(f) => trail.extend(f.details_title()),
+            SourcePage::Downloads(d) => trail.extend(d.source.as_ref().map(|(_, n)| n.clone())),
         }
         trail
     }
@@ -627,6 +645,10 @@ impl SourceView {
             SourcePage::Feed(f) => {
                 f.filters_open = false;
                 f.details = None;
+                Back::Done
+            }
+            SourcePage::Downloads(d) => {
+                d.source = None;
                 Back::Done
             }
         }
@@ -672,6 +694,10 @@ impl SourceView {
             }
             SourcePage::Feed(f) if f.details.is_some() => {
                 f.details = None;
+                Back::Done
+            }
+            SourcePage::Downloads(d) if d.source.is_some() => {
+                d.source = None;
                 Back::Done
             }
             _ => Back::Leave,
@@ -765,6 +791,9 @@ pub struct PinForm {
     pub confirm: String,
     /// The last PIN entered was wrong.
     pub wrong: bool,
+    /// Asked for from Downloads: unlocked, the source's downloads show
+    /// rather than the source.
+    pub downloads: bool,
 }
 
 /// Add-source form, also for editing one.
@@ -902,8 +931,9 @@ impl RemapSlot {
 pub struct Picking {
     pub reqs: Vec<OpenRequest>,
     pub title: String,
-    /// Opened from a folder row's ⋯, which offers Delete file too.
-    pub with_delete: bool,
+    /// Opened from a folder row's ⋯: the page is the video's, and offers
+    /// Download and Delete file too.
+    pub from_row: bool,
 }
 
 /// View-local UI state.
@@ -983,7 +1013,21 @@ pub struct UiState {
     /// The file being deleted.
     pub deleting: Option<String>,
     /// Whether files may be deleted, as their servers answered.
-    pub delete_checks: std::collections::HashMap<(Option<String>, String), DeleteCheck>,
+    pub delete_checks: std::collections::HashMap<(Option<String>, String), ServerCheck>,
+    /// Whether videos may be downloaded, by source and location, as their
+    /// servers answered.
+    pub download_checks: std::collections::HashMap<(String, String), ServerCheck>,
+    /// Videos whose Download was pressed, until their download is noted.
+    pub download_asked: std::collections::HashSet<String>,
+    /// The download whose Cancel or Remove was pressed once, and when.
+    pub download_armed: Option<(String, std::time::Instant)>,
+    /// How many downloads each source has, as read at a generation of the
+    /// downloads with these sources hidden.
+    pub download_counts: Option<(
+        u64,
+        fp_library::Hidden,
+        std::collections::HashMap<String, fp_library::DownloadCount>,
+    )>,
     pub open_error: Option<String>,
     pub opening: Option<String>,
     /// A jump over a damaged stretch of video has held the picture long
@@ -1066,6 +1110,10 @@ impl Default for UiState {
             delete_file_armed: None,
             deleting: None,
             delete_checks: Default::default(),
+            download_checks: Default::default(),
+            download_asked: Default::default(),
+            download_armed: None,
+            download_counts: None,
             open_error: None,
             opening: None,
             skipping_damaged: false,
@@ -1133,12 +1181,11 @@ impl UiState {
         self.playlists = None;
         self.playlist_items = None;
         self.up_next = None;
-        if let Some(SourceView {
-            page: SourcePage::Library(l),
-            ..
-        }) = self.source.as_mut()
-        {
-            l.grid.results = None;
+        self.download_counts = None;
+        match self.source.as_mut().map(|s| &mut s.page) {
+            Some(SourcePage::Library(l)) => l.grid.results = None,
+            Some(SourcePage::Downloads(d)) => d.reload(),
+            _ => {}
         }
     }
 
@@ -1210,19 +1257,19 @@ pub struct View<'a> {
     pub devices: &'a [fp_haptics::DeviceStatus],
 }
 
-/// What a server said about deleting a file.
+/// What a server said about deleting or downloading a file.
 #[derive(Clone, Copy, Debug)]
-pub enum DeleteCheck {
+pub enum ServerCheck {
     Asking,
     Answered(bool),
     /// It couldn't be asked, at this time: it is asked again after
-    /// [`DELETE_CHECK_RETRY`].
+    /// [`CHECK_RETRY`].
     Failed(std::time::Instant),
 }
 
-/// How long a delete check that couldn't reach its server waits before it
-/// asks again.
-const DELETE_CHECK_RETRY: std::time::Duration = std::time::Duration::from_secs(30);
+/// How long a check that couldn't reach its server waits before it asks
+/// again.
+const CHECK_RETRY: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// Returns whether `location` in `source_id` can be deleted right now, queueing
 /// a single background check when the source must ask its server first.
@@ -1232,11 +1279,11 @@ pub(super) fn can_delete_entry(v: &mut View<'_>, source_id: Option<&str>, locati
     }
     let key = (source_id.map(str::to_owned), location.to_string());
     match v.state.delete_checks.get(&key) {
-        Some(DeleteCheck::Answered(allowed)) => *allowed,
-        Some(DeleteCheck::Asking) => false,
-        Some(DeleteCheck::Failed(at)) if at.elapsed() < DELETE_CHECK_RETRY => false,
+        Some(ServerCheck::Answered(allowed)) => *allowed,
+        Some(ServerCheck::Asking) => false,
+        Some(ServerCheck::Failed(at)) if at.elapsed() < CHECK_RETRY => false,
         _ => {
-            v.state.delete_checks.insert(key, DeleteCheck::Asking);
+            v.state.delete_checks.insert(key, ServerCheck::Asking);
             v.actions.push(Action::CheckDelete {
                 source_id: source_id.map(str::to_owned),
                 location: location.to_string(),
@@ -1287,7 +1334,7 @@ const CONFIRM_WINDOW: std::time::Duration = std::time::Duration::from_secs(4);
 
 /// A button that asks again: pressed once, at `armed`, it shows `confirm`
 /// in red for [`CONFIRM_WINDOW`]. Whether it was pressed again in that time.
-fn confirm_button(
+pub(super) fn confirm_button(
     ui: &mut egui::Ui,
     armed: &mut Option<std::time::Instant>,
     idle: &str,

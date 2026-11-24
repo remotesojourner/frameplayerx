@@ -135,6 +135,13 @@ pub struct Playback {
     skipping_since: Option<Instant>,
     /// Tells the server the video came from how watching it goes.
     watch: Option<Watch>,
+    /// A download's: the session its server is being asked for.
+    pending_watch: Option<PendingWatch>,
+    reports: Reports,
+    /// It plays from its download.
+    pub downloaded: bool,
+    /// Read over a network, as a transcode always is.
+    pub streams: bool,
     /// What the server can transcode the video to, tallest first.
     pub targets: Vec<TranscodeTarget>,
     /// What the server is transcoding it to; `None` for the file as it is.
@@ -327,8 +334,23 @@ pub fn open(
         .filter(|record| req.source_id.as_deref() == Some(record.source_id.as_str()));
     let name = last_segment(&req.location);
     let source = req.source_id.as_deref().and_then(|id| opener.source(id));
+    // A video downloaded plays from its file at once: its server, which may
+    // be out of reach, is asked nothing first.
+    let download = downloaded(library, source.as_deref(), &req.location);
+    if let Some((location, _)) = &download {
+        log::info!("{location}: playing its download");
+    }
     // Feeds may need a details call to get the stream URL and metadata.
     let entry = match (&req.entry, &source) {
+        _ if download.is_some() => download.as_ref().map(|(location, _)| {
+            let title = req.title.clone().unwrap_or_else(|| name.clone());
+            let mut e = req
+                .entry
+                .clone()
+                .unwrap_or_else(|| Entry::new(title, location.clone(), EntryKind::Video));
+            e.location = location.clone();
+            e
+        }),
         (Some(e), Some(src)) if fp_sources::is_source_location(&e.location) => {
             Some(src.details(e).map_err(|e| crate::ui::errors::source(&e))?)
         }
@@ -387,8 +409,9 @@ pub fn open(
                 }
             }
             // What its own source says now, as titles are kept current; a
-            // video another source has (a library's) is left to it.
-            Some(r) if &r.source_id == sid => {
+            // video another source has (a library's) is left to it. A
+            // download's server wasn't asked.
+            Some(r) if &r.source_id == sid && download.is_none() => {
                 if let Ok(u) = fp_library::MediaUpsert::from_entry(sid, e)
                     && let Err(err) = library.update_details(
                         r.id,
@@ -416,11 +439,16 @@ pub fn open(
         e
     };
 
+    // Watched offline last time, the headset's resume point is the newer.
+    let played_offline = download.as_ref().is_some_and(|(_, d)| d.played_offline);
     let start_at = req
         .start_at
         .or_else(|| {
             resume_point(
-                entry.as_ref().and_then(|e| e.resume),
+                entry
+                    .as_ref()
+                    .and_then(|e| e.resume)
+                    .filter(|_| !played_offline),
                 record.as_ref().map(|r| r.resume_position),
                 settings,
             )
@@ -431,14 +459,23 @@ pub fn open(
     if !wait_closed(CLOSE_WAIT) {
         log::warn!("previous video still closing; opening anyway");
     }
-    let (script_locs, mut subs) = sidecars(
-        &location,
-        &name,
-        entry.as_ref(),
-        record.as_ref(),
-        source.clone(),
-        settings.haptics_enabled,
-    );
+    let (script_locs, mut subs) = match &download {
+        Some((_, d)) => (
+            d.script_locations()
+                .into_iter()
+                .filter(|_| settings.haptics_enabled)
+                .collect(),
+            d.subtitle_files(),
+        ),
+        None => sidecars(
+            &location,
+            &name,
+            entry.as_ref(),
+            record.as_ref(),
+            source.clone(),
+            settings.haptics_enabled,
+        ),
+    };
     let picked = record
         .as_ref()
         .map(|r| r.tracks.clone())
@@ -489,7 +526,7 @@ pub fn open(
     let starting_files: Vec<_> = eligible.iter().map(|&i| subs[i].clone()).collect();
     let source_tracks = source
         .as_ref()
-        .filter(|s| s.kind() == fp_sources::SourceKind::Plex)
+        .filter(|s| s.kind() == fp_sources::SourceKind::Plex && download.is_none())
         .map(|src| {
             let video = entry
                 .clone()
@@ -562,12 +599,15 @@ pub fn open(
         })
         .map(|p| (p, pick))
     };
-    let mut source_session = source.as_ref().and_then(|src| {
-        let video = entry
-            .clone()
-            .unwrap_or_else(|| Entry::new(name.clone(), location.clone(), EntryKind::Video));
-        src.watch_session(&video)
-    });
+    let mut source_session = source
+        .as_ref()
+        .filter(|_| download.is_none())
+        .and_then(|src| {
+            let video = entry
+                .clone()
+                .unwrap_or_else(|| Entry::new(name.clone(), location.clone(), EntryKind::Video));
+            src.watch_session(&video)
+        });
     if source
         .as_ref()
         .is_some_and(|s| s.kind() == fp_sources::SourceKind::Plex)
@@ -580,6 +620,7 @@ pub fn open(
     }
     let targets = source
         .as_ref()
+        .filter(|_| download.is_none())
         .map(|src| {
             let video = entry
                 .clone()
@@ -617,6 +658,8 @@ pub fn open(
         .and_then(|id| targets.iter().find(|t| &t.id == id))
         .cloned();
     let mut notice = None;
+    // Read over a network: downloads wait while it plays.
+    let mut streams = true;
     let (player, pick, transcoding) = match asked {
         Some(t) => {
             let (p, pick) = transcoded(&t).map_err(failed)?;
@@ -637,11 +680,14 @@ pub fn open(
                     }
                     Err(e) => Err(crate::ui::errors::source(&e)),
                 },
-                _ => opener
-                    .open_in(req.source_id.as_deref(), &location)
-                    .map(Some),
+                _ => match &download {
+                    Some((_, d)) => opener.open_in(None, &d.video_location()),
+                    None => opener.open_in(req.source_id.as_deref(), &location),
+                }
+                .map(Some),
             }
             .map_err(failed)?;
+            streams = src.as_ref().is_none_or(|s| s.remote());
             match src.map(|src| open_player(src, player_config(settings, start_at, user_format))) {
                 Some(Ok((p, pick))) => (p, pick, None),
                 Some(Err(e))
@@ -747,15 +793,21 @@ pub fn open(
         .as_ref()
         .zip(entry.as_ref())
         .and_then(|(source, video)| crate::trickplay::Preview::new(source.clone(), video));
-    let watch = source.and_then(|src| {
-        let video = entry
-            .clone()
-            .unwrap_or_else(|| Entry::new(title.clone(), location.clone(), EntryKind::Video));
-        match source_session {
-            Some(session) => Some(Watch::start_session(reports, src, session, start_at)),
-            None => Watch::start(reports, src, &video, start_at),
-        }
-    });
+    let video = entry
+        .clone()
+        .unwrap_or_else(|| Entry::new(title.clone(), location.clone(), EntryKind::Video));
+    // A download's server hears once it answers, if it does.
+    let (watch, pending_watch) = match (source, &download) {
+        (Some(src), Some(_)) => (None, Some(PendingWatch::ask(src, video))),
+        (Some(src), None) => (
+            match source_session {
+                Some(session) => Some(Watch::start_session(reports, src, session, start_at)),
+                None => Watch::start(reports, src, &video, start_at),
+            },
+            None,
+        ),
+        (None, _) => (None, None),
+    };
     let backdrop = BackdropSearch::new(req.source_id.clone(), location.clone());
     Ok(Opened {
         playback: Playback {
@@ -799,12 +851,59 @@ pub fn open(
             damaged_skipped: 0.0,
             skipping_since: None,
             watch,
+            pending_watch,
+            reports: reports.clone(),
+            downloaded: download.is_some(),
+            streams,
             targets,
             transcoding,
             source_tracks,
         },
         scripts,
     })
+}
+
+/// The finished download of the video at `location`, under the location
+/// its library row has, while its file is there to read.
+fn downloaded(
+    library: &Library,
+    source: Option<&dyn Source>,
+    location: &str,
+) -> Option<(String, fp_library::Download)> {
+    let canonical = source.and_then(|s| s.canonical_location(location));
+    [Some(location.to_string()), canonical]
+        .into_iter()
+        .flatten()
+        .find_map(|l| {
+            let d = library.finished_download(&l).ok().flatten()?;
+            let path = crate::downloads::path_of(&d.video_location())?;
+            path.is_file().then_some((l, d))
+        })
+}
+
+/// Asks a download's server, off the frame loop, for the watch session it
+/// keeps for the video; it may never answer.
+pub(crate) struct PendingWatch {
+    source: Arc<dyn Source>,
+    answer: mpsc::Receiver<fp_sources::WatchSession>,
+}
+
+impl PendingWatch {
+    fn ask(source: Arc<dyn Source>, video: Entry) -> PendingWatch {
+        let (tx, rx) = mpsc::channel();
+        let asked = source.clone();
+        let spawned = std::thread::Builder::new()
+            .name("fp-watch-ask".into())
+            .spawn(move || {
+                if let Some(session) = asked.watch_session(&video) {
+                    let _ = tx.send(session);
+                }
+            });
+        if let Err(e) = spawned {
+            log::warn!("no watch sync for the download: {e}");
+        }
+        PendingWatch { source, answer: rx }
+    }
 }
 
 /// Asks `source` to transcode `location` to `t` from a time (seconds).
@@ -1391,6 +1490,22 @@ impl Playback {
 
     /// Every frame: tells the video's server how watching goes.
     pub fn sync_watch(&mut self) {
+        if let Some(pending) = &self.pending_watch {
+            match pending.answer.try_recv() {
+                Ok(session) => {
+                    let source = pending.source.clone();
+                    self.pending_watch = None;
+                    self.watch = Some(Watch::start_session(
+                        &self.reports,
+                        source,
+                        session,
+                        self.player.position(),
+                    ));
+                }
+                Err(mpsc::TryRecvError::Empty) => {}
+                Err(mpsc::TryRecvError::Disconnected) => self.pending_watch = None,
+            }
+        }
         if let Some(w) = &mut self.watch {
             let p = &self.player;
             let state = p.state();
@@ -1619,9 +1734,18 @@ impl Playback {
         self.trickplay = None;
         self.save_progress(library, true);
         self.save_key(library, true);
+        let heard = self.watch.as_ref().is_some_and(Watch::heard);
         if let Some(w) = self.watch.take() {
             // Near the end, the server counts it as watched.
             w.stop(self.player.position());
+        }
+        // A download watched while its server heard nothing: its resume
+        // point is the headset's next time.
+        if self.downloaded
+            && let Some(id) = self.record_id
+            && let Err(e) = library.set_played_offline(id, !heard)
+        {
+            log::warn!("noting where the download was watched: {e}");
         }
         let player = self.player;
         let closing = std::thread::Builder::new()
@@ -2374,6 +2498,166 @@ mod tests {
             lock(&self.transcode_subtitles).push(session.subtitle_stream.clone());
             self.open_transcode(location, id, start)
         }
+    }
+
+    /// A Jellyfin-like server out of reach: everything but a watch session
+    /// fails, and that answers only when `answers`.
+    #[derive(Default)]
+    struct OutOfReach {
+        asked: Mutex<Vec<&'static str>>,
+        answers: bool,
+        reports_taken: bool,
+    }
+
+    impl Source for OutOfReach {
+        fn id(&self) -> &str {
+            "far"
+        }
+        fn name(&self) -> &str {
+            "Far"
+        }
+        fn kind(&self) -> fp_sources::SourceKind {
+            fp_sources::SourceKind::MediaBrowser
+        }
+        fn describe(&self) -> String {
+            String::new()
+        }
+        fn list(&self, _: Option<&str>) -> fp_sources::Result<Vec<Entry>> {
+            Err(fp_sources::Error::Io(std::io::Error::other("unreachable")))
+        }
+        fn open(&self, _: &str) -> fp_sources::Result<Arc<dyn fp_core::ByteSource>> {
+            lock(&self.asked).push("open");
+            Err(fp_sources::Error::Io(std::io::Error::other("unreachable")))
+        }
+        fn details(&self, _: &Entry) -> fp_sources::Result<Entry> {
+            lock(&self.asked).push("details");
+            Err(fp_sources::Error::Io(std::io::Error::other("unreachable")))
+        }
+        fn sidecars(&self, _: &Entry) -> fp_sources::Result<fp_sources::Sidecars> {
+            lock(&self.asked).push("sidecars");
+            Err(fp_sources::Error::Io(std::io::Error::other("unreachable")))
+        }
+        fn transcode_targets(&self, _: &Entry) -> Vec<TranscodeTarget> {
+            lock(&self.asked).push("targets");
+            Vec::new()
+        }
+        fn watch_session(&self, _: &Entry) -> Option<fp_sources::WatchSession> {
+            self.answers.then(|| fp_sources::WatchSession {
+                item: "1".into(),
+                title: "Film".into(),
+                endpoint: None,
+                id: "far-session".into(),
+                duration_ms: None,
+                media_id: None,
+                audio_stream: None,
+                subtitle_stream: None,
+            })
+        }
+        fn report_watch(
+            &self,
+            _: &fp_sources::WatchSession,
+            _: fp_sources::WatchEvent,
+        ) -> fp_sources::Result<()> {
+            if self.reports_taken {
+                Ok(())
+            } else {
+                Err(fp_sources::Error::Io(std::io::Error::other("unreachable")))
+            }
+        }
+    }
+
+    /// Plays the downloaded film of `server` from the library, then
+    /// closes it; whether its download is noted as watched offline.
+    fn play_download(server: Arc<OutOfReach>) -> bool {
+        let dir = std::env::temp_dir().join(format!(
+            "fp-playback-download-{}-{}",
+            std::process::id(),
+            server.answers as u8 + 2 * server.reports_taken as u8
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let clip = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../fp-media/tests/data/h264_aac_180_LR.mp4");
+        std::fs::copy(&clip, dir.join("Film.mp4")).unwrap();
+        std::fs::write(
+            dir.join("Film.en.srt"),
+            "1\n00:00:00,000 --> 00:00:01,000\nHi\n",
+        )
+        .unwrap();
+        let library = Library::open_in_memory().unwrap();
+        let location = "mb:http://far#item=1";
+        let id = library
+            .upsert(&fp_library::MediaUpsert::new(location, "far"))
+            .unwrap()
+            .id;
+        let folder = dir.to_string_lossy().into_owned();
+        library.add_download(id, &folder, "Film.mp4", None).unwrap();
+        let subtitle = SubtitleFile {
+            name: "Film.en.srt".into(),
+            location: "Film.en.srt".into(),
+            language: Some("en".into()),
+            language_name: None,
+            flags: Default::default(),
+        };
+        library
+            .set_download_side_files(id, &[subtitle], &[])
+            .unwrap();
+        library.finish_download(id, 1).unwrap();
+        let opener = Opener::new();
+        opener.insert_source(server.clone());
+        let settings = Settings {
+            hardware_decoding: false,
+            haptics_enabled: false,
+            ..Settings::default()
+        };
+        let reports = Reports::start();
+        let req = OpenRequest {
+            location: location.into(),
+            source_id: Some("far".into()),
+            title: Some("Film".into()),
+            paused: true,
+            ..Default::default()
+        };
+        let began = Instant::now();
+        let mut pb = open(req, &opener, &library, &settings, &reports)
+            .unwrap()
+            .playback;
+        assert!(began.elapsed() < Duration::from_secs(10));
+        assert!(pb.downloaded && !pb.streams);
+        assert_eq!(pb.record_id, Some(id));
+        assert_eq!(pb.subtitle_files.len(), 1, "its subtitles came with it");
+        assert!(pb.subtitle_files[0].location.ends_with("/Film.en.srt"));
+        assert!(
+            lock(&server.asked).is_empty(),
+            "its server was asked {:?}",
+            lock(&server.asked)
+        );
+        // Its server hears of it once it answers.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while server.answers && pb.watch.is_none() && Instant::now() < deadline {
+            pb.sync_watch();
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(pb.watch.is_some(), server.answers);
+        reports.flush(Duration::from_secs(5));
+        pb.close(&library);
+        assert!(wait_closed(Duration::from_secs(5)));
+        let offline = library.download(id).unwrap().unwrap().played_offline;
+        let _ = std::fs::remove_dir_all(&dir);
+        offline
+    }
+
+    #[test]
+    fn a_download_plays_without_asking_its_server_and_notes_when_it_heard_nothing() {
+        assert!(play_download(Arc::new(OutOfReach::default())));
+        assert!(play_download(Arc::new(OutOfReach {
+            answers: true,
+            ..Default::default()
+        })));
+        assert!(!play_download(Arc::new(OutOfReach {
+            answers: true,
+            reports_taken: true,
+            ..Default::default()
+        })));
     }
 
     fn open_from(

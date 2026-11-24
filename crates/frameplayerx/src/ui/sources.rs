@@ -125,8 +125,8 @@ struct Row {
     lock: Lock,
 }
 
-/// The headset first, then the sources the user added.
-fn rows(v: &View) -> Vec<Row> {
+/// The headset first, then its downloads, then the sources the user added.
+fn rows(v: &mut View) -> Vec<Row> {
     let local = Row {
         id: crate::services::LOCAL_HUB.into(),
         name: local_name().into(),
@@ -136,7 +136,28 @@ fn rows(v: &View) -> Vec<Row> {
         builtin: true,
         lock: Lock::None,
     };
-    std::iter::once(local)
+    // Counted from the sources not locked only, so it gives none away.
+    let total = super::downloads::total(&super::downloads::counts(v));
+    let downloads = Row {
+        id: crate::services::DOWNLOADS_HUB.into(),
+        name: tr!("downloads").into(),
+        desc: if total.videos == 0 {
+            tr!("downloads-desc").into()
+        } else {
+            super::downloads::summary(&total)
+        },
+        facts: if total.videos == 0 {
+            tr!("downloads-none").into()
+        } else {
+            tr!("downloads-count", count = total.videos)
+        },
+        icon: icons::DOWNLOAD_SIMPLE,
+        builtin: true,
+        lock: Lock::None,
+    };
+    let v = &*v;
+    [local, downloads]
+        .into_iter()
         .chain(v.services.source_configs.iter().map(|c| {
             let lock = lock_of(v, c.id());
             let kind = match c {
@@ -314,6 +335,7 @@ fn browse(ui: &mut egui::Ui, v: &mut View) {
         SourcePage::Library(l) => super::local::library_page(ui, v, &sv.source, &trail, l),
         SourcePage::Catalog(j) => super::catalog::page(ui, v, &sv.source, &trail, j),
         SourcePage::Feed(f) => super::feeds::page(ui, v, &sv.source, &trail, f),
+        SourcePage::Downloads(d) => super::downloads::page(ui, v, &trail, d),
     };
     let step = match go {
         None => Back::Done,
@@ -1042,7 +1064,7 @@ fn server_form(
                 );
                 r.switch(
                     tr!("source-parallel-downloads"),
-                    Some(tr!("source-parallel-downloads-desc")),
+                    Some(tr!("source-parallel-downloads-play-desc")),
                     &mut f.parallel_downloads,
                 );
             }

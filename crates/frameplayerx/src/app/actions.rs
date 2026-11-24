@@ -216,6 +216,13 @@ impl App {
             Action::AddSource(cfg, play_all_limit) => self.add_source(cfg, play_all_limit),
             Action::UpdateSource(cfg, play_all_limit) => self.update_source(cfg, play_all_limit),
             Action::RemoveSource(id) => self.remove_source(&id),
+            Action::CheckDownload {
+                source_id,
+                location,
+            } => self.check_download(source_id, location),
+            Action::Download { req, title } => self.start_download(req, title),
+            Action::RemoveDownload(id) => self.remove_download(id),
+            Action::RetryDownload(id) => self.retry_download(id),
             Action::UnlockSource { source, pin } => self.unlock_source(source, &pin),
             Action::LockSource(id) => self.lock_source(&id),
             Action::SetSourcePin { source, pin } => self.set_source_pin(&source, pin),

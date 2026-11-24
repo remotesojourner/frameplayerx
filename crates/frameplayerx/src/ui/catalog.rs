@@ -840,7 +840,7 @@ pub fn page(
                 next_up.as_deref(),
                 caps,
             ),
-            Body::Item { item } => details(ui, v, item, caps),
+            Body::Item { item } => details(ui, v, source, item, caps),
         };
     });
     if let Some(go) = go {
@@ -893,7 +893,7 @@ fn follow(v: &mut View, source: &str, j: &mut CatalogView, go: Go) {
             v.state.picking = Some(super::Picking {
                 reqs: vec![request(source, &item, false)],
                 title: item.name.clone(),
-                with_delete: false,
+                from_row: false,
             });
         }
         Go::Delete(item) => v.actions.push(Action::DeleteFile(super::DeleteTarget {
@@ -1798,6 +1798,7 @@ fn episode_row(ui: &mut egui::Ui, v: &mut View, e: &CatalogItem) -> (bool, bool)
 fn details(
     ui: &mut egui::Ui,
     v: &mut View,
+    source: &str,
     item: &mut CatalogItem,
     caps: CatalogCapabilities,
 ) -> Option<Go> {
@@ -1868,6 +1869,12 @@ fn details(
                 if button(ui, icons::PLAYLIST, tr!("jf-add-to-playlist")) {
                     go = Some(Go::AddToPlaylist(item.clone()));
                 }
+                let parts = super::downloads::Parts {
+                    state: v.state,
+                    services: v.services,
+                    actions: v.actions,
+                };
+                super::downloads::button(ui, parts, &request(source, item, false), &item.name);
                 if item.can_delete && super::delete_button(ui, v.state, &item.location) {
                     go = Some(Go::Delete(item.clone()));
                 }

@@ -14,6 +14,7 @@ mod bindings;
 mod clock;
 mod controls;
 mod crash;
+mod downloads;
 mod drives;
 mod folder_playback;
 mod hands_free;

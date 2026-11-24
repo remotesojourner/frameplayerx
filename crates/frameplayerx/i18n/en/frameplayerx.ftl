@@ -679,7 +679,8 @@ source-self-signed = Accept self-signed certificates
 source-self-signed-desc = For HTTPS servers on your own network.
 # A switch on a server's form, with the description below it.
 source-parallel-downloads = Parallel downloads
-source-parallel-downloads-desc = Downloads several parts of a video at once over separate connections, like a download manager. This helps if the server limits the speed of each connection. If it doesn't, it may gain nothing, and a server on hard drives can get slower.
+# Under Parallel downloads in a server's form: the switch is for playback.
+source-parallel-downloads-play-desc = While a video plays, downloads several parts of it at once over separate connections, like a download manager. This helps if the server limits the speed of each connection. If it doesn't, it may gain nothing, and a server on hard drives can get slower. Downloading a video to the headset always does this.
 # A switch on a folder source's form, with the number beside it and the description below.
 source-play-all-limit = Limit videos from subfolders
 source-play-all-limit-desc = The most videos Play all takes when it includes subfolders. Off, it takes them all, and Cancel stops it.
@@ -1609,3 +1610,97 @@ subtitle-earlier = Earlier
 subtitle-later = Later
 subtitle-remove = Remove download
 subtitle-review = Check timing for this version
+
+## Downloads
+
+# Why a download stopped: the headset or card it goes to is too full.
+download-no-space = There isn't enough room for it
+# Why a download stopped, starting in lower case: the connection ended part way.
+download-ended-early = the server stopped sending it before the end
+# Short: a button on a video's page that downloads it to the headset or a card.
+download = Download
+# A tooltip on Download.
+download-tip = Keep it on the headset or a card, to watch with no connection
+# Short: a button, greyed out while the server is asked whether it may be downloaded.
+download-starting = Starting…
+# Short: a button and a line under a download: $percent is how much has come, 0 to 100.
+download-progress = Downloading { $percent } %
+# Short: a button, for a download whose size the server didn't say.
+download-under-way = Downloading…
+# Short: a button and a line under a download that waits its turn.
+download-waiting = Waiting to download
+# A line under a download: downloads wait while a video plays from a network source.
+download-waits-streaming = Waits while a video streams
+# A line under a download that lost its connection: $error says why.
+download-retrying = Waiting to try again: { $error }
+# Short: a button that stops a download and deletes what has come.
+download-cancel = Cancel download
+# Short: Cancel download asks again before it stops the download.
+download-cancel-confirm = Cancel it?
+# Short: a button that deletes the downloaded video; it stays on its server.
+download-remove = Remove download
+# Short: Remove download asks again before it deletes the download.
+download-remove-confirm = Remove it?
+# Short: a button on a video whose download stopped.
+download-retry-video = Retry download
+# Short: a button beside a download that stopped.
+download-retry = Retry
+# A line under a download that stopped: $error says why.
+download-failed = Stopped: { $error }
+# How much of a download has come: $done and $size are sizes, like 1.8 GB.
+download-of = { $done } of { $size }
+# How fast a download comes: $speed is a size, like 18 MB.
+download-speed = { $speed }/s
+# Why a download couldn't start, starting in lower case: the server's user may not download.
+download-not-allowed = the server doesn't allow downloading it
+# $error says why, starting in lower case.
+download-remove-failed = Couldn't remove the download: { $error }
+# $title is the video's name.
+toast-download-started = Downloading { $title }
+# $title is the video's name.
+toast-downloaded = Downloaded { $title }
+# $title is the video's name; $error says why, starting in lower case.
+toast-download-failed = Couldn't download { $title }: { $error }
+# A place in Sources and a tile on Home, for the videos downloaded.
+downloads = Downloads
+# Under Downloads in Sources, until something is downloaded.
+downloads-desc = Videos from your sources kept on the headset or a card, to watch with no connection
+downloads-none = No downloads
+downloads-count = { $count ->
+    [one] { $count } download
+   *[other] { $count } downloads
+}
+# Downloads that haven't finished, after the count of downloads.
+downloads-unfinished = { $count ->
+    [one] { $count } not finished
+   *[other] { $count } not finished
+}
+# Under the Downloads title: where new downloads go (Settings › General › Download to).
+downloads-to-headset = New downloads go to the headset
+# Under the Downloads title: $card is the microSD card's or USB drive's name.
+downloads-to-card = New downloads go to { $card }
+# After where new downloads go: $size is how much room is left there.
+downloads-free = { $size } free
+# After where new downloads go, starting in lower case: the card chosen is out.
+downloads-card-missing = the card isn't inserted
+# Under a download: where it is kept.
+downloads-on-headset = On the headset
+# Under a download: $card is the microSD card's or USB drive's name.
+downloads-on-card = On { $card }
+# Under a download kept on a card that is out.
+downloads-card-out = On a card that isn't inserted
+# Short: a button that opens a source's downloads.
+downloads-open = Open
+downloads-no-sources = No network sources
+downloads-no-sources-desc = Add a source under Sources to download its videos.
+downloads-empty = Nothing downloaded yet
+downloads-empty-desc = Download a video from its page, or from the ⋯ beside it in a folder.
+# Settings › General: where new downloads go.
+settings-download-to = Download to
+settings-download-to-desc = Where new downloads go. Those already downloaded stay where they are.
+# Short: a chip under Download to. $size is how much room is left.
+settings-download-headset = Headset · { $size } free
+# Short: a chip under Download to: $card is the card's name, $size how much room is left.
+settings-download-card = { $card } · { $size } free
+# Short: a chip under Download to: the card chosen before, now out.
+settings-download-card-out = { $card } · not inserted

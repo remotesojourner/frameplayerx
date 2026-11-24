@@ -339,7 +339,7 @@ pub(crate) fn request(r: &MediaRecord) -> OpenRequest {
     }
 }
 
-fn open_record(r: &MediaRecord) -> Action {
+pub(crate) fn open_record(r: &MediaRecord) -> Action {
     Action::Open(request(r))
 }
 
@@ -794,10 +794,16 @@ fn details(ui: &mut egui::Ui, v: &mut View, id: fp_library::MediaId) {
             });
             let src = (!r.source_id.is_empty()).then_some(r.source_id.as_str());
             let can_delete = super::can_delete_entry(v, src, &r.location);
-            if r.last_played.is_some() || can_delete {
+            {
                 ui.add_space(12.0);
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 12.0;
+                    let parts = super::downloads::Parts {
+                        state: v.state,
+                        services: v.services,
+                        actions: v.actions,
+                    };
+                    super::downloads::button(ui, parts, &request(&r), &r.title);
                     if r.last_played.is_some()
                         && widgets::button(
                             ui,
