@@ -390,6 +390,12 @@ player-loop-video = Loop this video
 player-autoplay = Autoplay the next video
 # A tooltip.
 player-speed = Speed
+# The time of day ($now) and when the video playing ends at its speed ($end), above the control bar: 22:05  ·  Ends at 23:23.
+player-clock-end = { $now }  ·  Ends at { $end }
+# A tooltip on the video's length after the seek bar, which pressing swaps for how much is left: $time is that, as 1:18:45.
+player-remaining-tip = Remaining { $time }
+# A tooltip on how much of the video is left after the seek bar, which pressing swaps for its length: $time is that, as 1:42:10.
+player-duration-tip = Duration { $time }
 # A tooltip.
 player-unmute = Unmute
 # A tooltip.
