@@ -139,6 +139,9 @@ pub struct CinemaParams {
     pub pose: Mat4,
     /// House lights, from fully dimmed (0) to fully lit (1).
     pub lights: f32,
+    /// How much of the room's dimmed light stays on with the house lights
+    /// down: all of it (1) to none (0), the step lights and exit signs too.
+    pub lights_down: f32,
     /// How much the screen curves round the seats, 1 over its radius in
     /// metres, from [`CinemaRoom::curvature`].
     pub curvature: f32,
