@@ -193,6 +193,26 @@ impl Grabber {
         scale(&frame, max_w, max_h, crop, shape)
     }
 
+    /// The keyframe at or before `at` seconds, scaled as [`Grabber::grab`]
+    /// scales it, and when it shows: the picture of a moment pointed at on
+    /// a seek bar, never one after it.
+    pub fn keyframe_before(
+        &mut self,
+        at: f64,
+        max_w: u32,
+        max_h: u32,
+        crop: Crop,
+    ) -> Result<(Rgba, Option<f64>)> {
+        self.video()?;
+        if at > 0.0 || self.used {
+            self.input.seek(at.max(0.0))?;
+        }
+        self.used = true;
+        let (frame, shows) = self.keyframe()?;
+        let shape = self.video()?.1;
+        Ok((scale(&frame, max_w, max_h, crop, shape)?, shows))
+    }
+
     /// The first picture decoded from where the input is, and when it
     /// shows.
     fn keyframe(&mut self) -> Result<(Frame, Option<f64>)> {
@@ -426,6 +446,19 @@ mod tests {
         assert_eq!(at(1.9), second);
         assert_eq!(at(0.5), first, "back again");
         assert_eq!(g.info().video_stream().unwrap().width, 640);
+    }
+
+    #[test]
+    fn a_preview_is_always_the_keyframe_before_its_moment() {
+        let mut g = Grabber::open(src("h264_aac_180_LR.mp4"), "x.mp4", no_interrupt()).unwrap();
+        let mut at = |t| g.keyframe_before(t, 160, 160, Crop::Full).unwrap();
+        let (first, second) = (grab_alone(0.0), grab_alone(1.0));
+        assert_eq!(at(0.2).0, first);
+        assert_eq!(at(0.6).0, first, "not the next one along");
+        let (picture, shows) = at(1.5);
+        assert_eq!(picture, second);
+        assert!(shows.is_some_and(|s| (0.9..1.1).contains(&s)), "{shows:?}");
+        assert_eq!(at(0.0).0, first, "back to the start");
     }
 
     #[test]

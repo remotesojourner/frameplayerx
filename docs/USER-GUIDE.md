@@ -1261,10 +1261,14 @@ picture. Play/pause and seeking are under either thumb.
 | Trigger | Click; on empty space, show or hide the controls | The same |
 
 On the control bar, point at the speaker for the volume slider above it;
-press the speaker to mute. Pointing along the seek bar shows the time there,
-and a picture of that moment where the server has made them: Jellyfin's
-trickplay images, Emby's and Plex's video preview thumbnails, or a DeoVR
-feed's timeline preview. **Settings › Playback › Seek bar previews** turns
+press the speaker to mute. Pointing along the seek bar shows the time there
+and a picture of that moment: the server's own where it has made them
+(Jellyfin's trickplay images, Emby's and Plex's video preview thumbnails, or
+a DeoVR feed's timeline preview), else one FramePlayerX takes from the video
+itself, the keyframe just before that moment. Over a network it reads the
+video for them only while playback is well ahead, so they never make it
+stutter, and on a slow connection a picture can take a moment; a video the
+server transcodes has none. **Settings › Playback › Seek bar previews** turns
 the pictures off. Press the video's length after the seek bar to show how
 much is left instead, and again for the length; FramePlayerX keeps your
 choice. Above the bar's left end are the time of day and, unless the video

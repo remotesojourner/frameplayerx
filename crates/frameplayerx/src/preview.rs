@@ -760,6 +760,22 @@ impl Sim {
             Some("grip") => self.hand.squeeze = num(1)?,
             Some("trigger") => self.hand.trigger = num(1)?,
             Some("status") => println!("status: {}", self.app.status_line()),
+            // The open video's decoding counters, without its name.
+            Some("stats") => {
+                if let Some(p) = &self.app.playback {
+                    let st = p.player.stats();
+                    println!(
+                        "stats: {} hardware={} shown={} dropped={} stalls={} ahead={:.1}/{:.1}",
+                        st.video_decoder,
+                        st.hardware,
+                        st.frames_shown,
+                        st.frames_dropped,
+                        st.stalls,
+                        st.read_ahead.0,
+                        st.read_ahead.1
+                    );
+                }
+            }
             // The GPU's time per frame since the last `gpu`: `gpu`.
             Some("gpu") => {
                 if let Some(line) = self.gpu_ms.take_line() {

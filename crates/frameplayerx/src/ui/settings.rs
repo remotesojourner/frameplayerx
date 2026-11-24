@@ -577,7 +577,7 @@ fn playback(ui: &mut egui::Ui, v: &mut View) {
         );
         r.switch(
             tr!("settings-seek-previews"),
-            Some(tr!("settings-seek-previews-desc")),
+            Some(tr!("settings-seek-previews-live-desc")),
             &mut s.seek_previews,
         );
     });
