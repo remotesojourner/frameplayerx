@@ -581,6 +581,65 @@ impl Sim {
                 self.app.repaint_all();
                 self.run_frames(3)?;
             }
+            // Send diagnostics, with WORDS written in it once gathered;
+            // `diagnostics shown WORDS` opens the report too, and saves it
+            // as diagnostics.txt.
+            Some("diagnostics") => {
+                self.app.apply(crate::ui::Action::OpenDiagnostics);
+                let shown = parts.get(1) == Some(&"shown");
+                let words = parts[if shown { 2 } else { 1 }.min(parts.len())..].join(" ");
+                for _ in 0..600 {
+                    if self
+                        .app
+                        .ui
+                        .diagnostics
+                        .as_ref()
+                        .is_none_or(|f| f.gathered.is_some())
+                    {
+                        break;
+                    }
+                    self.run_frames(1)?;
+                }
+                if let Some(f) = &mut self.app.ui.diagnostics {
+                    f.words = words;
+                    if shown {
+                        f.shown = Some((String::new(), String::new()));
+                    }
+                }
+                self.app.repaint_all();
+                self.run_frames(3)?;
+                if let Some((_, text)) = self
+                    .app
+                    .ui
+                    .diagnostics
+                    .as_ref()
+                    .and_then(|f| f.shown.as_ref())
+                {
+                    std::fs::write(self.out.join("diagnostics.txt"), text)?;
+                }
+            }
+            // The diagnostics page as after sending, with reference N.
+            Some("diagnostics-sent") => {
+                if let Some(f) = &mut self.app.ui.diagnostics {
+                    f.sent = true;
+                    f.reference = parts.get(1).and_then(|n| n.parse().ok());
+                }
+                self.app.repaint_all();
+                self.run_frames(3)?;
+            }
+            // What's New with every change this build holds, as after an
+            // upgrade from FROM (`whats-new 0.20.0`), else from a version
+            // not known.
+            Some("whats-new") => {
+                let current = fp_updater::Version::parse(env!("CARGO_PKG_VERSION"))
+                    .map_err(|e| e.to_string())?;
+                self.app.ui.whats_new = crate::whats_new::everything(&current).map(|mut w| {
+                    w.from = parts.get(1).map(ToString::to_string);
+                    w
+                });
+                self.app.repaint_all();
+                self.run_frames(3)?;
+            }
             // The page offered after a crash, its report made from this
             // run's log as if it had ended in a crash; `crash-report shown`
             // opens the report.

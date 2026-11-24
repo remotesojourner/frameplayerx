@@ -144,6 +144,9 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
+        with:
+          # tools/whats-new.sh reads which release first held each change.
+          fetch-depth: 0
       - name: Stamp version
         run: |
           sed -i 's/^version = .*/version = "${{ needs.version.outputs.version }}"/' crates/frameplayerx/Cargo.toml

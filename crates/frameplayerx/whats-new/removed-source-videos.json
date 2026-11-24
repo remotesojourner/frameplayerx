@@ -1,0 +1,9 @@
+{
+  "kind": "fix",
+  "en": "Removing a source now removes its videos everywhere, including your watch history and playlists, so a PIN-locked source no longer leaves its videos for anyone to see.",
+  "de": "Wenn Sie eine Quelle entfernen, verschwinden ihre Videos jetzt überall, auch aus dem Verlauf und aus Playlists. So hinterlässt eine mit PIN gesperrte Quelle ihre Videos nicht mehr für jeden sichtbar.",
+  "es": "Quitar una fuente ahora quita sus vídeos de todas partes, también del historial y de las playlists, así que una fuente bloqueada con PIN ya no deja sus vídeos a la vista de cualquiera.",
+  "fr": "Retirer une source retire désormais ses vidéos partout, y compris de l’historique et des playlists : une source verrouillée par un code PIN ne laisse plus ses vidéos à la vue de tous.",
+  "ja": "ソースを削除すると、視聴履歴やプレイリストも含めて、そのソースの映像がすべての場所から消えるようになりました。PIN でロックしたソースの映像が、誰にでも見える状態で残ることはもうありません。",
+  "zh-CN": "移除来源时，其视频现在会从所有地方移除，包括观看记录和播放列表，因此用 PIN 锁定的来源不会再留下任何人都能看到的视频。"
+}

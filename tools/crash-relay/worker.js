@@ -1,12 +1,16 @@
-// The relay FramePlayerX sends a crash report to when a user chooses to.
-// It files each report as an issue in a private GitHub repository, so the
-// token that can do that stays here instead of in the app. Set up as
-// docs/DEVELOPMENT.md (Crash reports) describes; the secret GITHUB_TOKEN may
-// only write issues of REPO.
+// The relay FramePlayerX sends a crash report or diagnostics to when a user
+// chooses to. It files each as an issue in a private GitHub repository, so
+// the token that can do that stays here instead of in the app, and answers
+// with the issue's number. Set up as docs/DEVELOPMENT.md (Crash reports)
+// describes; the secret GITHUB_TOKEN may only write issues of REPO.
 
 const MAX_BODY = 96 * 1024;
 // GitHub takes issue bodies up to 65536 characters.
 const MAX_TEXT = 60000;
+// A report too long keeps its start, where the versions and what went
+// wrong are, and its end, where the latest of the log is.
+const KEEP_START = 8000;
+const KINDS = ["crash", "diagnostics"];
 
 export default {
   async fetch(request, env) {
@@ -32,18 +36,26 @@ export default {
     } catch {
       return new Response("Not JSON", { status: 400 });
     }
-    const { app, version, summary, text } = report ?? {};
-    if (app !== "frameplayerx" || ![version, summary, text].every((v) => typeof v === "string")) {
-      return new Response("Not a FramePlayerX crash report", { status: 400 });
+    // Copies released before diagnostics send no kind.
+    const { app, kind = "crash", version, summary, text } = report ?? {};
+    if (
+      app !== "frameplayerx" ||
+      !KINDS.includes(kind) ||
+      ![version, summary, text].every((v) => typeof v === "string")
+    ) {
+      return new Response("Not a FramePlayerX report", { status: 400 });
     }
-    // The end of the log is where the crash is.
-    const kept = text.length > MAX_TEXT ? "…" + text.slice(-MAX_TEXT) : text;
+    const kept =
+      text.length > MAX_TEXT
+        ? text.slice(0, KEEP_START) + "\n…\n" + text.slice(-(MAX_TEXT - KEEP_START))
+        : text;
     // A fence longer than any run of backticks in the report.
     const longest = Math.max(0, ...(kept.match(/`+/g) ?? []).map((run) => run.length));
     const fence = "`".repeat(Math.max(3, longest + 1));
+    const diagnostics = kind === "diagnostics";
     const issue = {
-      title: `${version.slice(0, 40)}: ${summary.slice(0, 200)}`,
-      body: `Sent from FramePlayerX after a crash.\n\n${fence}text\n${kept}\n${fence}\n`,
+      title: `${version.slice(0, 40)}${diagnostics ? " diagnostics" : ""}: ${summary.slice(0, 200)}`,
+      body: `${diagnostics ? "Diagnostics sent from FramePlayerX." : "Sent from FramePlayerX after a crash."}\n\n${fence}text\n${kept}\n${fence}\n`,
     };
     const reply = await fetch(`https://api.github.com/repos/${env.REPO}/issues`, {
       method: "POST",
@@ -59,6 +71,7 @@ export default {
       console.error(`GitHub answered ${reply.status}: ${await reply.text()}`);
       return new Response("Could not file the report", { status: 502 });
     }
-    return new Response("Thank you", { status: 201 });
+    const { number } = await reply.json();
+    return Response.json({ number }, { status: 201 });
   },
 };

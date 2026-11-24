@@ -1,0 +1,9 @@
+{
+  "kind": "feat",
+  "en": "After an update, this page shows what's new since the version you used before.",
+  "de": "Nach einem Update zeigt diese Seite, was seit Ihrer vorherigen Version neu ist.",
+  "es": "Después de una actualización, esta página muestra las novedades desde la versión que usabas antes.",
+  "fr": "Après une mise à jour, cette page montre les nouveautés depuis la version que vous utilisiez avant.",
+  "ja": "アップデート後、前に使っていたバージョンからの新しい機能や変更点をこのページで確認できます。",
+  "zh-CN": "更新后，此页面会显示自你之前使用的版本以来的新内容。"
+}

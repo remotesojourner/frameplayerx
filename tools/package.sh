@@ -33,6 +33,10 @@ target=aarch64-unknown-linux-gnu
 ffmpeg="$root/third_party/ffmpeg/aarch64/lib"
 [ -f "$ffmpeg/libavcodec.so" ] || { echo "missing $ffmpeg; run tools/build-ffmpeg.sh aarch64" >&2; exit 1; }
 
+# What's New: the version that first shipped each change.
+FP_WHATS_NEW="$(tools/whats-new.sh "$version")"
+export FP_WHATS_NEW
+
 echo "== building FramePlayerX $version for the Steam Frame"
 tools/build-frame.sh -p frameplayerx
 cargo build --release -p fp-updater --bin fp-release

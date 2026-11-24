@@ -1273,7 +1273,19 @@ fn about(ui: &mut egui::Ui, v: &mut View) {
         v.actions.push(Action::OpenWebPage(tiles[i].2.into()));
     }
     ui.add_space(6.0);
-    note(ui, tr!("settings-about-issue-note"));
+    if crate::crash::REPORT_URL.is_some()
+        && widgets::button(
+            ui,
+            Some(icons::BUG),
+            tr!("settings-about-diagnostics"),
+            Kind::Secondary,
+        )
+        .clicked()
+    {
+        v.actions.push(Action::OpenDiagnostics);
+    }
+    ui.add_space(6.0);
+    note(ui, tr!("settings-about-report-note"));
     heading(ui, tr!("settings-about-headset"));
     widgets::rows_compact(ui, |r| {
         for (k, val) in &v.state.about {

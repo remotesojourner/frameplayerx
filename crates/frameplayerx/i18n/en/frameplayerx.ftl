@@ -297,8 +297,10 @@ settings-about-discord = FramePlayerX on Discord
 settings-about-github = FramePlayerX on GitHub
 settings-about-issue = Report a problem
 settings-about-sponsor = Sponsor FramePlayerX
-# Under the links.
-settings-about-issue-note = To report a problem, choose Bug report on GitHub's form and attach the log named below.
+# Short: a button, under the links.
+settings-about-diagnostics = Send diagnostics
+# Under Send diagnostics.
+settings-about-report-note = To report a problem, send diagnostics first, then choose Bug report on GitHub's form and give the reference you get.
 settings-about-licences = Video decoding uses FFmpeg (LGPL 2.1+) and dav1d (BSD), shipped as separate libraries in lib/. Text is set in Inter (OFL) with Phosphor icons (MIT). Licences and the source offer are in the licenses/ folder.
 
 ## Language names, as subtitles and audio tracks name them
@@ -1240,6 +1242,33 @@ crash-show-report = Show the report
 # Short: a button.
 crash-dont-send = Don't send
 crash-report-heading = The report, exactly as it would be sent
+# The page the first start after an update shows.
+whats-new-title = What's new
+# $from is the version used before, $to the one now running.
+whats-new-versions = Version { $from } → { $to }
+# The version now running, when the one before isn't known.
+whats-new-version = Version { $version }
+whats-new-features = Features
+whats-new-fixes = Fixes
+whats-new-performance = Performance
+# Short: a button.
+whats-new-close = Got it
+# The page Send diagnostics opens, in Settings › About.
+diagnostics-title = Send diagnostics
+diagnostics-desc = Diagnostics show FramePlayerX's developers what the headset was doing, so that they can find what went wrong. Nothing is sent unless you choose Send.
+diagnostics-what = What went wrong?
+diagnostics-what-hint = For example: the picture stutters a few minutes into a video
+diagnostics-contains-words = What you write above.
+diagnostics-contains-versions = The versions of FramePlayerX and of the headset's system software, and what About lists under This headset.
+diagnostics-contains-video = For the video that is open: its format, size, frame rate and decoder, and how many frames were dropped.
+diagnostics-contains-settings = Your settings, and which kinds of sources you have.
+diagnostics-contains-logs = FramePlayerX's log of this session and the end of the one before: what it was doing, and the errors it met.
+diagnostics-gathering = Gathering…
+# Short: a button.
+diagnostics-send = Send
+diagnostics-sent = Sent. Thank you!
+# $number is the report's number: D-12, say.
+diagnostics-reference = Your reference is D-{ $number }. Give it when you report the problem on GitHub or Discord.
 toast-adjustments-saved = Adjustments saved
 toast-preset-saved = Saved as { $name }
 toast-preset = Preset: { $name }

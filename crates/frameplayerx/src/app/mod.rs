@@ -2,6 +2,7 @@
 //! turns controller input into UI events and playback commands each frame.
 
 mod actions;
+mod diagnostics;
 mod downloads;
 mod frame;
 mod input;

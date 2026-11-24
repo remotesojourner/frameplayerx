@@ -110,6 +110,9 @@ pub(super) enum Job {
     /// The last run crashed: the report the user may send.
     CrashReport(Box<crate::crash::Report>),
     CrashSent(Result<(), String>),
+    DiagnosticsGathered(Box<crate::crash::Diagnostics>),
+    /// Sent, with the number the relay gave it.
+    DiagnosticsSent(Result<Option<u64>, String>),
     /// Steam was asked to open a web page.
     WebPageOpened(Result<(), String>),
     SubtitleSearch(Box<subtitle_search::Job>),
@@ -274,6 +277,36 @@ impl App {
             .map(ui::crash::CrashPrompt::new);
     }
 
+    /// On start: what's new since the version run before, if this one is
+    /// newer. `returning` is false on the first start, which has nothing
+    /// to compare with. Nothing to show records this version at once.
+    pub(crate) fn offer_whats_new(&mut self, returning: bool) {
+        let Ok(current) = fp_updater::Version::parse(env!("CARGO_PKG_VERSION")) else {
+            return;
+        };
+        let seen = self.settings.seen_version.as_deref();
+        let seen = seen.and_then(|s| fp_updater::Version::parse(s).ok());
+        if seen
+            .as_ref()
+            .is_some_and(|s| current.cmp_precedence(s).is_le())
+        {
+            return;
+        }
+        self.ui.whats_new = returning
+            .then(|| crate::whats_new::since(seen.as_ref(), &current))
+            .flatten();
+        if self.ui.whats_new.is_none() {
+            self.settings.seen_version = Some(current.to_string());
+        }
+    }
+
+    /// What's New was read: the next start compares with this version.
+    pub(super) fn close_whats_new(&mut self) {
+        if let Some(w) = self.ui.whats_new.take() {
+            self.settings.seen_version = Some(w.to);
+        }
+    }
+
     /// Opens `address` in Steam's browser, which shows over the app: the
     /// headset has no other browser to hand it to.
     pub(super) fn open_web_page(&mut self, address: &str) {
@@ -304,25 +337,7 @@ impl App {
         c.error = None;
         let body = c.report.body();
         self.jobs.spawn("crash-send", move || {
-            let http = fp_sources::http::HttpClient::new(Default::default(), None);
-            let r = http
-                .request(
-                    "POST",
-                    url,
-                    &[("Content-Type", "application/json")],
-                    Some(&body),
-                    4096,
-                )
-                .map_err(|e| ui::errors::source(&e))
-                .and_then(|reply| match reply.status {
-                    200..=299 => Ok(()),
-                    status => Err(tr!(
-                        "error-http-status",
-                        status = status.to_string(),
-                        url = url
-                    )),
-                });
-            Job::CrashSent(r)
+            Job::CrashSent(diagnostics::post_report(url, &body).map(|_| ()))
         });
     }
 
@@ -587,6 +602,8 @@ impl App {
                     c.error = Some(e);
                 }
             }
+            Job::DiagnosticsGathered(d) => self.diagnostics_gathered(*d),
+            Job::DiagnosticsSent(r) => self.diagnostics_sent(r),
             Job::WebPageOpened(Err(e)) => {
                 log::warn!("opening a web page: {e}");
                 self.ui.toast(tr!("error-open-page", error = e));

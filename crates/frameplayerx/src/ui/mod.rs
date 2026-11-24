@@ -6,6 +6,7 @@ pub mod catalog;
 pub mod controller_map;
 pub mod crash;
 pub mod depth;
+pub mod diagnostics;
 pub mod downloads;
 pub mod errors;
 pub mod feeds;
@@ -27,6 +28,7 @@ pub mod subtitle_search;
 pub mod subtitle_text;
 pub mod theme;
 pub mod thumbs;
+pub mod whats_new;
 pub mod widgets;
 
 use crate::playback::OpenRequest;
@@ -435,6 +437,11 @@ pub enum Action {
     /// Send the crash report the start offered, or don't.
     SendCrashReport,
     DismissCrashReport,
+    CloseWhatsNew,
+    /// Settings › About › Send diagnostics, and its page's Send and close.
+    OpenDiagnostics,
+    SendDiagnostics,
+    CloseDiagnostics,
     Recenter,
     TogglePassthrough,
     /// Settings › General › Screen follows you.
@@ -1007,6 +1014,11 @@ pub struct UiState {
     pub subtitle_account: subtitle_search::Account,
     /// The last run crashed: asks whether to send a report.
     pub crash: Option<crash::CrashPrompt>,
+    /// The first start after an upgrade: what changed since the version
+    /// run before.
+    pub whats_new: Option<crate::whats_new::WhatsNew>,
+    /// Send diagnostics, from Settings › About.
+    pub diagnostics: Option<diagnostics::Form>,
     /// The file whose Delete file was pressed once, and when: a second
     /// press within 4 seconds deletes it.
     pub delete_file_armed: Option<(String, std::time::Instant)>,
@@ -1107,6 +1119,8 @@ impl Default for UiState {
             subtitle_search: None,
             subtitle_account: Default::default(),
             crash: None,
+            whats_new: None,
+            diagnostics: None,
             delete_file_armed: None,
             deleting: None,
             delete_checks: Default::default(),
@@ -1134,6 +1148,7 @@ impl UiState {
     pub fn press_tab(&mut self, s: Screen) {
         self.picking = None;
         self.pin_form = None;
+        self.diagnostics = None;
         if self.screen == s {
             self.close_details_on(s);
             match s {

@@ -103,7 +103,9 @@ FramePlayerX checks for a new version each time it starts, but doesn't
 install it by itself. To update, open **Settings › Updates**: when a new
 version is out it's listed there with what changed. Press **Download and
 install**, then **Restart now**. **Check now** looks again without
-restarting.
+restarting. The first start of the new version shows **What's new**: the
+features, fixes and speed-ups since the version you used before, so on
+Beta each test version shows only its own.
 
 The **Stable** channel gets finished releases only; **Beta** also gets
 test versions before they are released. Switch off **Check for updates at
@@ -1492,9 +1494,16 @@ issue with the language, where it shows and the wording you'd expect.
   nothing is sent unless you choose **Send report**.
 - For help, or to report a problem yourself, **Settings › About** starts
   with links to FramePlayerX's website, this guide, its Discord server, its
-  GitHub page, its issue form (choose Bug report and attach the log below)
-  and its GitHub Sponsors page. A link opens in Steam's browser; the
-  address on it works on a phone or a computer too.
+  GitHub page, its issue form and its GitHub Sponsors page. A link opens in
+  Steam's browser; the address on it works on a phone or a computer too.
+- To report a problem, press **Send diagnostics** in **Settings › About**
+  first and write what went wrong. It goes the same way as a crash report,
+  with the same names replaced, and holds what you wrote, the versions,
+  what the open video's decoder was doing, your settings, the kinds of
+  sources you have, and the log of this session and the end of the one
+  before. Send it before restarting FramePlayerX if it froze. It gives you
+  a reference such as D-142: give it in the issue form (choose Bug report)
+  or on Discord, so the developers can find your diagnostics.
 - Log: `~/.local/share/frameplayerx/frameplayerx.log`; the run before is kept
   as `frameplayerx.log.old` (the one to send after a freeze or crash, once
   FramePlayerX has been started again)
