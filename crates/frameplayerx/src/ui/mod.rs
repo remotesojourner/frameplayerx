@@ -330,12 +330,8 @@ pub enum Action {
         source: String,
         pin: Option<String>,
     },
-    /// Opens a source in the browser its kind gets; leaving it returns to
-    /// `back_to`.
-    OpenSource {
-        source: String,
-        back_to: Screen,
-    },
+    /// Opens a source at its top, in the browser its kind gets.
+    OpenSource(String),
     /// Lists a folder of a source.
     Browse {
         source: String,
@@ -495,6 +491,9 @@ pub struct Browse {
     pub location: Option<String>,
     /// Parent locations, for the back button.
     pub stack: Vec<Option<String>>,
+    /// The names of the folders entered from the top, one for each of
+    /// `stack`: the way here, on the page's header.
+    pub names: Vec<String>,
     pub entries: Vec<Entry>,
     pub loading: bool,
     pub error: Option<String>,
@@ -504,12 +503,41 @@ pub struct Browse {
     pub include_subfolders: bool,
 }
 
+impl Browse {
+    /// Into folder `name` at `location`; what lists it.
+    pub fn enter(&mut self, name: &str, location: String) -> Action {
+        self.stack.push(self.location.replace(location.clone()));
+        self.names.push(name.to_string());
+        self.loading = true;
+        self.filter.clear();
+        Action::Browse {
+            source: self.source.clone(),
+            location: Some(location),
+        }
+    }
+
+    /// Up to the folder `depth` folders below the top (0, the top).
+    fn up_to(&mut self, depth: usize) -> Back {
+        if depth >= self.stack.len() {
+            return Back::Done;
+        }
+        let location = self.stack[depth].clone();
+        self.stack.truncate(depth);
+        self.names.truncate(depth);
+        self.location = location.clone();
+        self.loading = true;
+        self.filter.clear();
+        Back::Parent(Box::new(Action::Browse {
+            source: self.source.clone(),
+            location,
+        }))
+    }
+}
+
 /// A source being browsed, in the browser its kind gets.
 pub struct SourceView {
     pub source: String,
     pub name: String,
-    /// Where leaving it goes.
-    pub back_to: Screen,
     pub page: SourcePage,
 }
 
@@ -547,18 +575,68 @@ impl SourceView {
         }
     }
 
+    /// The way from the source's top to where it is: each place's name, the
+    /// source's own first.
+    pub fn trail(&self) -> Vec<String> {
+        let mut trail = vec![self.name.clone()];
+        match &self.page {
+            SourcePage::Folders(b) => trail.extend(b.names.iter().cloned()),
+            SourcePage::Local(l) => {
+                if let Some(b) = &l.folder {
+                    trail.push(local::root_name(&b.source));
+                    trail.extend(b.names.iter().cloned());
+                }
+            }
+            SourcePage::Library(l) => {
+                if l.folders {
+                    trail.push(tr!("local-folders").to_string());
+                    if let Some(b) = &l.folder {
+                        trail.extend(b.names.iter().cloned());
+                    }
+                }
+            }
+            SourcePage::Catalog(j) => trail.extend(j.pages.iter().skip(1).map(catalog::page_name)),
+            SourcePage::Feed(f) => trail.extend(f.details_title()),
+        }
+        trail
+    }
+
+    /// Back to place `level` of [`SourceView::trail`], 0 for the source's
+    /// top.
+    pub fn up_to(&mut self, level: usize) -> Back {
+        match &mut self.page {
+            SourcePage::Folders(b) => b.up_to(level),
+            SourcePage::Local(l) if level == 0 => {
+                l.folder = None;
+                Back::Done
+            }
+            SourcePage::Local(l) => l.folder.as_mut().map_or(Back::Done, |b| b.up_to(level - 1)),
+            SourcePage::Library(l) if level == 0 => {
+                l.folders = false;
+                Back::Done
+            }
+            SourcePage::Library(l) if l.folders => {
+                l.folder.as_mut().map_or(Back::Done, |b| b.up_to(level - 1))
+            }
+            SourcePage::Library(_) => Back::Done,
+            SourcePage::Catalog(j) => {
+                j.show_filters(false);
+                j.pages.truncate(level + 1);
+                Back::Done
+            }
+            SourcePage::Feed(f) => {
+                f.filters_open = false;
+                f.details = None;
+                Back::Done
+            }
+        }
+    }
+
     /// One step back: the parent folder, the previous page, or out.
     pub fn back(&mut self) -> Back {
         let parent = |b: &mut Browse| {
-            b.stack.pop().map(|parent| {
-                b.location = parent.clone();
-                b.loading = true;
-                b.filter.clear();
-                Back::Parent(Box::new(Action::Browse {
-                    source: b.source.clone(),
-                    location: parent,
-                }))
-            })
+            let depth = b.stack.len().checked_sub(1)?;
+            Some(b.up_to(depth))
         };
         match &mut self.page {
             SourcePage::Folders(b) => parent(b).unwrap_or(Back::Leave),
@@ -848,7 +926,8 @@ pub struct UiState {
     /// that it will all be deleted shows until it is confirmed or cancelled.
     pub history_off_asked: bool,
     pub home: Option<HomeRows>,
-    pub details: Option<MediaId>,
+    /// The video whose details page is open, and the tab it shows on.
+    pub details: Option<(Screen, MediaId)>,
     /// The video whose details page has its format drawer open.
     pub format_drawer: Option<MediaId>,
     /// The playlist open on the Playlists screen.
@@ -1001,6 +1080,52 @@ impl Default for UiState {
 }
 
 impl UiState {
+    /// Tab `s` pressed: back where it was left, or to its top when it is
+    /// the tab showing. What was being done rather than where (choosing a
+    /// playlist, typing a PIN) closes either way.
+    pub fn press_tab(&mut self, s: Screen) {
+        self.picking = None;
+        self.pin_form = None;
+        if self.screen == s {
+            self.close_details_on(s);
+            match s {
+                Screen::Playlists => {
+                    self.playlist = None;
+                    self.renaming = false;
+                }
+                Screen::Sources => {
+                    self.source = None;
+                    self.source_form = None;
+                }
+                _ => {}
+            }
+        }
+        self.screen = s;
+        // Read afresh, as they may have changed meanwhile.
+        match s {
+            Screen::Home => self.home = None,
+            Screen::Playlists => self.playlists = None,
+            _ => {}
+        }
+    }
+
+    /// The video whose details page shows on the tab showing.
+    pub fn details_here(&self) -> Option<MediaId> {
+        self.details
+            .filter(|(on, _)| *on == self.screen)
+            .map(|(_, id)| id)
+    }
+
+    /// Opens video `id`'s details page on the tab showing.
+    pub fn open_details(&mut self, id: MediaId) {
+        self.details = Some((self.screen, id));
+    }
+
+    /// Closes the details page open on tab `s`, if any.
+    pub fn close_details_on(&mut self, s: Screen) {
+        self.details = self.details.filter(|(on, _)| *on != s);
+    }
+
     /// Library changed: re-query on the next paint.
     pub fn invalidate(&mut self) {
         self.history.results = None;
@@ -1056,19 +1181,15 @@ impl UiState {
         }
     }
 
-    /// One step back in the source browser; leaving it returns to the
-    /// screen it was opened from. Returns what must list again.
+    /// One step back in the source browser, out of it to the list of
+    /// sources from its top. Returns what must list again.
     pub fn source_back(&mut self) -> Option<Action> {
         let sv = self.source.as_mut()?;
         match sv.back() {
             Back::Done => None,
             Back::Parent(a) => Some(*a),
             Back::Leave => {
-                self.screen = sv.back_to;
                 self.source = None;
-                if self.screen == Screen::Home {
-                    self.home = None;
-                }
                 None
             }
         }
@@ -1214,11 +1335,11 @@ mod tests {
         s.source = Some(SourceView {
             source: "nas".into(),
             name: "NAS".into(),
-            back_to: Screen::Home,
             page: SourcePage::Folders(Browse {
                 source: "nas".into(),
                 location: Some("smb://nas/v/a".into()),
                 stack: vec![None, Some("smb://nas/v".into())],
+                names: vec!["v".into(), "a".into()],
                 filter: "beach".into(),
                 ..Default::default()
             }),
@@ -1240,7 +1361,7 @@ mod tests {
         ));
         assert!(s.source_back().is_none());
         assert!(s.source.is_none());
-        assert_eq!(s.screen, Screen::Home, "back to where it was opened");
+        assert_eq!(s.screen, Screen::Sources, "back to the list of sources");
     }
 
     #[test]
@@ -1255,7 +1376,6 @@ mod tests {
         s.source = Some(SourceView {
             source: crate::services::LOCAL_HUB.into(),
             name: "On this device".into(),
-            back_to: Screen::Sources,
             page: SourcePage::Local(local),
         });
         // The folder closes, back to the headset's page...
@@ -1277,7 +1397,6 @@ mod tests {
         s.source = Some(SourceView {
             source: "movies".into(),
             name: "Movies".into(),
-            back_to: Screen::Sources,
             page: SourcePage::Library(lib),
         });
         assert!(matches!(
@@ -1302,7 +1421,6 @@ mod tests {
         s.source = Some(SourceView {
             source: "jf".into(),
             name: "Jellyfin".into(),
-            back_to: Screen::Sources,
             page: SourcePage::Catalog(j),
         });
         assert!(s.source_back().is_none());
@@ -1310,6 +1428,89 @@ mod tests {
             s.source.as_ref().map(|v| &v.page),
             Some(SourcePage::Catalog(j)) if j.pages.len() == 1
         ));
+    }
+
+    #[test]
+    fn the_trail_names_each_folder_and_goes_back_to_any_of_them() {
+        let mut b = Browse {
+            source: "nas".into(),
+            ..Default::default()
+        };
+        b.enter("Films", "smb://nas/v/Films".into());
+        b.enter("2026", "smb://nas/v/Films/2026".into());
+        assert_eq!(b.stack, [None, Some("smb://nas/v/Films".into())]);
+        let mut sv = SourceView {
+            source: "nas".into(),
+            name: "NAS".into(),
+            page: SourcePage::Folders(b),
+        };
+        assert_eq!(sv.trail(), ["NAS", "Films", "2026"]);
+        // Where it is already: nothing to list.
+        assert!(matches!(sv.up_to(2), Back::Done));
+        match sv.up_to(0) {
+            Back::Parent(a) => assert!(matches!(*a, Action::Browse { location: None, .. })),
+            _ => panic!("the top lists again"),
+        }
+        assert_eq!(sv.trail(), ["NAS"]);
+        assert!(sv.folder_mut().is_some_and(|b| b.stack.is_empty()));
+
+        let mut j = catalog::CatalogView::new(1);
+        for seq in [2, 3] {
+            j.pages.push(catalog::Page {
+                seq,
+                request_seq: None,
+                loading: false,
+                error: None,
+                body: catalog::Body::Item {
+                    item: Box::default(),
+                },
+            });
+        }
+        let mut sv = SourceView {
+            source: "jf".into(),
+            name: "Jellyfin".into(),
+            page: SourcePage::Catalog(j),
+        };
+        assert_eq!(sv.trail().len(), 3);
+        assert!(matches!(sv.up_to(0), Back::Done));
+        assert_eq!(sv.trail(), ["Jellyfin"], "the server's home");
+    }
+
+    #[test]
+    fn tabs_keep_their_place_and_pressed_again_go_to_their_top() {
+        let mut s = UiState {
+            screen: Screen::Sources,
+            ..Default::default()
+        };
+        s.source = Some(SourceView {
+            source: "nas".into(),
+            name: "NAS".into(),
+            page: SourcePage::Folders(Browse::default()),
+        });
+        s.pin_form = Some(PinForm::default());
+        s.press_tab(Screen::Settings);
+        assert!(s.pin_form.is_none(), "a PIN being typed closes");
+        s.press_tab(Screen::Sources);
+        assert!(s.source.is_some(), "back in the source");
+        s.press_tab(Screen::Sources);
+        assert!(s.source.is_none(), "the list of sources");
+
+        s.press_tab(Screen::History);
+        s.open_details(MediaId(7));
+        s.press_tab(Screen::Home);
+        assert_eq!(s.details_here(), None, "History's, not Home's");
+        s.press_tab(Screen::History);
+        assert_eq!(s.details_here(), Some(MediaId(7)));
+        s.press_tab(Screen::History);
+        assert_eq!(s.details, None);
+
+        s.press_tab(Screen::Playlists);
+        s.playlist = Some(PlaylistId(3));
+        s.press_tab(Screen::Home);
+        s.press_tab(Screen::Playlists);
+        assert_eq!(s.playlist, Some(PlaylistId(3)));
+        s.press_tab(Screen::Playlists);
+        assert_eq!(s.playlist, None);
     }
 
     #[test]

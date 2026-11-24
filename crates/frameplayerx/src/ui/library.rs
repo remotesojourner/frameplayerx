@@ -54,7 +54,7 @@ pub fn browser(ctx: &egui::Context, v: &mut View) {
                 super::playlists::picker(ui, v);
                 return;
             }
-            if let Some(id) = v.state.details {
+            if let Some(id) = v.state.details_here() {
                 details(ui, v, id);
                 return;
             }
@@ -241,28 +241,9 @@ fn nav(ui: &mut egui::Ui, v: &mut View) {
         let right = if v.playback.is_some() { 326.0 } else { 176.0 } + clock.size().x + 8.0;
         let labelled = ui.available_width() >= labels + right;
         for (s, icon, label) in tabs {
-            let selected =
-                v.state.screen == s && v.state.details.is_none() && v.state.picking.is_none();
+            let selected = v.state.screen == s && v.state.picking.is_none();
             if widgets::nav_tab(ui, icon, label, selected, labelled).clicked() {
-                v.state.screen = s;
-                v.state.details = None;
-                v.state.picking = None;
-                match s {
-                    Screen::Home => v.state.home = None,
-                    // The tab is the list of playlists, whatever was open.
-                    Screen::Playlists => {
-                        v.state.playlist = None;
-                        v.state.renaming = false;
-                        v.state.playlists = None;
-                    }
-                    // The tab is the list of sources, whatever was open.
-                    Screen::Sources => {
-                        v.state.source = None;
-                        v.state.source_form = None;
-                        v.state.pin_form = None;
-                    }
-                    _ => {}
-                }
+                v.state.press_tab(s);
             }
         }
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -425,7 +406,7 @@ fn record_grid(ui: &mut egui::Ui, v: &mut View, records: &[MediaRecord]) {
             v.actions.push(open_record(&records[i]));
         }
         if c.more {
-            v.state.details = Some(records[i].id);
+            v.state.open_details(records[i].id);
         }
     });
 }
@@ -438,7 +419,7 @@ fn record_row(ui: &mut egui::Ui, v: &mut View, title: &str, records: &[MediaReco
             v.actions.push(open_record(&records[i]));
         }
         if c.more {
-            v.state.details = Some(records[i].id);
+            v.state.open_details(records[i].id);
         }
     });
 }
@@ -492,12 +473,12 @@ fn hero(ui: &mut egui::Ui, v: &mut View, rows: &HomeRows) {
             )
             .clicked()
             {
-                v.state.details = Some(r.id);
+                v.state.open_details(r.id);
             }
         });
     });
     if resp.clicked() {
-        v.state.details = Some(r.id);
+        v.state.open_details(r.id);
     }
     ui.add_space(26.0);
 }
@@ -560,7 +541,7 @@ fn home(ui: &mut egui::Ui, v: &mut View) {
         record_row(ui, v, tr!("filter-favorites"), &rows.favorites);
         // Without a history the page is the sources': a grid rather than a
         // row to scroll through sideways.
-        super::sources::source_row(ui, v, Screen::Home, !history);
+        super::sources::source_row(ui, v, !history);
     });
     v.state.home = Some(rows);
 }

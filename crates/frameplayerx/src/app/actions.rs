@@ -35,7 +35,7 @@ impl App {
             Action::QueueClear => self.queue.clear_rest(),
             Action::ShowUpNext => {
                 self.ui.screen = Screen::UpNext;
-                self.ui.details = None;
+                self.ui.close_details_on(Screen::UpNext);
                 self.ui.picking = None;
                 self.show_browser = true;
                 self.ui_visible = true;
@@ -219,7 +219,7 @@ impl App {
             Action::UnlockSource { source, pin } => self.unlock_source(source, &pin),
             Action::LockSource(id) => self.lock_source(&id),
             Action::SetSourcePin { source, pin } => self.set_source_pin(&source, pin),
-            Action::OpenSource { source, back_to } => self.open_source(source, back_to),
+            Action::OpenSource(source) => self.open_source(source),
             Action::Browse { source, location } => self.browse(source, location),
             Action::Catalog { source, seq, load } => {
                 self.catalog_job(source, seq, load, Duration::ZERO);

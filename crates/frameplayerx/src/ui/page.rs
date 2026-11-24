@@ -90,17 +90,216 @@ pub fn header(
     back
 }
 
+/// What was pressed on a [`trail_header`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Go {
+    /// The back arrow: one place back.
+    Back,
+    /// The place at this index of the trail.
+    To(usize),
+}
+
+/// A crumb's height, and how wide its name gets before it is cut short.
+const CRUMB_HEIGHT: f32 = 40.0;
+const CRUMB_MAX: f32 = 240.0;
+const CRUMB_PAD: f32 = 16.0;
+/// How wide where you are gets when deciding which places fit.
+const HERE_MAX: f32 = 360.0;
+
+/// A page header whose title is the way there, `trail`: the places before
+/// the last are keys back to them, the last (where you are) in bold, with
+/// a back arrow before them, `subtitle` under them and actions on the
+/// right. When they don't all fit, places after the second give way, from
+/// the first of them, to "…".
+pub fn trail_header(
+    ui: &mut egui::Ui,
+    trail: &[String],
+    subtitle: Option<&str>,
+    actions: impl FnOnce(&mut egui::Ui),
+) -> Option<Go> {
+    let mut go = None;
+    let subtitle = subtitle.filter(|s| !s.is_empty());
+    let sub_font = theme::font(Weight::Regular, 15.0);
+    ui.add_space(12.0);
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 12.0;
+        if widgets::icon_button(ui, icons::ARROW_LEFT, 48.0, false)
+            .tip(tr!("common-back"))
+            .clicked()
+        {
+            go = Some(Go::Back);
+        }
+        // The actions first, from the right, so the trail knows its room.
+        let sub_height = subtitle.map_or(0.0, |_| ui.fonts(|f| f.row_height(&sub_font)));
+        let height = (CRUMB_HEIGHT + sub_height).max(48.0);
+        let rest =
+            egui::Rect::from_min_size(ui.cursor().min, Vec2::new(ui.available_width(), height));
+        let mut right = ui.new_child(
+            egui::UiBuilder::new()
+                .max_rect(rest)
+                .layout(Layout::right_to_left(Align::Center)),
+        );
+        right.spacing_mut().item_spacing.x = 8.0;
+        actions(&mut right);
+        let room = (rest.width() - right.min_rect().width() - 24.0).max(120.0);
+        ui.vertical(|ui| {
+            ui.spacing_mut().item_spacing.y = 0.0;
+            ui.horizontal(|ui| {
+                if let Some(i) = trail_row(ui, trail, room) {
+                    go = Some(Go::To(i));
+                }
+            });
+            if let Some(s) = subtitle {
+                widgets::title_line(ui, s, sub_font, theme::TEXT_3, room);
+            }
+        });
+    });
+    ui.add_space(8.0);
+    go
+}
+
+/// The places of `trail` that fit in `room`, with carets between them; the
+/// place pressed.
+fn trail_row(ui: &mut egui::Ui, trail: &[String], room: f32) -> Option<usize> {
+    ui.spacing_mut().item_spacing.x = 8.0;
+    let crumb_font = theme::font(Weight::SemiBold, 16.0);
+    let here_font = theme::font(Weight::Bold, 24.0);
+    let caret = |ui: &mut egui::Ui| {
+        ui.label(
+            RichText::new(icons::CARET_RIGHT)
+                .font(theme::icon(16.0))
+                .color(theme::TEXT_3),
+        )
+    };
+    let width = |text: &str, font: egui::FontId| {
+        ui.painter()
+            .layout_no_wrap(text.to_string(), font, Color32::WHITE)
+            .size()
+            .x
+    };
+    let gap = width(icons::CARET_RIGHT, theme::icon(16.0)) + 2.0 * ui.spacing().item_spacing.x;
+    let dots = width("…", crumb_font.clone());
+    let last = trail.len().saturating_sub(1);
+    let widths: Vec<f32> = trail
+        .iter()
+        .enumerate()
+        .map(|(i, name)| {
+            if i == last {
+                width(name, here_font.clone()).min(HERE_MAX)
+            } else {
+                width(name, crumb_font.clone()).min(CRUMB_MAX) + 2.0 * CRUMB_PAD
+            }
+        })
+        .collect();
+    let start = ui.cursor().min.x;
+    let mut pressed = None;
+    for (n, place) in fitting(&widths, gap, dots, room).into_iter().enumerate() {
+        if n > 0 {
+            caret(ui);
+        }
+        match place {
+            None => {
+                ui.label(
+                    RichText::new("…")
+                        .font(crumb_font.clone())
+                        .color(theme::TEXT_3),
+                );
+            }
+            Some(i) if i == last => {
+                let left = room - (ui.cursor().min.x - start);
+                widgets::title_line(
+                    ui,
+                    &trail[i],
+                    here_font.clone(),
+                    theme::TEXT,
+                    left.max(60.0),
+                );
+            }
+            Some(i) => {
+                if crumb(ui, &trail[i], &crumb_font).clicked() {
+                    pressed = Some(i);
+                }
+            }
+        }
+    }
+    pressed
+}
+
+/// Which places of a trail `widths` wide show in `room`, with `gap` between
+/// two and `dots` for "…" (a `None`): the first two and the last always,
+/// the others from the end while they fit.
+fn fitting(widths: &[f32], gap: f32, dots: f32, room: f32) -> Vec<Option<usize>> {
+    let n = widths.len();
+    if n <= 3 {
+        return (0..n).map(Some).collect();
+    }
+    let mut used = widths[0] + widths[1] + widths[n - 1] + 2.0 * gap;
+    let mut tail = vec![n - 1];
+    for i in (2..n - 1).rev() {
+        // Room for "…" as well, unless this is the last that could give way.
+        let more = if i > 2 { dots + gap } else { 0.0 };
+        if used + widths[i] + gap + more > room {
+            break;
+        }
+        used += widths[i] + gap;
+        tail.push(i);
+    }
+    tail.reverse();
+    let mut shown = vec![Some(0), Some(1)];
+    if tail[0] > 2 {
+        shown.push(None);
+    }
+    shown.extend(tail.into_iter().map(Some));
+    shown
+}
+
+/// A place on a trail to go back to: a raised key with its name, cut short
+/// (and then whole in a tip) past [`CRUMB_MAX`].
+fn crumb(ui: &mut egui::Ui, name: &str, font: &egui::FontId) -> egui::Response {
+    let g = widgets::one_line(
+        ui.painter(),
+        name.to_string(),
+        font.clone(),
+        theme::TEXT_2,
+        CRUMB_MAX,
+    );
+    let cut = g.elided;
+    let size = Vec2::new(g.size().x + 2.0 * CRUMB_PAD, CRUMB_HEIGHT);
+    let (rect, resp) = ui.allocate_exact_size(size, Sense::click());
+    if ui.is_rect_visible(rect) {
+        let (face, fg) = widgets::key_face_kind(
+            ui,
+            &resp,
+            CRUMB_HEIGHT * 0.25,
+            false,
+            widgets::Kind::Secondary,
+        );
+        ui.painter()
+            .galley_with_override_text_color(face.center() - g.size() / 2.0, g, fg);
+    }
+    if cut { resp.tip(name) } else { resp }
+}
+
 /// The search field: a sunken box with a magnifying glass; true when the
 /// text changed.
 pub fn search_field(ui: &mut egui::Ui, text: &mut String, hint: &str, width: f32) -> bool {
     let mut changed = false;
-    let slot = ui.painter().add(egui::Shape::Noop);
-    let field = egui::Frame::new()
-        .inner_margin(egui::Margin::symmetric(14, 0))
-        .show(ui, |ui| {
-            ui.set_height(44.0);
-            // Left to right even among right-aligned actions.
-            ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+    // Exactly its own room, left to right inside, so among right-aligned
+    // actions it sits beside them rather than at the far left.
+    let glass = ui.painter().layout_no_wrap(
+        icons::MAGNIFYING_GLASS.into(),
+        theme::icon(20.0),
+        theme::TEXT_2,
+    );
+    let gap = ui.spacing().item_spacing.x;
+    let clear = if text.is_empty() { 0.0 } else { gap + 30.0 };
+    let size = Vec2::new(28.0 + glass.size().x + gap + width + clear, 44.0);
+    ui.allocate_ui_with_layout(size, Layout::left_to_right(Align::Center), |ui| {
+        let slot = ui.painter().add(egui::Shape::Noop);
+        let field = egui::Frame::new()
+            .inner_margin(egui::Margin::symmetric(14, 0))
+            .show(ui, |ui| {
+                ui.set_height(44.0);
                 ui.label(
                     RichText::new(icons::MAGNIFYING_GLASS)
                         .font(theme::icon(20.0))
@@ -123,12 +322,12 @@ pub fn search_field(ui: &mut egui::Ui, text: &mut String, hint: &str, width: f32
                     changed = true;
                 }
             });
-        });
-    let r = field.response.rect;
-    ui.painter().set(
-        slot,
-        egui::Shape::Vec(super::depth::sunken_shapes(r, 12.0, widgets::WELL)),
-    );
+        let r = field.response.rect;
+        ui.painter().set(
+            slot,
+            egui::Shape::Vec(super::depth::sunken_shapes(r, 12.0, widgets::WELL)),
+        );
+    });
     changed
 }
 
@@ -1086,6 +1285,28 @@ pub fn prose(ui: &mut egui::Ui, text: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_long_trail_keeps_its_start_and_end() {
+        // Sources, NAS, three folders, and where you are.
+        let widths = [100.0, 80.0, 120.0, 120.0, 120.0, 200.0];
+        let all: Vec<_> = (0..6).map(Some).collect();
+        assert_eq!(fitting(&widths, 30.0, 20.0, 2000.0), all);
+        // Room for one folder: the nearest, after "…".
+        assert_eq!(
+            fitting(&widths, 30.0, 20.0, 700.0),
+            [Some(0), Some(1), None, Some(4), Some(5)]
+        );
+        assert_eq!(
+            fitting(&widths, 30.0, 20.0, 300.0),
+            [Some(0), Some(1), None, Some(5)]
+        );
+        // Short trails show whole; where you are is cut short instead.
+        assert_eq!(
+            fitting(&widths[..3], 30.0, 20.0, 10.0),
+            [Some(0), Some(1), Some(2)]
+        );
+    }
 
     #[test]
     fn a_long_list_shows_a_few_and_what_is_chosen() {
