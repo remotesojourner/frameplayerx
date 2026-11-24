@@ -1,6 +1,6 @@
 //! Sources: the list, the browser each kind gets, adding one, PINs.
 
-use super::page::{self, Card};
+use super::page::{self, Card, Go};
 use super::theme::{self, Weight};
 use super::widgets::{self, Kind, ListArea, Tip};
 use super::{Action, Back, PinForm, QuickConnect, Screen, SourceForm, SourcePage, View, icons};
@@ -293,10 +293,7 @@ fn list_row(ui: &mut egui::Ui, v: &mut View, row: Row) {
                     )
                     .clicked()
                     {
-                        v.actions.push(Action::OpenSource {
-                            source: id.clone(),
-                            back_to: Screen::Sources,
-                        });
+                        v.actions.push(Action::OpenSource(id.clone()));
                     }
                 });
             });
@@ -308,37 +305,26 @@ fn browse(ui: &mut egui::Ui, v: &mut View) {
     let Some(mut sv) = v.state.source.take() else {
         return;
     };
-    let kind = v
-        .services
-        .source_config(&sv.source)
-        .map(|c| kind_label(c.kind()))
-        .unwrap_or(tr!("sources-folder"));
-    let back = match &mut sv.page {
-        SourcePage::Folders(b) => {
-            let address = v
-                .services
-                .opener
-                .source(&sv.source)
-                .and_then(|s| s.display_location(b.location.as_deref()));
-            super::folders::page(ui, v, &sv.name, kind, address, b)
-        }
-        SourcePage::Local(l) => super::local::page(ui, v, l),
-        SourcePage::Library(l) => super::local::library_page(ui, v, &sv.source, &sv.name, l),
-        SourcePage::Catalog(j) => super::catalog::page(ui, v, &sv.source, &sv.name, j),
-        SourcePage::Feed(f) => super::feeds::page(ui, v, &sv.source, &sv.name, f),
+    // The list of sources first, then the source's own places.
+    let mut trail = vec![tr!("nav-sources").to_string()];
+    trail.extend(sv.trail());
+    let go = match &mut sv.page {
+        SourcePage::Folders(b) => super::folders::page(ui, v, &trail, b),
+        SourcePage::Local(l) => super::local::page(ui, v, &trail, l),
+        SourcePage::Library(l) => super::local::library_page(ui, v, &sv.source, &trail, l),
+        SourcePage::Catalog(j) => super::catalog::page(ui, v, &sv.source, &trail, j),
+        SourcePage::Feed(f) => super::feeds::page(ui, v, &sv.source, &trail, f),
     };
-    if back {
-        match sv.back() {
-            Back::Done => {}
-            Back::Parent(a) => v.actions.push(*a),
-            Back::Leave => {
-                v.state.screen = sv.back_to;
-                if sv.back_to == Screen::Home {
-                    v.state.home = None;
-                }
-                return;
-            }
-        }
+    let step = match go {
+        None => Back::Done,
+        Some(Go::Back) => sv.back(),
+        Some(Go::To(0)) => Back::Leave,
+        Some(Go::To(place)) => sv.up_to(place - 1),
+    };
+    match step {
+        Back::Done => {}
+        Back::Parent(a) => v.actions.push(*a),
+        Back::Leave => return,
     }
     // Something on the page may have opened another source meanwhile.
     if v.state.source.is_none() {
@@ -380,7 +366,7 @@ fn edit(v: &mut View, id: &str) {
 /// that scrolls sideways, or with `grid`, when nothing is above them, in
 /// rows filling the page. Locked sources stay out until unlocked under
 /// Sources.
-pub fn source_row(ui: &mut egui::Ui, v: &mut View, back_to: Screen, grid: bool) {
+pub fn source_row(ui: &mut egui::Ui, v: &mut View, grid: bool) {
     let rows: Vec<Row> = rows(v)
         .into_iter()
         .filter(|r| r.lock != Lock::Locked)
@@ -431,10 +417,7 @@ pub fn source_row(ui: &mut egui::Ui, v: &mut View, back_to: Screen, grid: bool) 
         if c.action {
             lock_source(v, &row.id, &row.name);
         } else if c.open {
-            v.actions.push(Action::OpenSource {
-                source: row.id.clone(),
-                back_to,
-            });
+            v.actions.push(Action::OpenSource(row.id.clone()));
         }
     };
     let n = rows.len() + 1;

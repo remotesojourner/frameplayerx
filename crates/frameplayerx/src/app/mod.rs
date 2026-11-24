@@ -700,7 +700,7 @@ impl App {
                         // A search of what was watched.
                         self.ui.history.search = t;
                         self.ui.screen = Screen::History;
-                        self.ui.details = None;
+                        self.ui.close_details_on(Screen::History);
                         self.ui.invalidate();
                         self.show_browser = true;
                         self.ui_visible = true;

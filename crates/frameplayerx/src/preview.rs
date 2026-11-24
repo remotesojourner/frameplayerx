@@ -38,6 +38,8 @@
 //! | `shot NAME` | save the left eye as OUT_DIR/NAME.png |
 //! | `sbs NAME` | save both eyes side by side |
 //! | `screen NAME [TAB]` | show a browser screen (`home`, `library`, `sources`, `settings` and its tab) |
+//! | `enter NAME` | open a folder of the listing on screen, as pressing it does |
+//! | `tab NAME` | press a tab in the top bar (`home`, `history`, `sources`, `settings`, `playlists`) |
 //! | `adjust [TAB]` | open the adjustments panel (at tab TAB) |
 //! | `tracks` | open the audio and subtitles picker |
 //! | `subtitle-preview [results|empty|unavailable|allowance|account]` | show a fixture for the OpenSubtitles panel |
@@ -75,6 +77,20 @@ struct Sim {
     frames: u64,
     gpu_ms: crate::perf::GpuWindow,
     out: std::path::PathBuf,
+}
+
+/// The screen a script names.
+fn screen_named(name: &str) -> Result<crate::ui::Screen, Error> {
+    use crate::ui::Screen;
+    Ok(match name {
+        "home" => Screen::Home,
+        "history" => Screen::History,
+        "sources" => Screen::Sources,
+        "settings" => Screen::Settings,
+        "playlists" => Screen::Playlists,
+        "upnext" => Screen::UpNext,
+        other => return Err(format!("no screen {other:?}").into()),
+    })
 }
 
 fn dir_quat(yaw: f32, pitch: f32) -> Quat {
@@ -249,24 +265,42 @@ impl Sim {
                     std::thread::sleep(Duration::from_millis(11));
                 }
             }
+            // Opens a folder of the listing on screen, as pressing it does:
+            // `enter NAME` (the name may contain spaces).
+            Some("enter") => {
+                let name = line.trim().strip_prefix("enter").unwrap_or("").trim();
+                let b = self
+                    .app
+                    .ui
+                    .folder_mut()
+                    .ok_or("no folder listing on screen")?;
+                let location = b
+                    .entries
+                    .iter()
+                    .find(|e| e.name == name)
+                    .map(|e| e.location.clone())
+                    .ok_or_else(|| format!("no folder {name:?} here"))?;
+                let list = b.enter(name, location);
+                self.app.apply(list);
+                self.app.repaint_all();
+                self.run_frames(3)?;
+            }
+            Some("tab") => {
+                let screen = screen_named(parts.get(1).copied().unwrap_or("home"))?;
+                self.app.ui.press_tab(screen);
+                self.app.repaint_all();
+                self.run_frames(3)?;
+            }
             Some("screen") => {
-                use crate::ui::{Screen, SettingsTab};
-                let screen = match parts.get(1).copied().unwrap_or("home") {
-                    "home" => Screen::Home,
-                    "history" => Screen::History,
-                    "sources" => Screen::Sources,
-                    "settings" => Screen::Settings,
-                    "playlists" => Screen::Playlists,
-                    "upnext" => Screen::UpNext,
-                    other => return Err(format!("no screen {other:?}").into()),
-                };
+                use crate::ui::SettingsTab;
+                let screen = screen_named(parts.get(1).copied().unwrap_or("home"))?;
                 let ui = &mut self.app.ui;
                 ui.screen = screen;
                 ui.details = None;
                 ui.remap_open = None;
                 ui.remap_grip = false;
-                // As the tab does: Sources shows the list, not a source or
-                // a form.
+                // At its top: Sources shows the list, not a source or a
+                // form.
                 ui.source = None;
                 ui.source_form = None;
                 ui.pin_form = None;
@@ -741,10 +775,7 @@ impl Sim {
                     .get(1)
                     .ok_or("open-source needs a source")?
                     .to_string();
-                self.app.apply(crate::ui::Action::OpenSource {
-                    source,
-                    back_to: crate::ui::Screen::Home,
-                });
+                self.app.apply(crate::ui::Action::OpenSource(source));
                 self.app.repaint_all();
                 self.run_frames(3)?;
             }
@@ -870,7 +901,8 @@ impl Sim {
                     limit: Some(1),
                     ..Default::default()
                 })?;
-                self.app.ui.details = first.first().map(|r| r.id);
+                let on = self.app.ui.screen;
+                self.app.ui.details = first.first().map(|r| (on, r.id));
                 self.app.repaint_all();
                 self.run_frames(3)?;
             }

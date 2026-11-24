@@ -107,7 +107,6 @@ impl App {
             self.ui.source = Some(SourceView {
                 source: source.clone(),
                 name: src.name().to_string(),
-                back_to: Screen::Sources,
                 page: SourcePage::Folders(Browse {
                     source: source.clone(),
                     ..Default::default()
@@ -169,10 +168,11 @@ impl App {
         });
     }
 
-    /// Opens a source in the browser its kind gets: the headset's videos
-    /// and folders, a Jellyfin/Emby client, a feed's scenes, or folders.
-    pub(super) fn open_source(&mut self, source: String, back_to: Screen) {
-        self.ui.details = None;
+    /// Opens a source at its top in the browser its kind gets: the
+    /// headset's videos and folders, a Jellyfin/Emby client, a feed's
+    /// scenes, or folders.
+    pub(super) fn open_source(&mut self, source: String) {
+        self.ui.close_details_on(Screen::Sources);
         self.ui.pin_form = None;
         self.ui.source_form = None;
         self.ui.screen = Screen::Sources;
@@ -180,7 +180,6 @@ impl App {
             self.ui.source = Some(SourceView {
                 source,
                 name: tr!("sources-local").into(),
-                back_to,
                 page: SourcePage::Local(Default::default()),
             });
             return;
@@ -202,7 +201,6 @@ impl App {
         let view = |page| SourceView {
             source: source.clone(),
             name: name.clone(),
-            back_to,
             page,
         };
         match kind {
@@ -650,7 +648,7 @@ impl App {
                     Some(e) => tr!("source-added-unsaved", name = cfg.name(), error = e),
                     None => tr!("source-added", name = cfg.name()),
                 });
-                self.open_source(cfg.id().to_string(), Screen::Sources);
+                self.open_source(cfg.id().to_string());
                 saved
             }
         }
@@ -780,7 +778,7 @@ impl App {
             self.ui.unlocked_sources.insert(source.clone());
             self.ui.pin_form = None;
             self.sync_locks();
-            self.open_source(source, Screen::Sources);
+            self.open_source(source);
         } else if let Some(f) = self.ui.pin_form.as_mut() {
             f.pin.clear();
             f.wrong = true;

@@ -657,7 +657,7 @@ impl App {
                 if let Some(url) = &rec.thumbnail_url {
                     self.thumbs.forget(url);
                 }
-                if self.ui.details == Some(rec.id) {
+                if self.ui.details.is_some_and(|(_, id)| id == rec.id) {
                     self.ui.details = None;
                 }
                 if self.ui.format_drawer == Some(rec.id) {

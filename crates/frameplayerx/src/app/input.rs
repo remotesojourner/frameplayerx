@@ -296,7 +296,7 @@ impl App {
             }
         } else if playing && self.ui.adjust_open && self.ui_visible && !self.show_browser {
             self.ui.adjust_open = false;
-        } else if (!playing || self.show_browser) && self.ui.details.is_some() {
+        } else if (!playing || self.show_browser) && self.ui.details_here().is_some() {
             self.ui.details = None;
         } else if (!playing || self.show_browser) && self.ui.source_form.is_some() {
             self.ui.source_form = None;

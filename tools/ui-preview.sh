@@ -414,7 +414,7 @@ point main 0.12 0.63
 frames 8
 panel main local-hover-title
 # The keyboard, from the search field.
-point main 0.12 0.30
+point main 0.12 0.32
 click
 frames 8
 panel keyboard keyboard

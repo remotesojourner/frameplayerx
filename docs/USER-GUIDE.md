@@ -561,11 +561,18 @@ frameplayerx.log and not sent again.
 ends with a row of your sources, or a grid of them with the watch history
 off:
 **On this device** first, then your libraries and every other source you
-added, then *Add a source*. Each opens in a browser made for that kind of
-source (see [Sources](#sources)); Back returns to Home. Its title is always
-the source's name, with where you are in it underneath. Sources locked
-with a PIN stay off Home until unlocked; the padlock on a tile locks it
-(or, without a PIN yet, asks for one).
+added, then *Add a source*. Each opens at its top, under the Sources tab,
+in a browser made for that kind of source (see [Sources](#sources)). Its
+title is the way there: **Sources**, the source's name and each folder or
+page you opened, ending with where you are; press any of them to go back
+to it, or Back for one step (from a source's top, to the list of sources).
+A long way shows "…" for the places in its middle. Sources locked with a
+PIN stay off Home until unlocked; the padlock on a tile locks it (or,
+without a PIN yet, asks for one).
+
+Each tab stays where you left it while you use another: the source and
+folder you were in, the playlist open, a video's details. Press the tab
+you're on to go to its top.
 
 Point at a title that is cut short, here or on the control bar, to read it
 whole.
