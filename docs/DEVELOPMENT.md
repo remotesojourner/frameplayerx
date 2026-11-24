@@ -60,6 +60,7 @@ English is the source; every other language translates its messages, and a
 message a language lacks shows in English. Translators work on
 [Codeberg Translate](https://translate.codeberg.org/projects/frameplayerx/),
 which sends their changes as pull requests (see [Help translate](../README.md#help-translate)).
+What's New lines aren't among them: see [What's New](#whats-new).
 
 - Text the interface shows goes through `tr!("message-id")`, or
   `tr!("message-id", name = value)` with arguments. Add the message to the
@@ -763,6 +764,41 @@ the highest version on the Stable channel without a `-` part, on Beta any
 version (`releases/latest` never offers a pre-release). In-app updates
 and `frameplayerx-install` without `--zip` only install releases whose
 manifest is signed with the release key.
+
+### What's New
+
+The first start after an upgrade lists what changed since the version run
+before, in plain words. Each `feat`, `fix` and `perf` commit adds a file to
+`crates/frameplayerx/whats-new/`, named for the change:
+
+```json
+{
+  "kind": "feat",
+  "en": "Download videos from your media servers and network shares to the headset or its microSD card, and watch them without a connection. You'll find them under Downloads in Sources.",
+  "de": "…", "es": "…", "fr": "…", "ja": "…", "zh-CN": "…"
+}
+```
+
+- `kind` is `feat`, `fix` or `perf`: Features, Fixes or Performance on
+  the page.
+- Write for someone who isn't technical: what they can do now, or what
+  stopped going wrong, and where it is in the menus. No codecs, caches or
+  other internals; the commit subject keeps the detail for the release
+  notes.
+- Every language is filled in, machine-translated in the same commit:
+  these files aren't on Codeberg Translate.
+  `cargo test -p frameplayerx whats_new` checks each one has them all.
+- A later commit on the same branch that changes the feature edits its
+  file. Rewording a file that has shipped doesn't show it again; only a
+  new file does.
+
+Packaging runs `tools/whats-new.sh`, which hands the build
+(`FP_WHATS_NEW`) the version that first shipped each file: the earliest
+release tag holding the commit that added it, else the version being
+built. An upgrade then lists only what the version before it lacked,
+betas included. It needs the whole history, which CI's check job fetches.
+A build without it, as local builds are, shows no What's New;
+`whats-new [FROM]` in a preview script shows every file.
 
 ### Install buttons
 

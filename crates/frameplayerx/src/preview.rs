@@ -581,6 +581,19 @@ impl Sim {
                 self.app.repaint_all();
                 self.run_frames(3)?;
             }
+            // What's New with every change this build holds, as after an
+            // upgrade from FROM (`whats-new 0.20.0`), else from a version
+            // not known.
+            Some("whats-new") => {
+                let current = fp_updater::Version::parse(env!("CARGO_PKG_VERSION"))
+                    .map_err(|e| e.to_string())?;
+                self.app.ui.whats_new = crate::whats_new::everything(&current).map(|mut w| {
+                    w.from = parts.get(1).map(ToString::to_string);
+                    w
+                });
+                self.app.repaint_all();
+                self.run_frames(3)?;
+            }
             // The page offered after a crash, its report made from this
             // run's log as if it had ended in a crash; `crash-report shown`
             // opens the report.

@@ -175,6 +175,9 @@ pub struct Settings {
     pub haptic_devices: Vec<HapticDeviceConfig>,
     pub update_channel: fp_updater::Channel,
     pub check_updates: bool,
+    /// The newest version run so far: What's New lists what came after it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub seen_version: Option<String>,
     /// UI text size multiplier, in [`UI_SCALES`].
     pub ui_scale: f32,
     /// Refresh rate, render resolution and foveated rendering.
@@ -351,6 +354,7 @@ impl Default for Settings {
                 fp_updater::Channel::Stable
             },
             check_updates: true,
+            seen_version: None,
             ui_scale: 1.0,
             display: Default::default(),
             image_cache_mb: 500,

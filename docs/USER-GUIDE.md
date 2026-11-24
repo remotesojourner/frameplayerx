@@ -103,7 +103,9 @@ FramePlayerX checks for a new version each time it starts, but doesn't
 install it by itself. To update, open **Settings › Updates**: when a new
 version is out it's listed there with what changed. Press **Download and
 install**, then **Restart now**. **Check now** looks again without
-restarting.
+restarting. The first start of the new version shows **What's new**: the
+features, fixes and speed-ups since the version you used before, so on
+Beta each test version shows only its own.
 
 The **Stable** channel gets finished releases only; **Beta** also gets
 test versions before they are released. Switch off **Check for updates at

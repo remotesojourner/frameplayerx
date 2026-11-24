@@ -1,0 +1,9 @@
+{
+  "kind": "feat",
+  "en": "Switching tabs no longer loses your place. Press the tab you're on to go back to its top, and press a folder in a source's page title to go back to it.",
+  "de": "Beim Wechseln zwischen Tabs geht Ihre Stelle nicht mehr verloren. Drücken Sie den Tab, in dem Sie gerade sind, um zu seinem Anfang zu gelangen, und einen Ordner im Seitentitel einer Quelle, um zu ihm zurückzukehren.",
+  "es": "Cambiar de pestaña ya no te hace perder el sitio. Pulsa la pestaña en la que estás para volver arriba, y pulsa una carpeta en el título de la página de una fuente para volver a ella.",
+  "fr": "Changer d’onglet ne vous fait plus perdre votre place. Appuyez sur l’onglet où vous êtes pour revenir en haut, et sur un dossier dans le titre de la page d’une source pour y revenir.",
+  "ja": "タブを切り替えても、見ていた場所が失われなくなりました。今いるタブを押すと先頭に戻り、ソースのページタイトルにあるフォルダーを押すとそのフォルダーに戻ります。",
+  "zh-CN": "切换标签页时不会再丢失位置。按当前所在的标签页可回到顶部，按来源页面标题中的文件夹可回到该文件夹。"
+}

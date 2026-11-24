@@ -1,0 +1,9 @@
+{
+  "kind": "feat",
+  "en": "A clock above the controls shows the time and when the video will end, and the time also shows beside the tabs. Press the video's length to see how much is left.",
+  "de": "Eine Uhr über der Steuerleiste zeigt die Uhrzeit und wann das Video endet, und auch neben den Tabs steht die Uhrzeit. Drücken Sie auf die Länge des Videos, um zu sehen, wie viel noch übrig ist.",
+  "es": "Un reloj sobre los controles muestra la hora y cuándo termina el vídeo, y la hora también aparece junto a las pestañas. Pulsa la duración del vídeo para ver cuánto queda.",
+  "fr": "Une horloge au-dessus des commandes affiche l’heure et la fin de la vidéo, et l’heure s’affiche aussi à côté des onglets. Appuyez sur la durée de la vidéo pour voir combien de temps il reste.",
+  "ja": "コントロールの上に時計が表示され、現在の時刻と映像が終わる時刻がわかります。タブの横にも時刻が表示されます。映像の長さを押すと、残り時間を確認できます。",
+  "zh-CN": "控制栏上方的时钟显示当前时间和视频的结束时间，标签页旁也会显示时间。按视频时长可查看剩余时间。"
+}

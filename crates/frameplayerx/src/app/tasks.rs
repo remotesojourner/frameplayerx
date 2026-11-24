@@ -274,6 +274,36 @@ impl App {
             .map(ui::crash::CrashPrompt::new);
     }
 
+    /// On start: what's new since the version run before, if this one is
+    /// newer. `returning` is false on the first start, which has nothing
+    /// to compare with. Nothing to show records this version at once.
+    pub(crate) fn offer_whats_new(&mut self, returning: bool) {
+        let Ok(current) = fp_updater::Version::parse(env!("CARGO_PKG_VERSION")) else {
+            return;
+        };
+        let seen = self.settings.seen_version.as_deref();
+        let seen = seen.and_then(|s| fp_updater::Version::parse(s).ok());
+        if seen
+            .as_ref()
+            .is_some_and(|s| current.cmp_precedence(s).is_le())
+        {
+            return;
+        }
+        self.ui.whats_new = returning
+            .then(|| crate::whats_new::since(seen.as_ref(), &current))
+            .flatten();
+        if self.ui.whats_new.is_none() {
+            self.settings.seen_version = Some(current.to_string());
+        }
+    }
+
+    /// What's New was read: the next start compares with this version.
+    pub(super) fn close_whats_new(&mut self) {
+        if let Some(w) = self.ui.whats_new.take() {
+            self.settings.seen_version = Some(w.to);
+        }
+    }
+
     /// Opens `address` in Steam's browser, which shows over the app: the
     /// headset has no other browser to hand it to.
     pub(super) fn open_web_page(&mut self, address: &str) {

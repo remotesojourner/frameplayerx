@@ -177,7 +177,7 @@ fn steam_code(vdf: &str) -> Option<&'static str> {
 }
 
 /// [`PSEUDO`]'s text.
-fn pseudo(s: &str) -> Cow<'_, str> {
+pub(crate) fn pseudo(s: &str) -> Cow<'_, str> {
     let mut out = String::with_capacity(s.len() * 2);
     for c in s.chars() {
         let accented = match c {

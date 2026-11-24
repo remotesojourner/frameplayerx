@@ -27,6 +27,7 @@ pub mod subtitle_search;
 pub mod subtitle_text;
 pub mod theme;
 pub mod thumbs;
+pub mod whats_new;
 pub mod widgets;
 
 use crate::playback::OpenRequest;
@@ -435,6 +436,7 @@ pub enum Action {
     /// Send the crash report the start offered, or don't.
     SendCrashReport,
     DismissCrashReport,
+    CloseWhatsNew,
     Recenter,
     TogglePassthrough,
     /// Settings › General › Screen follows you.
@@ -1007,6 +1009,9 @@ pub struct UiState {
     pub subtitle_account: subtitle_search::Account,
     /// The last run crashed: asks whether to send a report.
     pub crash: Option<crash::CrashPrompt>,
+    /// The first start after an upgrade: what changed since the version
+    /// run before.
+    pub whats_new: Option<crate::whats_new::WhatsNew>,
     /// The file whose Delete file was pressed once, and when: a second
     /// press within 4 seconds deletes it.
     pub delete_file_armed: Option<(String, std::time::Instant)>,
@@ -1107,6 +1112,7 @@ impl Default for UiState {
             subtitle_search: None,
             subtitle_account: Default::default(),
             crash: None,
+            whats_new: None,
             delete_file_armed: None,
             deleting: None,
             delete_checks: Default::default(),

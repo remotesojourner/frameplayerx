@@ -1240,6 +1240,17 @@ crash-show-report = Show the report
 # Short: a button.
 crash-dont-send = Don't send
 crash-report-heading = The report, exactly as it would be sent
+# The page the first start after an update shows.
+whats-new-title = What's new
+# $from is the version used before, $to the one now running.
+whats-new-versions = Version { $from } → { $to }
+# The version now running, when the one before isn't known.
+whats-new-version = Version { $version }
+whats-new-features = Features
+whats-new-fixes = Fixes
+whats-new-performance = Performance
+# Short: a button.
+whats-new-close = Got it
 toast-adjustments-saved = Adjustments saved
 toast-preset-saved = Saved as { $name }
 toast-preset = Preset: { $name }

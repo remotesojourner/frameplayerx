@@ -776,6 +776,12 @@ impl Library {
         Library::open(path)
     }
 
+    /// Whether an earlier run left a library in `dir`, of this schema or
+    /// one before it.
+    pub fn exists_in(dir: &Path) -> bool {
+        db_path_in(dir).exists() || older_db_paths(dir).iter().any(|p| p.exists())
+    }
+
     /// A private in-memory database, for tests and previews.
     pub fn open_in_memory() -> Result<Library> {
         Library::init(Connection::open_in_memory()?)
@@ -1663,6 +1669,17 @@ mod tests {
             .unwrap();
         drop(lib);
         assert_eq!(rating(&Library::open_in(dir.path()).unwrap()), 2);
+    }
+
+    #[test]
+    fn a_library_from_an_earlier_run_is_found_whatever_its_schema() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(!Library::exists_in(dir.path()));
+        std::fs::write(dir.path().join("library-4.sqlite3"), b"").unwrap();
+        assert!(Library::exists_in(dir.path()));
+        let dir = tempfile::tempdir().unwrap();
+        drop(Library::open_in(dir.path()).unwrap());
+        assert!(Library::exists_in(dir.path()));
     }
 
     #[test]

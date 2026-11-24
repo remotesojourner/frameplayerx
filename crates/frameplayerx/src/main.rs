@@ -36,6 +36,7 @@ mod subtitles;
 mod trickplay;
 mod ui;
 mod watch;
+mod whats_new;
 mod world;
 
 use app::{App, FrameInput, LayerDraw};
@@ -433,7 +434,9 @@ fn run_xr(args: &Args) -> Result<(), Error> {
     let mut renderer = Renderer::new(gpu.clone(), session.format)?;
     fp_media::set_hevc_10bit_hardware(renderer.shows_q10c());
     fp_media::set_shared_frames(renderer.reads_decoder_buffers());
+    let returning = fp_library::Library::exists_in(&fp_core::dirs::data_dir());
     let mut app = make_app(settings)?;
+    app.offer_whats_new(returning);
     app.set_about(vec![
         ("OpenXR runtime".into(), ctx.runtime.clone()),
         ("Headset".into(), ctx.system_name.clone()),

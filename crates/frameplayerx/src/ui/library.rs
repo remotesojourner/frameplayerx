@@ -50,6 +50,10 @@ pub fn browser(ctx: &egui::Context, v: &mut View) {
                 super::crash::prompt(ui, v);
                 return;
             }
+            if v.state.whats_new.is_some() {
+                super::whats_new::page(ui, v);
+                return;
+            }
             if v.state.picking.is_some() {
                 super::playlists::picker(ui, v);
                 return;
