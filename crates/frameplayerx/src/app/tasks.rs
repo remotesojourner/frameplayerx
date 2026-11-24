@@ -174,7 +174,7 @@ impl App {
         self.ui.scans.remove(source);
         if self.source_config(source).is_none() {
             // Removed while it was scanned.
-            let _ = self.services.library.forget_unwatched(source);
+            let _ = self.services.library.forget_source(source);
             return;
         }
         let name = self.source_name(source);
