@@ -542,7 +542,7 @@ mod tests {
     fn names_paths_and_addresses_are_replaced() {
         let log = format!("{LOG}          [FATAL] crashed with signal 11\n");
         let r = Report::from_log(&log, &private(), "System: test").unwrap();
-        for secret in [
+        for hidden in [
             "Garden",
             "Holiday",
             "alice",
@@ -551,7 +551,7 @@ mod tests {
             "192.168",
             "/home/deck",
         ] {
-            assert!(!r.text.contains(secret), "{secret} in\n{}", r.text);
+            assert!(!r.text.contains(hidden), "{hidden} is in the report");
         }
         // What tells a crash apart stays.
         for kept in [
@@ -624,8 +624,8 @@ mod tests {
             "only the first line: {}",
             r.summary
         );
-        for secret in ["Holiday", "Garden", "jf.lan", "alice", "/home/deck"] {
-            assert!(!r.text.contains(secret), "{secret} in\n{}", r.text);
+        for hidden in ["Holiday", "Garden", "jf.lan", "alice", "/home/deck"] {
+            assert!(!r.text.contains(hidden), "{hidden} is in the report");
         }
         // The log names the same video with the same placeholder.
         let video = r.summary.split(' ').next().unwrap().to_string()
