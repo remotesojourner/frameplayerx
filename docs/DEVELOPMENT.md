@@ -859,10 +859,23 @@ in `sources.json` (libraries included), haptic devices, URLs, IP addresses,
 email addresses, paths under home and media folders, and media file names
 replaced by placeholders such as `<video 1>` (`crates/frameplayerx/src/crash.rs`).
 
+**Send diagnostics** in Settings › About sends the same kind of report
+about any problem, once the user has written what went wrong: what they
+wrote, the versions, the About table, the open video's stream and decoder
+counters, the source kinds, `settings.json`, this run's log (first 6 KB,
+last 30 KB) and the last 10 KB of the run before, all through the same
+placeholders. The relay answers with the issue's number, which the app
+shows as the reference (`D-142`) for the user to give in their bug report.
+The preview's `diagnostics [shown] WORDS` opens the page with WORDS
+written; `shown` also saves the report as `diagnostics.txt`.
+
 It goes to `tools/crash-relay/`, a Cloudflare Worker that files it as an
 issue in a private repository, so the GitHub token never ships in the app.
-Without a relay (`REPORT_URL` is `None`), the app never asks. To set one
-up, once:
+A report says its `kind`, `crash` (also when it has none, as from copies
+released before diagnostics) or `diagnostics`, which the issue's title
+names. Without a relay (`REPORT_URL` is `None`), the app never asks and
+About has no Send diagnostics. Deploy a changed relay before the app that
+needs it ships. To set one up, once:
 
 1. Create a private repository for the reports (`REPO` in
    `tools/crash-relay/wrangler.toml`, `frameplayerx-crashes` by default).
@@ -878,8 +891,8 @@ up, once:
 Check routing without filing an issue with `curl -X POST <url>/report -d '{}'`
 (expected `400`). To check issue creation deliberately, use
 `curl -X POST <url>/report -d '{"app":"frameplayerx","version":"test","summary":"test","text":"test"}'`:
-`201` and a new issue. The preview's `crash-report` command shows the page
-with a report made from its own log.
+`201`, a new issue and its number. The preview's `crash-report` command
+shows the page with a report made from its own log.
 
 ## Artwork
 

@@ -54,6 +54,10 @@ pub fn browser(ctx: &egui::Context, v: &mut View) {
                 super::whats_new::page(ui, v);
                 return;
             }
+            if v.state.diagnostics.is_some() {
+                super::diagnostics::page(ui, v);
+                return;
+            }
             if v.state.picking.is_some() {
                 super::playlists::picker(ui, v);
                 return;

@@ -34,7 +34,7 @@ fn contains() -> [&'static str; 3] {
     ]
 }
 
-fn goes() -> [&'static str; 2] {
+pub(super) fn goes() -> [&'static str; 2] {
     [tr!("crash-goes-developers"), tr!("crash-goes-nothing-else")]
 }
 
@@ -119,7 +119,7 @@ pub fn prompt(ui: &mut egui::Ui, v: &mut View) {
         });
 }
 
-fn list(ui: &mut egui::Ui, title: &str, items: &[&str]) {
+pub(super) fn list(ui: &mut egui::Ui, title: &str, items: &[&str]) {
     widgets::section_label(ui, title);
     for item in items {
         ui.horizontal_top(|ui| {

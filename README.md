@@ -37,7 +37,7 @@ A VR video player for the Valve Steam Frame. It plays flat, 180°, 360° and fis
 - **Custom controls**: choose what each controller button does, or go hands-free: point with your head, and rest its dot on a button to press it
 - **Languages**: English, German, Spanish, French, Japanese and Simplified Chinese, following the language Steam is set to; the phone remote follows the headset
 - **Updates**: checks for a new version when it starts, installs it from Settings when you choose to and then shows what's new since the version you had, on a Stable or a Beta channel
-- **No FramePlayerX account or tracking**: it connects to the servers you add, to Plex's account services if you link Plex (to sign in, find your servers and renew access), to OpenSubtitles when you use Find subtitles or sign in to it (the video's title, year, episode and IDs, and a fingerprint of the file) and to GitHub to check for updates, and sends nothing after a crash unless you choose to send the report, which you can read first (no video names, folders or server addresses)
+- **No FramePlayerX account or tracking**: it connects to the servers you add, to Plex's account services if you link Plex (to sign in, find your servers and renew access), to OpenSubtitles when you use Find subtitles or sign in to it (the video's title, year, episode and IDs, and a fingerprint of the file) and to GitHub to check for updates, and sends nothing after a crash, or when you report a problem with Send diagnostics, unless you choose to send the report, which you can read first (no video names, folders or server addresses)
 
 ---
 

@@ -110,6 +110,9 @@ pub(super) enum Job {
     /// The last run crashed: the report the user may send.
     CrashReport(Box<crate::crash::Report>),
     CrashSent(Result<(), String>),
+    DiagnosticsGathered(Box<crate::crash::Diagnostics>),
+    /// Sent, with the number the relay gave it.
+    DiagnosticsSent(Result<Option<u64>, String>),
     /// Steam was asked to open a web page.
     WebPageOpened(Result<(), String>),
     SubtitleSearch(Box<subtitle_search::Job>),
@@ -334,25 +337,7 @@ impl App {
         c.error = None;
         let body = c.report.body();
         self.jobs.spawn("crash-send", move || {
-            let http = fp_sources::http::HttpClient::new(Default::default(), None);
-            let r = http
-                .request(
-                    "POST",
-                    url,
-                    &[("Content-Type", "application/json")],
-                    Some(&body),
-                    4096,
-                )
-                .map_err(|e| ui::errors::source(&e))
-                .and_then(|reply| match reply.status {
-                    200..=299 => Ok(()),
-                    status => Err(tr!(
-                        "error-http-status",
-                        status = status.to_string(),
-                        url = url
-                    )),
-                });
-            Job::CrashSent(r)
+            Job::CrashSent(diagnostics::post_report(url, &body).map(|_| ()))
         });
     }
 
@@ -617,6 +602,8 @@ impl App {
                     c.error = Some(e);
                 }
             }
+            Job::DiagnosticsGathered(d) => self.diagnostics_gathered(*d),
+            Job::DiagnosticsSent(r) => self.diagnostics_sent(r),
             Job::WebPageOpened(Err(e)) => {
                 log::warn!("opening a web page: {e}");
                 self.ui.toast(tr!("error-open-page", error = e));
