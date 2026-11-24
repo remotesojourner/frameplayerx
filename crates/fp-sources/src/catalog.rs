@@ -123,6 +123,9 @@ pub struct CatalogItem {
     /// Whether the server lets this video's files be deleted (never a
     /// series, a season or a folder).
     pub can_delete: bool,
+    /// Whether the server lets this video be downloaded to the headset
+    /// (never a series, a season or a folder).
+    pub can_download: bool,
 }
 
 /// One version of a film or video: a media source of the item.

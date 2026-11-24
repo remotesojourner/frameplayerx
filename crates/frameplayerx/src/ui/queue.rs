@@ -52,7 +52,7 @@ pub fn buttons(ui: &mut egui::Ui, v: &mut View, req: &OpenRequest) {
         v.state.picking = Some(Picking {
             reqs: vec![req.clone()],
             title: req.shown_title(),
-            with_delete: false,
+            from_row: false,
         });
     }
 }
@@ -153,7 +153,7 @@ pub fn page(ui: &mut egui::Ui, v: &mut View) {
             v.state.picking = Some(Picking {
                 reqs: q.items.clone(),
                 title: tr!("player-up-next").into(),
-                with_delete: false,
+                from_row: false,
             });
         }
     });

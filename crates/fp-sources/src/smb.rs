@@ -342,15 +342,7 @@ impl Source for SmbSource {
     }
 
     fn open(&self, location: &str) -> Result<Arc<dyn ByteSource>> {
-        let loc = SmbLocation::parse(&self.current_url(location)?)?;
-        self.check_same_share(&loc)?;
-        if loc.path.is_empty() {
-            return Err(Error::invalid(
-                location,
-                "a share or server cannot be opened as a file",
-            ));
-        }
-        self.open_file(&loc)
+        self.open_reader(location, false)
     }
 
     fn parent(&self, location: &str) -> Option<String> {
@@ -371,6 +363,15 @@ impl Source for SmbSource {
         let mut video = video.clone();
         video.location = self.current_url(&video.location)?;
         crate::sidecars_from_folder(self, &video)
+    }
+
+    fn download_allowed(&self, _location: &str) -> Option<bool> {
+        Some(cfg!(feature = "smb"))
+    }
+
+    fn open_download(&self, video: &Entry) -> Result<crate::OriginalFile> {
+        let reader = self.open_reader(&video.location, true)?;
+        Ok(crate::file_download(video, reader))
     }
 
     fn can_delete(&self) -> bool {
@@ -417,6 +418,20 @@ impl SmbSource {
             }
         }
     }
+
+    /// Opens the file at `location` for playback, or for a download
+    /// (`bulk`).
+    fn open_reader(&self, location: &str, bulk: bool) -> Result<Arc<dyn ByteSource>> {
+        let loc = SmbLocation::parse(&self.current_url(location)?)?;
+        self.check_same_share(&loc)?;
+        if loc.path.is_empty() {
+            return Err(Error::invalid(
+                location,
+                "a share or server cannot be opened as a file",
+            ));
+        }
+        self.open_file(&loc, bulk)
+    }
 }
 
 #[cfg(not(feature = "smb"))]
@@ -433,7 +448,7 @@ impl SmbSource {
         Err(Error::SmbUnavailable("compiled without SMB support".into()))
     }
 
-    fn open_file(&self, _loc: &SmbLocation) -> Result<Arc<dyn ByteSource>> {
+    fn open_file(&self, _loc: &SmbLocation, _bulk: bool) -> Result<Arc<dyn ByteSource>> {
         Err(Error::SmbUnavailable("compiled without SMB support".into()))
     }
 
@@ -674,7 +689,13 @@ mod imp {
             self.sessions.delete_file(loc, &loc.to_url())
         }
 
-        pub(super) fn open_file(&self, loc: &SmbLocation) -> Result<Arc<dyn ByteSource>> {
+        /// Opens a file for playback, or for a download (`bulk`): see
+        /// [`crate::bulk`].
+        pub(super) fn open_file(
+            &self,
+            loc: &SmbLocation,
+            bulk: bool,
+        ) -> Result<Arc<dyn ByteSource>> {
             let url = loc.to_url();
             let open = self.sessions.open_file(loc, &url)?;
             let net = Arc::new(NetCounters::default());
@@ -686,6 +707,9 @@ mod imp {
                 url,
                 net: net.clone(),
             };
+            if bulk {
+                return Ok(Arc::new(crate::bulk::BulkSource::new(fetcher, None)));
+            }
             Ok(Arc::new(CachedSource::counted(
                 fetcher,
                 &CacheOptions::default(),

@@ -767,6 +767,53 @@ impl Source for FeedSource {
         Ok(Arc::new(self.client.open(&url)?))
     }
 
+    /// A scene can be downloaded when it lists a file, not only encodings
+    /// the server transcodes: that takes asking the server.
+    fn download_allowed(&self, location: &str) -> Option<bool> {
+        let resolved = self.resolved_location(location).ok()?;
+        is_direct_file(&resolved).then_some(true)
+    }
+
+    fn ask_download_allowed(&self, location: &str) -> Result<bool> {
+        if let Some(allowed) = self.download_allowed(location) {
+            return Ok(allowed);
+        }
+        let scene = self.scene(location, true)?;
+        Ok(scene.sources.iter().any(|s| !s.is_transcode()))
+    }
+
+    /// The file playback picks: the tallest within the maximum height.
+    fn open_download(&self, video: &Entry) -> Result<crate::OriginalFile> {
+        let resolved = self.resolved_location(&video.location)?;
+        let (url, title) = if is_direct_file(&resolved) {
+            (resolved.clone(), video.name.clone())
+        } else {
+            let scene = self.scene(&video.location, true)?;
+            let file = scene
+                .best_source(self.max_height)
+                .filter(|s| !s.is_transcode())
+                .ok_or_else(|| {
+                    Error::Unsupported(format!(
+                        "{} only transcodes {}",
+                        self.name,
+                        redact(&video.location)
+                    ))
+                })?;
+            let title = Some(scene.title.clone())
+                .filter(|t| !t.is_empty())
+                .unwrap_or_else(|| video.name.clone());
+            (file.url.clone(), title)
+        };
+        let reader = self.client.open_bulk(&url)?;
+        let served = last_segment(&url);
+        let name = if is_video_name(&served) {
+            served
+        } else {
+            title
+        };
+        Ok(crate::OriginalFile { reader, name })
+    }
+
     fn transcode_targets(&self, video: &Entry) -> Vec<crate::TranscodeTarget> {
         let Ok(resolved) = self.resolved_location(&video.location) else {
             return Vec::new();
@@ -1119,6 +1166,63 @@ mod tests {
         ]}]});
         let s = deovr::parse_deovr_scene(&only, "https://vr/deovr/1");
         assert!(s.best_source(None).unwrap().is_transcode());
+    }
+
+    #[test]
+    fn a_scene_downloads_its_file_and_never_a_transcode() {
+        let server = test_server::TestServer::start(move |r| {
+            let scene = |v: Value| {
+                test_server::resp(200, v.to_string(), &[("Content-Type", "application/json")])
+            };
+            match r.path() {
+                "/feed" => scene(json!({"scenes": [{"name": "All", "list": [
+                    {"id": 1, "title": "Both", "video_url": "/scene/1"},
+                    {"id": 2, "title": "Transcoded", "video_url": "/scene/2"}
+                ]}]})),
+                "/scene/1" => scene(json!({"title": "Both", "encodings": [
+                    {"name": "transcoding", "videoSources": [
+                        {"resolution": 1080, "url": "/stream/1.mp4?resolution=FULL_HD"}]},
+                    {"name": "direct", "videoSources": [
+                        {"resolution": 2880, "url": "/files/Both_180_LR.mp4"}]}
+                ]})),
+                "/scene/2" => scene(json!({"title": "Transcoded", "encodings": [
+                    {"name": "transcoding", "videoSources": [
+                        {"resolution": 1080, "url": "/stream/2.mp4?resolution=FULL_HD"}]}
+                ]})),
+                "/files/Both_180_LR.mp4" => test_server::serve_bytes(r, b"scene file", true),
+                _ => test_server::resp(404, Vec::new(), &[]),
+            }
+        });
+        let feed = FeedSource::deovr(&FeedConfig {
+            id: "deo".into(),
+            name: "DeoVR".into(),
+            url: server.url("/feed"),
+            credentials: None,
+            insecure_tls: false,
+            parallel_downloads: false,
+            max_height: None,
+        })
+        .unwrap();
+        let scene = |id: &str| {
+            Entry::new(
+                "Saved",
+                crate::location::encode("deo", "deovr-id", id),
+                EntryKind::Video,
+            )
+        };
+        assert_eq!(feed.download_allowed(&scene("1").location), None);
+        assert!(feed.ask_download_allowed(&scene("1").location).unwrap());
+        assert!(!feed.ask_download_allowed(&scene("2").location).unwrap());
+        let file = feed.open_download(&scene("1")).unwrap();
+        assert_eq!(file.name, "Both_180_LR.mp4");
+        let mut bytes = [0; 32];
+        let n = file.reader.read_at(0, &mut bytes).unwrap();
+        assert_eq!(&bytes[..n], b"scene file");
+        assert!(matches!(
+            feed.open_download(&scene("2")),
+            Err(Error::Unsupported(_))
+        ));
+        assert_eq!(server.count(|r| r.path().starts_with("/stream/")), 0);
     }
 
     #[test]

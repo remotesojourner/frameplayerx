@@ -90,6 +90,9 @@ pub struct PlexSource {
     /// Whether the server and current user allow media deletion
     /// (`MediaContainer.allowMediaDeletion`).
     allow_deletion: Mutex<Option<bool>>,
+    /// Whether the current user may download (`MediaContainer.allowSync`
+    /// of the server's own answer, off for a user without Allow Downloads).
+    allow_sync: Mutex<Option<bool>>,
     facets: Mutex<HashMap<String, String>>,
     encoding: Arc<Mutex<Option<String>>>,
     id: String,
@@ -120,6 +123,7 @@ impl PlexSource {
             versions: Default::default(),
             metadata: Default::default(),
             allow_deletion: Default::default(),
+            allow_sync: Default::default(),
             facets: Default::default(),
             encoding: Default::default(),
         })
@@ -315,11 +319,14 @@ impl PlexSource {
                     continue;
                 }
             };
-            let allowed = serde_json::from_slice::<Value>(&reply.body)
-                .ok()
-                .and_then(|root| parse_allow_deletion(container(&root)))
-                .unwrap_or(false);
-            *lock(&self.allow_deletion) = Some(allowed);
+            let root = serde_json::from_slice::<Value>(&reply.body).ok();
+            let flag = |name| {
+                root.as_ref()
+                    .and_then(|root| parse_flag(container(root), name))
+                    .unwrap_or(false)
+            };
+            *lock(&self.allow_deletion) = Some(flag("allowMediaDeletion"));
+            *lock(&self.allow_sync) = Some(flag("allowSync"));
             {
                 let mut current = lock(&self.config);
                 if current.url != base || current.machine_identifier != machine {
@@ -394,7 +401,7 @@ impl PlexSource {
     fn json(&self, path: &str) -> Result<Value> {
         let response = self.request("GET", path, &[("Accept", "application/json")])?;
         let value: Value = serde_json::from_slice(&response.body).map_err(Error::from)?;
-        if let Some(allowed) = parse_allow_deletion(container(&value)) {
+        if let Some(allowed) = parse_flag(container(&value), "allowMediaDeletion") {
             *lock(&self.allow_deletion) = Some(allowed);
         }
         Ok(value)
@@ -402,6 +409,18 @@ impl PlexSource {
 
     pub(super) fn cached_allow_deletion(&self) -> Option<bool> {
         *lock(&self.allow_deletion)
+    }
+
+    pub(super) fn cached_allow_sync(&self) -> Option<bool> {
+        *lock(&self.allow_sync)
+    }
+
+    fn allow_sync(&self) -> Result<bool> {
+        if let Some(allowed) = self.cached_allow_sync() {
+            return Ok(allowed);
+        }
+        self.client()?;
+        Ok(self.cached_allow_sync().unwrap_or(false))
     }
 
     pub(super) fn allow_deletion(&self) -> Result<bool> {
@@ -694,6 +713,34 @@ impl Source for PlexSource {
         Ok(self.item(&loc.id)?.can_delete)
     }
 
+    fn download_allowed(&self, location: &str) -> Option<bool> {
+        let loc = self.parse_location(location).ok()?;
+        if loc.kind != "item" {
+            return Some(false);
+        }
+        if !self.cached_allow_sync()? {
+            return Some(false);
+        }
+        if let Some((_, raw)) = lock(&self.metadata).get(&loc.id).cloned()
+            && let Some(item) = self.catalog_item(&raw)
+        {
+            return Some(item.kind.playable());
+        }
+        Some(true)
+    }
+
+    fn ask_download_allowed(&self, location: &str) -> Result<bool> {
+        let loc = self.parse_location(location)?;
+        if loc.kind != "item" || !self.allow_sync()? {
+            return Ok(false);
+        }
+        Ok(self.item(&loc.id)?.kind.playable())
+    }
+
+    fn open_download(&self, video: &Entry) -> Result<crate::OriginalFile> {
+        self.open_original_part(&video.location, &video.name)
+    }
+
     fn delete(&self, location: &str) -> Result<()> {
         let loc = self.parse_location(location)?;
         // A show or a season would take every episode's files with it.
@@ -724,8 +771,9 @@ fn container(value: &Value) -> &Value {
     get(value, "MediaContainer").unwrap_or(value)
 }
 
-fn parse_allow_deletion(container: &Value) -> Option<bool> {
-    let v = container.get("allowMediaDeletion")?;
+/// A yes-or-no attribute of a `MediaContainer`, however the server spells it.
+fn parse_flag(container: &Value, name: &str) -> Option<bool> {
+    let v = container.get(name)?;
     v.as_bool()
         .or_else(|| v.as_i64().map(|n| n != 0))
         .or_else(|| v.as_u64().map(|n| n != 0))

@@ -461,15 +461,7 @@ impl Source for NfsSource {
     }
 
     fn open(&self, location: &str) -> Result<Arc<dyn ByteSource>> {
-        let loc = NfsLocation::parse(&self.current_url(location)?)?;
-        self.check_owned(&loc)?;
-        if self.is_export_root(&loc) {
-            return Err(Error::invalid(
-                location,
-                "an export or server cannot be opened as a file",
-            ));
-        }
-        self.open_file(&loc)
+        self.open_reader(location, false)
     }
 
     /// `nfs://host/folder/sub-folder` for a folder,
@@ -525,6 +517,15 @@ impl Source for NfsSource {
         crate::sidecars_from_folder(self, &video)
     }
 
+    fn download_allowed(&self, _location: &str) -> Option<bool> {
+        Some(cfg!(feature = "nfs"))
+    }
+
+    fn open_download(&self, video: &Entry) -> Result<crate::OriginalFile> {
+        let reader = self.open_reader(&video.location, true)?;
+        Ok(crate::file_download(video, reader))
+    }
+
     fn can_delete(&self) -> bool {
         cfg!(feature = "nfs")
     }
@@ -547,6 +548,20 @@ impl NfsSource {
             Some(n) if self.whole_server() => loc.path.len() <= n,
             _ => loc.path.len() <= self.export.len(),
         }
+    }
+
+    /// Opens the file at `location` for playback, or for a download
+    /// (`bulk`).
+    fn open_reader(&self, location: &str, bulk: bool) -> Result<Arc<dyn ByteSource>> {
+        let loc = NfsLocation::parse(&self.current_url(location)?)?;
+        self.check_owned(&loc)?;
+        if self.is_export_root(&loc) {
+            return Err(Error::invalid(
+                location,
+                "an export or server cannot be opened as a file",
+            ));
+        }
+        self.open_file(&loc, bulk)
     }
 }
 
@@ -573,7 +588,7 @@ impl NfsSource {
         Err(Error::NfsUnavailable("compiled without NFS support".into()))
     }
 
-    fn open_file(&self, _loc: &NfsLocation) -> Result<Arc<dyn ByteSource>> {
+    fn open_file(&self, _loc: &NfsLocation, _bulk: bool) -> Result<Arc<dyn ByteSource>> {
         Err(Error::NfsUnavailable("compiled without NFS support".into()))
     }
 
@@ -1609,7 +1624,13 @@ mod imp {
             })
         }
 
-        pub(super) fn open_file(&self, loc: &NfsLocation) -> Result<Arc<dyn ByteSource>> {
+        /// Opens a file for playback, or for a download (`bulk`): see
+        /// [`crate::bulk`].
+        pub(super) fn open_file(
+            &self,
+            loc: &NfsLocation,
+            bulk: bool,
+        ) -> Result<Arc<dyn ByteSource>> {
             let url = loc.to_url();
             let (export, rest) = self.split(loc)?;
             let file = OpenFile::open(&self.client, &export, rest, &url, 0)?;
@@ -1623,6 +1644,9 @@ mod imp {
                 url,
                 net: net.clone(),
             };
+            if bulk {
+                return Ok(Arc::new(crate::bulk::BulkSource::new(fetcher, None)));
+            }
             Ok(Arc::new(CachedSource::counted(
                 fetcher,
                 &CacheOptions::default(),

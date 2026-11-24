@@ -368,7 +368,7 @@ fn finite(value: f64, what: &str) -> Result<f64> {
     }
 }
 
-fn affected(n: usize, id: MediaId) -> Result<()> {
+pub(crate) fn affected(n: usize, id: MediaId) -> Result<()> {
     if n == 0 {
         Err(Error::MediaNotFound(id))
     } else {
@@ -981,7 +981,7 @@ impl Library {
     }
 
     /// Deletes a row and everything attached to it (tags, markers, history,
-    /// playlist entries, downloaded subtitles). Only for explicit user requests: scans never
+    /// playlist entries, downloaded subtitles, its download). Only for explicit user requests: scans never
     /// delete, they mark rows missing.
     pub fn remove_media(&self, id: MediaId) -> Result<()> {
         self.in_tx(|c| {
@@ -1307,7 +1307,7 @@ impl Library {
 
     /// Deletes the videos of `source_id` that were never played and carry
     /// nothing the user set (favourite, rating, tags, format, adjustments,
-    /// keyframes, bookmarks, playlists, downloaded subtitles), for a library
+    /// keyframes, bookmarks, playlists, downloaded subtitles, a download), for a library
     /// whose folder moved. Returns how many were deleted.
     pub fn forget_unwatched(&self, source_id: &str) -> Result<usize> {
         self.in_tx(|c| {
@@ -1323,6 +1323,7 @@ impl Library {
                        AND NOT EXISTS (SELECT 1 FROM playlist_items p WHERE p.media_id = m.id)
                        AND NOT EXISTS (SELECT 1 FROM history h WHERE h.media_id = m.id)
                        AND NOT EXISTS (SELECT 1 FROM user_subtitles s WHERE s.media_id = m.id)
+                       AND NOT EXISTS (SELECT 1 FROM downloads d WHERE d.media_id = m.id)
                        AND m.source_id = ?1)",
                 [source_id],
             )?;
@@ -1333,7 +1334,7 @@ impl Library {
 
     /// Deletes every video of `source_id`, watched or not, and everything
     /// attached to it (history, resume points, marks, playlist entries,
-    /// downloaded subtitles), for a source being removed. Returns how many
+    /// downloaded subtitles, downloads), for a source being removed. Returns how many
     /// were deleted.
     pub fn forget_source(&self, source_id: &str) -> Result<usize> {
         self.in_tx(|c| {

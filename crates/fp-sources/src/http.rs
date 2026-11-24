@@ -963,6 +963,18 @@ impl HttpClient {
         HttpFile::open(self, url)
     }
 
+    /// Opens `url` to read it whole, in order, for a download: pieces
+    /// fetched well ahead over several connections, whatever the source's
+    /// parallel downloads switch says (that is for playback).
+    pub(crate) fn open_bulk(&self, url: &str) -> Result<std::sync::Arc<dyn ByteSource>> {
+        let piece = crate::bulk::PIECE;
+        let (fetcher, first) = probe(self, url, piece)?;
+        let first = whole_start(&fetcher, &first, piece).then_some(first);
+        Ok(std::sync::Arc::new(crate::bulk::BulkSource::new(
+            fetcher, first,
+        )))
+    }
+
     /// Reads a bounded metadata response without retrying or renewing an
     /// authenticated session, for the original-file identification path.
     pub(crate) fn get_before(
@@ -1523,128 +1535,135 @@ pub struct HttpFile {
     src: CachedSource<HttpFetcher>,
 }
 
+/// Opens `url` with one request (`Range: bytes=0-<bs>`) that learns the
+/// size and whether ranges work, and reads the first `bs` bytes: the fetcher
+/// for the rest, and those bytes.
+fn probe(client: &HttpClient, url: &str, bs: u64) -> Result<(HttpFetcher, Vec<u8>)> {
+    // Embedded `user:pass@` stays in the URL: `send_once` strips it into
+    // an Authorization header on every request.
+    let url = url.to_string();
+    let range = format!("bytes=0-{}", bs - 1);
+    let display = redact(&url);
+    enum Probe {
+        Ranged(Option<u64>, Vec<u8>),
+        Plain(Option<u64>, Response),
+    }
+    let probe = client.retrying(&url, || {
+        let resp = client.send_once("GET", &url, &[("Range", range.as_str())], None, true)?;
+        let status = resp.status().as_u16();
+        let cr = resp
+            .headers()
+            .get("content-range")
+            .and_then(|v| v.to_str().ok())
+            .and_then(parse_content_range);
+        match status {
+            206 => {
+                let total = cr.and_then(|c| c.total);
+                let want = total.map_or(bs, |t| t.min(bs));
+                let data = read_body(resp.into_body().into_reader(), want).map_err(|e| {
+                    Failure::Retry(
+                        Error::Http {
+                            url: display.clone(),
+                            message: e.to_string(),
+                        },
+                        None,
+                    )
+                })?;
+                Ok(Probe::Ranged(total, data))
+            }
+            416 => {
+                let total = cr.and_then(|c| c.total).unwrap_or(0);
+                let _ = read_body(resp.into_body().into_reader(), 64 << 10);
+                Ok(Probe::Ranged(Some(total), Vec::new()))
+            }
+            200 => {
+                let len = resp
+                    .headers()
+                    .get("content-length")
+                    .and_then(|v| v.to_str().ok())
+                    .and_then(|v| v.trim().parse().ok());
+                Ok(Probe::Plain(len, resp))
+            }
+            s if is_transient_status(s) => Err(Failure::Retry(
+                Error::HttpStatus {
+                    status: s,
+                    url: display.clone(),
+                },
+                retry_after(&resp),
+            )),
+            s => Err(Failure::Fatal(status_error(s, &url).unwrap_or(
+                Error::HttpStatus {
+                    status: s,
+                    url: display.clone(),
+                },
+            ))),
+        }
+    })?;
+    Ok(match probe {
+        Probe::Ranged(size, first) => (
+            HttpFetcher {
+                client: client.clone(),
+                url,
+                size,
+                ranges: true,
+                stream: Mutex::new(None),
+            },
+            first,
+        ),
+        Probe::Plain(size, resp) => {
+            log::info!("{display}: server ignores range requests; streaming sequentially");
+            let mut reader: Box<dyn Read + Send> = Box::new(resp.into_body().into_reader());
+            let mut first = Vec::new();
+            (&mut reader)
+                .take(bs)
+                .read_to_end(&mut first)
+                .map_err(|e| Error::Http {
+                    url: display.clone(),
+                    message: e.to_string(),
+                })?;
+            // A short first block means we already have the whole file.
+            let size = if (first.len() as u64) < bs {
+                Some(first.len() as u64)
+            } else {
+                size
+            };
+            let pos = first.len() as u64;
+            (
+                HttpFetcher {
+                    client: client.clone(),
+                    url,
+                    size,
+                    ranges: false,
+                    stream: Mutex::new(Some(Stream { reader, pos })),
+                },
+                first,
+            )
+        }
+    })
+}
+
+/// Whether `first`, read by [`probe`] for `bs` bytes, may stand for the
+/// start of the file: all of it there, as a server that caps its ranges or
+/// broke off sends less. Without ranges it is all there is.
+fn whole_start(fetcher: &HttpFetcher, first: &[u8], bs: u64) -> bool {
+    if !fetcher.ranges {
+        return !first.is_empty();
+    }
+    first.len() as u64 == fetcher.size.map_or(bs, |s| s.min(bs))
+}
+
 impl HttpFile {
     /// Opens `url` with one probe request (`Range: bytes=0-<block>`) that
     /// learns the size, whether ranges work, and fills the first block.
     pub fn open(client: &HttpClient, url: &str) -> Result<HttpFile> {
-        // Embedded `user:pass@` stays in the URL: `send_once` strips it into
-        // an Authorization header on every request.
-        let url = url.to_string();
         let bs = client.opts.cache.block_size.max(4096) as u64;
-        let range = format!("bytes=0-{}", bs - 1);
-        let display = redact(&url);
-        enum Probe {
-            Ranged(Option<u64>, Vec<u8>),
-            Plain(Option<u64>, Response),
+        let (fetcher, first) = probe(client, url, bs)?;
+        let whole = whole_start(&fetcher, &first, bs);
+        let src = CachedSource::new(fetcher, &client.opts.cache);
+        if whole {
+            src.seed(0, first);
         }
-        let probe = client.retrying(&url, || {
-            let resp = client.send_once("GET", &url, &[("Range", range.as_str())], None, true)?;
-            let status = resp.status().as_u16();
-            let cr = resp
-                .headers()
-                .get("content-range")
-                .and_then(|v| v.to_str().ok())
-                .and_then(parse_content_range);
-            match status {
-                206 => {
-                    let total = cr.and_then(|c| c.total);
-                    let want = total.map_or(bs, |t| t.min(bs));
-                    let data = read_body(resp.into_body().into_reader(), want).map_err(|e| {
-                        Failure::Retry(
-                            Error::Http {
-                                url: display.clone(),
-                                message: e.to_string(),
-                            },
-                            None,
-                        )
-                    })?;
-                    Ok(Probe::Ranged(total, data))
-                }
-                416 => {
-                    let total = cr.and_then(|c| c.total).unwrap_or(0);
-                    let _ = read_body(resp.into_body().into_reader(), 64 << 10);
-                    Ok(Probe::Ranged(Some(total), Vec::new()))
-                }
-                200 => {
-                    let len = resp
-                        .headers()
-                        .get("content-length")
-                        .and_then(|v| v.to_str().ok())
-                        .and_then(|v| v.trim().parse().ok());
-                    Ok(Probe::Plain(len, resp))
-                }
-                s if is_transient_status(s) => Err(Failure::Retry(
-                    Error::HttpStatus {
-                        status: s,
-                        url: display.clone(),
-                    },
-                    retry_after(&resp),
-                )),
-                s => Err(Failure::Fatal(status_error(s, &url).unwrap_or(
-                    Error::HttpStatus {
-                        status: s,
-                        url: display.clone(),
-                    },
-                ))),
-            }
-        })?;
-        let opts = client.opts.cache.clone();
-        let file = match probe {
-            Probe::Ranged(size, first) => {
-                let src = CachedSource::new(
-                    HttpFetcher {
-                        client: client.clone(),
-                        url,
-                        size,
-                        ranges: true,
-                        stream: Mutex::new(None),
-                    },
-                    &opts,
-                );
-                // Only a whole first block (or the whole file): the cache
-                // takes a short block for the file's last, and a server that
-                // caps its ranges or broke off sent less.
-                let whole = size.map_or(bs, |s| s.min(bs));
-                if first.len() as u64 == whole {
-                    src.seed(0, first);
-                }
-                HttpFile { src }
-            }
-            Probe::Plain(size, resp) => {
-                log::info!("{display}: server ignores range requests; streaming sequentially");
-                let mut reader: Box<dyn Read + Send> = Box::new(resp.into_body().into_reader());
-                let mut first = Vec::new();
-                (&mut reader)
-                    .take(bs)
-                    .read_to_end(&mut first)
-                    .map_err(|e| Error::Http {
-                        url: display.clone(),
-                        message: e.to_string(),
-                    })?;
-                // A short first block means we already have the whole file.
-                let size = if (first.len() as u64) < bs {
-                    Some(first.len() as u64)
-                } else {
-                    size
-                };
-                let pos = first.len() as u64;
-                let src = CachedSource::new(
-                    HttpFetcher {
-                        client: client.clone(),
-                        url,
-                        size,
-                        ranges: false,
-                        stream: Mutex::new(Some(Stream { reader, pos })),
-                    },
-                    &opts,
-                );
-                if !first.is_empty() {
-                    src.seed(0, first);
-                }
-                HttpFile { src }
-            }
-        };
-        Ok(file)
+        Ok(HttpFile { src })
     }
 
     /// True when the server honours Range requests (random access works).

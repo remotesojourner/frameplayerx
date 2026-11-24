@@ -532,7 +532,8 @@ recovered from a new server address alone.
 the headset, press the padlock next to it under **Sources** (or on its
 tile on Home) and choose a PIN (4 to 8 digits). While it is locked it
 can't be browsed, it is left off Home, and its videos are left out of the
-watch history, search and the phone remote; opening one asks for the PIN.
+watch history, search, Downloads and the phone remote; opening one asks for
+the PIN.
 **Unlock** opens it until FramePlayerX restarts; one press of the padlock
 locks it again. To change the PIN or remove it, edit the source; removing
 the source removes its PIN too. This keeps guests out, it doesn't encrypt
@@ -543,7 +544,8 @@ same videos.
 
 **Parallel downloads:** a server's form has this switch, off to begin
 with. On, FramePlayerX downloads several parts of a video at once over
-separate connections while it plays, the way some download managers do.
+separate connections while it plays, the way some download managers do and
+[downloading a video](#downloading-a-video) always does.
 This helps if the server limits the speed of each connection. If it
 doesn't, the switch may gain nothing, and a server on hard drives can get
 slower, because the drives have to jump between parts of the file. SMB and
@@ -600,7 +602,8 @@ the same search, format filters and orders (recently watched, title, most
 watched, rating, length). Remove one video from its details with *Remove
 from history*, or everything with *Clear history*; favorites and ratings
 stay. Browsing a network source never adds anything here. Removing a source
-forgets all its videos, those you watched, marked or put in a playlist too.
+forgets all its videos, those you watched, marked or put in a playlist too,
+and deletes their downloads.
 
 **Keep watch history**, in Settings › General, turns all of this off.
 Turning it off deletes the history there is, after a warning, along with
@@ -625,7 +628,45 @@ Emby, Plex and HereSphere servers that let you delete. DeoVR feeds, DLNA
 servers and web folders can't delete, and a folder is never deleted. A
 server deletes the way its own apps do: Jellyfin takes a video's folder
 with it when the video has one to itself. The video also leaves your
-history, queue and playlists.
+history, queue, playlists and downloads.
+
+### Downloading a video
+
+**Download**, on a video's details and under the ⋯ on its row in a folder,
+keeps the video's file on the headset, or on the microSD card or USB drive
+chosen in **Settings › General › Download to**, so it plays with no
+connection. It's there for videos on SMB and NFS shares, SFTP and WebDAV
+servers, web folders, DLNA servers, DeoVR feeds, HereSphere APIs, Jellyfin,
+Emby and Plex. A video a server only transcodes has no file to download,
+and neither has a Plex video in several parts. Jellyfin, Emby and Plex
+follow the server's setting for your user: with downloads turned off there,
+the button doesn't show.
+
+The video's subtitle files and haptic scripts come with it; subtitles you
+found on OpenSubtitles are on the headset already. A download is still the
+same video: wherever you open it, it plays from the download, and keeps its
+history, resume point, adjustments and playlists. Watched while its server
+is out of reach, it starts where you left off on the headset the next time
+you play it with the server there, and the server hears from that point.
+
+Downloads come one at a time, in the order you asked for them, each over
+several connections at once, while FramePlayerX is open. They wait while a video plays from a network source,
+so it keeps the bandwidth, and carry on while you watch a download or a
+video on the headset. A download that loses its connection, or that
+FramePlayerX closed part way, carries on from where it got to; one the
+server refuses stops, with *Retry*.
+
+**Downloads**, in Sources and on Home, lists every network source with how
+many of its videos are downloaded. A source locked with a PIN shows only
+that it is locked, with *Unlock*, which opens its downloads. Open a
+source for its downloads: how each is going, *Play*, and *Cancel download*
+or *Remove download*, which ask first and delete the downloaded file. The
+video stays on its server and in your history.
+
+Downloads on the headset go in `~/.local/share/frameplayerx/downloads`; on
+a card they go in a hidden `.frameplayerx-downloads` folder, so a library
+on the card doesn't list them again. While a card is out, its downloads say
+so and its videos play from their servers.
 
 ### Thumbnails
 

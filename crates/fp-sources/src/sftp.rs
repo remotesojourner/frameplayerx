@@ -407,14 +407,7 @@ impl Source for SftpSource {
     }
 
     fn open(&self, location: &str) -> Result<Arc<dyn ByteSource>> {
-        let segments = self.segments(Some(location))?;
-        if segments.is_empty() {
-            return Err(Error::invalid(
-                location,
-                "a folder cannot be opened as a file",
-            ));
-        }
-        self.open_file(&segments)
+        self.open_reader(location, false)
     }
 
     fn updated_config(&self) -> Option<SourceConfig> {
@@ -433,6 +426,15 @@ impl Source for SftpSource {
         crate::sidecars_from_folder(self, video)
     }
 
+    fn download_allowed(&self, _location: &str) -> Option<bool> {
+        Some(cfg!(feature = "sftp"))
+    }
+
+    fn open_download(&self, video: &Entry) -> Result<crate::OriginalFile> {
+        let reader = self.open_reader(&video.location, true)?;
+        Ok(crate::file_download(video, reader))
+    }
+
     fn can_delete(&self) -> bool {
         cfg!(feature = "sftp")
     }
@@ -445,6 +447,21 @@ impl Source for SftpSource {
             return Err(Error::invalid(location, "a folder cannot be deleted"));
         }
         self.remove_file(&segments)
+    }
+}
+
+impl SftpSource {
+    /// Opens the file at `location` for playback, or for a download
+    /// (`bulk`).
+    fn open_reader(&self, location: &str, bulk: bool) -> Result<Arc<dyn ByteSource>> {
+        let segments = self.segments(Some(location))?;
+        if segments.is_empty() {
+            return Err(Error::invalid(
+                location,
+                "a folder cannot be opened as a file",
+            ));
+        }
+        self.open_file(&segments, bulk)
     }
 }
 
@@ -465,7 +482,7 @@ impl SftpSource {
         ))
     }
 
-    fn open_file(&self, _segments: &[String]) -> Result<Arc<dyn ByteSource>> {
+    fn open_file(&self, _segments: &[String], _bulk: bool) -> Result<Arc<dyn ByteSource>> {
         Err(Error::SftpUnavailable(
             "compiled without SFTP support".into(),
         ))
@@ -939,7 +956,13 @@ mod imp {
             self.sessions.real_path(segments)
         }
 
-        pub(super) fn open_file(&self, segments: &[String]) -> Result<Arc<dyn ByteSource>> {
+        /// Opens a file for playback, or for a download (`bulk`): see
+        /// [`crate::bulk`].
+        pub(super) fn open_file(
+            &self,
+            segments: &[String],
+            bulk: bool,
+        ) -> Result<Arc<dyn ByteSource>> {
             let open = self.sessions.open_file(segments)?;
             let url = format!(
                 "{}/{}",
@@ -955,6 +978,9 @@ mod imp {
                 url,
                 net: net.clone(),
             };
+            if bulk {
+                return Ok(Arc::new(crate::bulk::BulkSource::new(fetcher, None)));
+            }
             Ok(Arc::new(CachedSource::counted(
                 fetcher,
                 &CacheOptions::default(),

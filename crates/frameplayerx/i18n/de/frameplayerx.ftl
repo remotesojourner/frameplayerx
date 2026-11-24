@@ -506,7 +506,7 @@ source-nfs-ids-desc = Zahlen, mit denen der Server Dateiberechtigungen prüft. L
 source-self-signed = Selbstsignierte Zertifikate akzeptieren
 source-self-signed-desc = Für HTTPS-Server in Ihrem eigenen Netzwerk.
 source-parallel-downloads = Parallele Downloads
-source-parallel-downloads-desc = Lädt mehrere Teile eines Videos gleichzeitig über getrennte Verbindungen, wie ein Download-Manager. Das hilft, wenn der Server die Geschwindigkeit jeder Verbindung begrenzt. Wenn nicht, bringt es womöglich nichts, und ein Server mit Festplatten kann langsamer werden.
+source-parallel-downloads-play-desc = Lädt während der Wiedergabe mehrere Teile eines Videos gleichzeitig über getrennte Verbindungen, wie ein Download-Manager. Das hilft, wenn der Server die Geschwindigkeit jeder Verbindung begrenzt. Wenn nicht, bringt es womöglich nichts, und ein Server mit Festplatten kann langsamer werden. Beim Herunterladen eines Videos auf das Headset geschieht das immer.
 source-play-all-limit = Videos aus Unterordnern begrenzen
 source-play-all-limit-desc = Wie viele Videos „Alle abspielen“ höchstens nimmt, wenn es Unterordner einschließt. Aus: alle, und „Abbrechen“ hält es an.
 source-play-all-limit-invalid = Gib für die Video-Grenze eine ganze Zahl größer als null ein.
@@ -1189,3 +1189,56 @@ subtitle-earlier = Früher
 subtitle-later = Später
 subtitle-remove = Download entfernen
 subtitle-review = Synchronisierung für diese Version prüfen
+
+download-no-space = Dafür ist nicht genug Platz
+download-ended-early = der Server hat vor dem Ende aufgehört zu senden
+download = Herunterladen
+download-tip = Auf dem Headset oder einer Karte behalten, um ohne Verbindung zu schauen
+download-starting = Wird gestartet…
+download-progress = Lädt { $percent } %
+download-under-way = Lädt…
+download-waiting = Wartet auf Download
+download-waits-streaming = Wartet, solange ein Video gestreamt wird
+download-retrying = Wartet auf einen neuen Versuch: { $error }
+download-cancel = Download abbrechen
+download-cancel-confirm = Abbrechen?
+download-remove = Download entfernen
+download-remove-confirm = Entfernen?
+download-retry-video = Download wiederholen
+download-retry = Wiederholen
+download-failed = Angehalten: { $error }
+download-of = { $done } von { $size }
+download-speed = { $speed }/s
+download-not-allowed = der Server erlaubt das Herunterladen nicht
+download-remove-failed = Der Download konnte nicht entfernt werden: { $error }
+toast-download-started = { $title } wird heruntergeladen
+toast-downloaded = { $title } heruntergeladen
+toast-download-failed = { $title } konnte nicht heruntergeladen werden: { $error }
+downloads = Downloads
+downloads-desc = Videos aus Ihren Quellen auf dem Headset oder einer Karte, zum Schauen ohne Verbindung
+downloads-none = Keine Downloads
+downloads-count = { $count ->
+    [one] { $count } Download
+   *[other] { $count } Downloads
+}
+downloads-unfinished = { $count ->
+    [one] { $count } nicht fertig
+   *[other] { $count } nicht fertig
+}
+downloads-to-headset = Neue Downloads kommen auf das Headset
+downloads-to-card = Neue Downloads kommen auf { $card }
+downloads-free = { $size } frei
+downloads-card-missing = die Karte ist nicht eingesteckt
+downloads-on-headset = Auf dem Headset
+downloads-on-card = Auf { $card }
+downloads-card-out = Auf einer Karte, die nicht eingesteckt ist
+downloads-open = Öffnen
+downloads-no-sources = Keine Netzwerkquellen
+downloads-no-sources-desc = Fügen Sie unter Quellen eine Quelle hinzu, um ihre Videos herunterzuladen.
+downloads-empty = Noch nichts heruntergeladen
+downloads-empty-desc = Laden Sie ein Video auf seiner Seite herunter oder über das ⋯ daneben in einem Ordner.
+settings-download-to = Herunterladen auf
+settings-download-to-desc = Wohin neue Downloads kommen. Bereits heruntergeladene bleiben, wo sie sind.
+settings-download-headset = Headset · { $size } frei
+settings-download-card = { $card } · { $size } frei
+settings-download-card-out = { $card } · nicht eingesteckt

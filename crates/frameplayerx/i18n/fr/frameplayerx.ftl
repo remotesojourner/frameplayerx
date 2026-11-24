@@ -506,7 +506,7 @@ source-nfs-ids-desc = Nombres selon lesquels le serveur vérifie les droits. Vid
 source-self-signed = Accepter les certificats auto-signés
 source-self-signed-desc = Pour les serveurs HTTPS de votre propre réseau.
 source-parallel-downloads = Téléchargements parallèles
-source-parallel-downloads-desc = Télécharge plusieurs parties d’une vidéo à la fois sur des connexions séparées, comme un gestionnaire de téléchargement. Cela aide si le serveur limite la vitesse de chaque connexion. Sinon, cela peut ne rien apporter, et un serveur sur disques durs peut ralentir.
+source-parallel-downloads-play-desc = Pendant la lecture d’une vidéo, en télécharge plusieurs parties à la fois sur des connexions séparées, comme un gestionnaire de téléchargement. Cela aide si le serveur limite la vitesse de chaque connexion. Sinon, cela peut ne rien apporter, et un serveur sur disques durs peut ralentir. Le téléchargement d’une vidéo sur le casque le fait toujours.
 source-play-all-limit = Limiter les vidéos des sous-dossiers
 source-play-all-limit-desc = Le nombre maximal de vidéos que « Tout lire » prend quand il inclut les sous-dossiers. Désactivé, il les prend toutes et « Annuler » l’arrête.
 source-play-all-limit-invalid = Saisissez un nombre entier supérieur à zéro pour la limite de vidéos.
@@ -1192,3 +1192,56 @@ subtitle-earlier = Avancer
 subtitle-later = Retarder
 subtitle-remove = Supprimer le téléchargement
 subtitle-review = Vérifier la synchronisation pour cette version
+
+download-no-space = Il n’y a pas assez de place
+download-ended-early = le serveur a cessé de l’envoyer avant la fin
+download = Télécharger
+download-tip = La garder sur le casque ou une carte, pour la regarder sans connexion
+download-starting = Démarrage…
+download-progress = Téléchargement { $percent } %
+download-under-way = Téléchargement…
+download-waiting = En attente de téléchargement
+download-waits-streaming = Attend pendant la diffusion d’une vidéo
+download-retrying = En attente d’un nouvel essai : { $error }
+download-cancel = Annuler le téléchargement
+download-cancel-confirm = L’annuler ?
+download-remove = Supprimer le téléchargement
+download-remove-confirm = Le supprimer ?
+download-retry-video = Relancer le téléchargement
+download-retry = Réessayer
+download-failed = Arrêté : { $error }
+download-of = { $done } sur { $size }
+download-speed = { $speed }/s
+download-not-allowed = le serveur ne permet pas de la télécharger
+download-remove-failed = Impossible de supprimer le téléchargement : { $error }
+toast-download-started = Téléchargement de { $title }
+toast-downloaded = { $title } téléchargée
+toast-download-failed = Impossible de télécharger { $title } : { $error }
+downloads = Téléchargements
+downloads-desc = Les vidéos de vos sources gardées sur le casque ou une carte, pour les regarder sans connexion
+downloads-none = Aucun téléchargement
+downloads-count = { $count ->
+    [one] { $count } téléchargement
+   *[other] { $count } téléchargements
+}
+downloads-unfinished = { $count ->
+    [one] { $count } inachevé
+   *[other] { $count } inachevés
+}
+downloads-to-headset = Les nouveaux téléchargements vont sur le casque
+downloads-to-card = Les nouveaux téléchargements vont sur { $card }
+downloads-free = { $size } libres
+downloads-card-missing = la carte n’est pas insérée
+downloads-on-headset = Sur le casque
+downloads-on-card = Sur { $card }
+downloads-card-out = Sur une carte qui n’est pas insérée
+downloads-open = Ouvrir
+downloads-no-sources = Aucune source réseau
+downloads-no-sources-desc = Ajoutez une source dans Sources pour télécharger ses vidéos.
+downloads-empty = Rien de téléchargé pour l’instant
+downloads-empty-desc = Téléchargez une vidéo depuis sa page, ou depuis le ⋯ à côté d’elle dans un dossier.
+settings-download-to = Télécharger sur
+settings-download-to-desc = Où vont les nouveaux téléchargements. Ceux déjà téléchargés restent où ils sont.
+settings-download-headset = Casque · { $size } libres
+settings-download-card = { $card } · { $size } libres
+settings-download-card-out = { $card } · non insérée

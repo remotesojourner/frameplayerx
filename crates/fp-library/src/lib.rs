@@ -18,6 +18,7 @@
 //!   thumbnails for videos whose server offers no picture, and the frame
 //!   where each partly watched video was left off.
 
+mod downloads;
 mod error;
 mod image;
 mod library;
@@ -30,6 +31,7 @@ mod schema;
 mod user_subtitles;
 mod worker;
 
+pub use downloads::{Download, DownloadCount, DownloadState};
 pub use error::{Error, Result};
 pub use image::RgbaImage;
 pub use library::{

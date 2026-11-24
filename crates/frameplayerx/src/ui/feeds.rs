@@ -1235,10 +1235,19 @@ fn details(
                             favorite = Some(!scene.favorite);
                         }
                     }
-                    if can_delete {
-                        ui.add_space(4.0);
-                        delete = super::delete_button(ui, v.state, &scene.url);
-                    }
+                    ui.add_space(4.0);
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 12.0;
+                        let parts = super::downloads::Parts {
+                            state: v.state,
+                            services: v.services,
+                            actions: v.actions,
+                        };
+                        super::downloads::button(ui, parts, &queued, &scene.title);
+                        if can_delete {
+                            delete = super::delete_button(ui, v.state, &scene.url);
+                        }
+                    });
                     if let Some(info) = &info
                         && !info.sources.is_empty()
                     {

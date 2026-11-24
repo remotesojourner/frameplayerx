@@ -2,6 +2,7 @@
 //! turns controller input into UI events and playback commands each frame.
 
 mod actions;
+mod downloads;
 mod frame;
 mod input;
 mod plex;
@@ -272,6 +273,8 @@ pub struct App {
     /// are being fetched.
     feed_queue: std::collections::VecDeque<(String, String)>,
     feed_busy: usize,
+    /// The downloads' generation last shown.
+    downloads_seen: u64,
     quit: bool,
     restart: bool,
 }
@@ -443,6 +446,7 @@ impl App {
                 .unwrap_or_else(Instant::now),
             mount_tried: Vec::new(),
             feed_queue: Default::default(),
+            downloads_seen: 0,
             feed_busy: 0,
             quit: false,
             restart: false,
