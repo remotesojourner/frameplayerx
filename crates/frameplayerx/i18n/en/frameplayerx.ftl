@@ -601,7 +601,7 @@ sources-heading = On this device and your network
 # Short: a button.
 sources-unlock = Unlock
 # A tooltip on Remove source.
-sources-remove = Remove (and forget its unwatched videos)
+sources-remove-all = Remove (and forget all its videos)
 # A tooltip.
 sources-edit = Edit
 # A tooltip: locks the source again.

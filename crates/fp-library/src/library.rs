@@ -1292,8 +1292,8 @@ impl Library {
 
     /// Deletes the videos of `source_id` that were never played and carry
     /// nothing the user set (favourite, rating, tags, format, adjustments,
-    /// keyframes, bookmarks, playlists, downloaded subtitles), for a source being removed.
-    /// Returns how many were deleted.
+    /// keyframes, bookmarks, playlists, downloaded subtitles), for a library
+    /// whose folder moved. Returns how many were deleted.
     pub fn forget_unwatched(&self, source_id: &str) -> Result<usize> {
         self.in_tx(|c| {
             let n = c.execute(
@@ -1311,6 +1311,18 @@ impl Library {
                        AND m.source_id = ?1)",
                 [source_id],
             )?;
+            prune_tags(c)?;
+            Ok(n)
+        })
+    }
+
+    /// Deletes every video of `source_id`, watched or not, and everything
+    /// attached to it (history, resume points, marks, playlist entries,
+    /// downloaded subtitles), for a source being removed. Returns how many
+    /// were deleted.
+    pub fn forget_source(&self, source_id: &str) -> Result<usize> {
+        self.in_tx(|c| {
+            let n = c.execute("DELETE FROM media WHERE source_id = ?1", [source_id])?;
             prune_tags(c)?;
             Ok(n)
         })
@@ -2172,6 +2184,40 @@ mod tests {
         assert_eq!(lib.detach_source("nas").unwrap(), 4);
         assert_eq!(lib.get(watched).unwrap().unwrap().source_id, "");
         assert_eq!(lib.get(other).unwrap().unwrap().source_id, "feed");
+    }
+
+    #[test]
+    fn forgetting_every_video_of_a_source() {
+        let lib = lib();
+        let up = |loc: &str, src: &str| lib.upsert(&MediaUpsert::new(loc, src)).unwrap().id;
+        let plain = up("smb://nas/v/plain.mp4", "nas");
+        let watched = up("smb://nas/v/watched.mp4", "nas");
+        let fav = up("smb://nas/v/fav.mp4", "nas");
+        let marked = up("smb://nas/v/marked.mp4", "nas");
+        let other = up("http://feed/3", "feed");
+        lib.start_playback(watched).unwrap();
+        lib.start_playback(other).unwrap();
+        lib.set_favorite(fav, true).unwrap();
+        lib.set_tags(fav, &["nas only"]).unwrap();
+        lib.add_marker(marked, 3.0, "mine").unwrap();
+        let list = lib.create_playlist("Mixed").unwrap();
+        lib.add_to_playlist(list, &[watched, other, marked])
+            .unwrap();
+
+        assert_eq!(lib.forget_source("nas").unwrap(), 4);
+        for id in [plain, watched, fav, marked] {
+            assert!(lib.get(id).unwrap().is_none(), "{id} was kept");
+        }
+        assert!(lib.history(10).unwrap().iter().all(|h| h.media_id == other));
+        let left: Vec<_> = lib
+            .playlist_items(list)
+            .unwrap()
+            .iter()
+            .map(|e| e.record.id)
+            .collect();
+        assert_eq!(left, vec![other]);
+        assert!(lib.all_tags().unwrap().iter().all(|t| t.name != "nas only"));
+        assert!(lib.get(other).unwrap().is_some());
     }
 
     #[test]

@@ -741,9 +741,9 @@ impl App {
         self.ui.unlocked_sources.remove(id);
         self.close_source_view(id);
         let _ = std::fs::remove_file(fp_sources::FeedLibrary::cache_path(id));
-        // Its videos go with it, except what was watched or marked.
-        match self.services.library.forget_unwatched(id) {
-            Ok(n) if n > 0 => log::info!("forgot {n} unwatched videos of {id}"),
+        // Its videos go with it, watched or not.
+        match self.services.library.forget_source(id) {
+            Ok(n) if n > 0 => log::info!("forgot the {n} videos of {id}"),
             Ok(_) => {}
             Err(e) => log::warn!("forgetting the videos of {id}: {e}"),
         }

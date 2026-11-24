@@ -651,7 +651,7 @@ fn remove_button(ui: &mut egui::Ui, f: &mut SourceForm) -> bool {
         tr!("source-remove-confirm"),
         |ui, label, kind| {
             widgets::button_sized(ui, Some(icons::TRASH), label, kind, 44.0)
-                .tip(tr!("sources-remove"))
+                .tip(tr!("sources-remove-all"))
         },
     )
 }

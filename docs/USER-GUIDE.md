@@ -511,13 +511,14 @@ scenes from last time while the server sends the current list
 The pencil next to a source under **Sources** opens its details: rename
 it, change its address, user name and password or its PIN, or remove it
 with **Remove source** at the top, which turns red as *Remove it?* and
-removes the source when pressed again within 4 seconds. Its type stays; a Jellyfin server signed in with Quick Connect keeps that sign-in
+removes the source when pressed again within 4 seconds, forgetting all its
+videos, watched or not. Its type stays; a Jellyfin server signed in with Quick Connect keeps that sign-in
 unless you clear it.
 
 When a server's address, IP address or root folder changes, edit the
 source rather than adding it again: history, resume points, playlists and
-adjustments follow it, while a removed and added source is a different
-one. HTTP(S), WebDAV, SMB, SFTP and NFS sources keep paths relative to
+adjustments follow it, while removing the source forgets them all.
+HTTP(S), WebDAV, SMB, SFTP and NFS sources keep paths relative to
 their root, Jellyfin and Emby item and version IDs, DLNA object IDs, and
 Plex its server and item IDs. A feed keeps scene, media and picture
 addresses as published, unless a scene ID it gives allows looking it up
@@ -590,7 +591,7 @@ the same search, format filters and orders (recently watched, title, most
 watched, rating, length). Remove one video from its details with *Remove
 from history*, or everything with *Clear history*; favorites and ratings
 stay. Browsing a network source never adds anything here. Removing a source
-forgets its videos, except those you watched, marked or put in a playlist.
+forgets all its videos, those you watched, marked or put in a playlist too.
 
 A video you stopped part way shows the frame where you left off, made
 shortly after it stops. Past 90 % it counts as watched: its card gets a ✓,
