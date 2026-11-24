@@ -146,6 +146,7 @@ pub fn page(
     }
     let counts = counts(v);
     egui::ScrollArea::vertical()
+        .id_salt("downloads")
         .auto_shrink(false)
         .show_list(ui, |ui| {
             widgets::card(ui, |ui| {
@@ -292,6 +293,7 @@ fn source_page(
         return go;
     }
     egui::ScrollArea::vertical()
+        .id_salt(("downloads", source))
         .auto_shrink(false)
         .show_list(ui, |ui| {
             for row in rows {

@@ -798,7 +798,7 @@ pub fn page(
         _ => false,
     };
     let mut go: Option<Go> = None;
-    page::scroll_from(ui, top, |ui| {
+    page::scroll_from(ui, ("catalog", p.seq), top, |ui| {
         go = match &mut p.body {
             Body::Home {
                 home,

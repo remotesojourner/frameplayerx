@@ -44,6 +44,7 @@ pub fn prompt(ui: &mut egui::Ui, v: &mut View) {
         return;
     };
     egui::ScrollArea::vertical()
+        .id_salt("crash-report")
         .auto_shrink([false, false])
         .show_list(ui, |ui| {
             ui.add_space(18.0);

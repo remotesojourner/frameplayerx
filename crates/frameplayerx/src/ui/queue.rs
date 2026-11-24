@@ -167,7 +167,7 @@ pub fn page(ui: &mut egui::Ui, v: &mut View) {
     let Some((_, rows)) = v.state.up_next.take() else {
         return;
     };
-    page::scroll(ui, |ui| {
+    page::scroll(ui, "up-next", |ui| {
         ui.add_space(4.0);
         for (i, r) in rows.iter().enumerate() {
             let facts = if i == q.pos && v.playback.is_some() {

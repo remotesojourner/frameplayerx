@@ -23,6 +23,7 @@ pub fn page(ui: &mut egui::Ui, v: &mut View) {
         close_button(ui, v.actions);
     });
     egui::ScrollArea::vertical()
+        .id_salt("whats-new")
         .auto_shrink([false, false])
         .show_list(ui, |ui| {
             ui.add_space(8.0);

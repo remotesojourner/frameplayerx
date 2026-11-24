@@ -87,34 +87,37 @@ pub fn settings(ui: &mut egui::Ui, v: &mut View) {
                 });
         });
         ui.vertical(|ui| {
-            egui::ScrollArea::vertical().show_list(ui, |ui| {
-                ui.set_width(ui.available_width() - 8.0);
-                ui.spacing_mut().item_spacing.y = 10.0;
-                let title = tabs()
-                    .iter()
-                    .find(|t| t.0 == v.state.settings_tab)
-                    .map(|t| t.2)
-                    .unwrap_or("");
-                ui.label(
-                    RichText::new(title)
-                        .font(theme::font(Weight::Bold, 30.0))
-                        .color(theme::TEXT),
-                );
-                match v.state.settings_tab {
-                    SettingsTab::General => general(ui, v),
-                    SettingsTab::Playback => playback(ui, v),
-                    SettingsTab::VideoPosition => video_position(ui, v),
-                    SettingsTab::Picture => picture(ui, v),
-                    SettingsTab::Sound => sound(ui, v),
-                    SettingsTab::Passthrough => passthrough(ui, v),
-                    SettingsTab::Controller => controller(ui, v),
-                    SettingsTab::Haptics => haptics(ui, v),
-                    SettingsTab::Remote => remote(ui, v),
-                    SettingsTab::Updates => updates(ui, v),
-                    SettingsTab::About => about(ui, v),
-                }
-                ui.add_space(24.0);
-            });
+            let tab = v.state.settings_tab;
+            egui::ScrollArea::vertical()
+                .id_salt(("settings", tab))
+                .show_list(ui, |ui| {
+                    ui.set_width(ui.available_width() - 8.0);
+                    ui.spacing_mut().item_spacing.y = 10.0;
+                    let title = tabs()
+                        .iter()
+                        .find(|t| t.0 == v.state.settings_tab)
+                        .map(|t| t.2)
+                        .unwrap_or("");
+                    ui.label(
+                        RichText::new(title)
+                            .font(theme::font(Weight::Bold, 30.0))
+                            .color(theme::TEXT),
+                    );
+                    match v.state.settings_tab {
+                        SettingsTab::General => general(ui, v),
+                        SettingsTab::Playback => playback(ui, v),
+                        SettingsTab::VideoPosition => video_position(ui, v),
+                        SettingsTab::Picture => picture(ui, v),
+                        SettingsTab::Sound => sound(ui, v),
+                        SettingsTab::Passthrough => passthrough(ui, v),
+                        SettingsTab::Controller => controller(ui, v),
+                        SettingsTab::Haptics => haptics(ui, v),
+                        SettingsTab::Remote => remote(ui, v),
+                        SettingsTab::Updates => updates(ui, v),
+                        SettingsTab::About => about(ui, v),
+                    }
+                    ui.add_space(24.0);
+                });
         });
     });
 }

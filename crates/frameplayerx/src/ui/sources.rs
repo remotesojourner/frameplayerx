@@ -200,6 +200,7 @@ pub fn sources(ui: &mut egui::Ui, v: &mut View) {
     if v.state.source_form.is_some() {
         // Editing adds the PIN rows: taller than the panel.
         egui::ScrollArea::vertical()
+            .id_salt("source-form")
             .auto_shrink(false)
             .show_list(ui, |ui| add_form(ui, v));
         return;
@@ -218,23 +219,25 @@ pub fn sources(ui: &mut egui::Ui, v: &mut View) {
             v.state.source_form = Some(SourceForm::default());
         }
     });
-    egui::ScrollArea::vertical().show_list(ui, |ui| {
-        widgets::section_label(ui, tr!("sources-heading"));
-        ui.add_space(4.0);
-        widgets::card(ui, |ui| {
-            for (i, row) in rows(v).into_iter().enumerate() {
-                if i > 0 {
-                    let x = ui.max_rect().x_range();
-                    ui.painter().hline(
-                        (x.min + 84.0)..=(x.max - 16.0),
-                        ui.cursor().top(),
-                        egui::Stroke::new(1.0_f32, theme::STROKE),
-                    );
+    egui::ScrollArea::vertical()
+        .id_salt("sources")
+        .show_list(ui, |ui| {
+            widgets::section_label(ui, tr!("sources-heading"));
+            ui.add_space(4.0);
+            widgets::card(ui, |ui| {
+                for (i, row) in rows(v).into_iter().enumerate() {
+                    if i > 0 {
+                        let x = ui.max_rect().x_range();
+                        ui.painter().hline(
+                            (x.min + 84.0)..=(x.max - 16.0),
+                            ui.cursor().top(),
+                            egui::Stroke::new(1.0_f32, theme::STROKE),
+                        );
+                    }
+                    list_row(ui, v, row);
                 }
-                list_row(ui, v, row);
-            }
+            });
         });
-    });
 }
 
 fn list_row(ui: &mut egui::Ui, v: &mut View, row: Row) {

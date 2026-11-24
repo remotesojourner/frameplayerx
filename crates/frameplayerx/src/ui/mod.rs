@@ -479,7 +479,7 @@ pub enum Screen {
     UpNext,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum SettingsTab {
     General,
     Playback,
@@ -523,11 +523,21 @@ pub struct Browse {
     pub filter: String,
     /// Play all takes in the videos of every folder below this one.
     pub include_subfolders: bool,
+    /// How far down each folder on the way here was scrolled, by location.
+    pub scrolled: std::collections::HashMap<Option<String>, f32>,
+    /// How far down this folder's list is scrolled.
+    pub offset: f32,
+    /// This folder's list has been shown since it was opened. Until then
+    /// it opens where it was left, for a folder gone back to, else at its
+    /// top.
+    pub placed: bool,
 }
 
 impl Browse {
     /// Into folder `name` at `location`; what lists it.
     pub fn enter(&mut self, name: &str, location: String) -> Action {
+        self.scrolled.insert(self.location.clone(), self.offset);
+        self.placed = false;
         self.stack.push(self.location.replace(location.clone()));
         self.names.push(name.to_string());
         self.loading = true;
@@ -546,6 +556,10 @@ impl Browse {
         let location = self.stack[depth].clone();
         self.stack.truncate(depth);
         self.names.truncate(depth);
+        // Folders below it open at their top when entered again.
+        self.scrolled
+            .retain(|l, _| *l == location || self.stack.contains(l));
+        self.placed = false;
         self.location = location.clone();
         self.loading = true;
         self.filter.clear();

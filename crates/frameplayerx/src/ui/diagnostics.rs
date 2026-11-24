@@ -44,6 +44,7 @@ pub fn page(ui: &mut egui::Ui, v: &mut View) {
         return;
     }
     egui::ScrollArea::vertical()
+        .id_salt("diagnostics")
         .auto_shrink([false, false])
         .show_list(ui, |ui| {
             if f.sent {
