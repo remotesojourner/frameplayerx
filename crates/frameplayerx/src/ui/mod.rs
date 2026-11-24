@@ -310,6 +310,8 @@ pub enum Action {
     /// Tries a library's videos that couldn't be read again.
     RetryFailed(String),
     ClearHistory,
+    /// Stops keeping a watch history, deleting what it holds.
+    TurnOffHistory,
     /// Deletes the server pictures kept on the headset.
     ClearImageCache,
     AddSource(SourceConfig, Option<usize>),
@@ -842,6 +844,9 @@ pub struct UiState {
     /// "Clear history" was pressed once: pressing again within a few
     /// seconds clears it.
     pub clear_armed: Option<std::time::Instant>,
+    /// Watch history was switched off while it held something: the warning
+    /// that it will all be deleted shows until it is confirmed or cancelled.
+    pub history_off_asked: bool,
     pub home: Option<HomeRows>,
     pub details: Option<MediaId>,
     /// The video whose details page has its format drawer open.
@@ -946,6 +951,7 @@ impl Default for UiState {
             interface_languages_open: false,
             history: LibraryGrid::history(),
             clear_armed: None,
+            history_off_asked: false,
             home: None,
             details: None,
             format_drawer: None,

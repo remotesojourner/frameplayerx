@@ -557,7 +557,9 @@ frameplayerx.log and not sent again.
 ## Browsing and history
 
 **Home** opens on what you were watching (a banner to resume, then
-*Continue watching* and *Favorites*) and ends with a row of your sources:
+*Continue watching*, while the watch history is kept, and *Favorites*) and
+ends with a row of your sources, or a grid of them with the watch history
+off:
 **On this device** first, then your libraries and every other source you
 added, then *Add a source*. Each opens in a browser made for that kind of
 source (see [Sources](#sources)); Back returns to Home. Its title is always
@@ -592,6 +594,14 @@ watched, rating, length). Remove one video from its details with *Remove
 from history*, or everything with *Clear history*; favorites and ratings
 stay. Browsing a network source never adds anything here. Removing a source
 forgets all its videos, those you watched, marked or put in a playlist too.
+
+**Keep watch history**, in Settings › General, turns all of this off.
+Turning it off deletes the history there is, after a warning, along with
+where you left each video. From then on nothing you watch is kept on the
+headset: this page goes, Home has no banner to resume or *Continue
+watching*, and a video resumes only where its server keeps your place
+(Jellyfin, Emby and Plex). Servers still hear how far you watched. Turn it
+on again to start a new history.
 
 A video you stopped part way shows the frame where you left off, made
 shortly after it stops. Past 90 % it counts as watched: its card gets a ✓,

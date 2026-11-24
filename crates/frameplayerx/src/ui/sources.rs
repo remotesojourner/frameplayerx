@@ -187,7 +187,12 @@ pub fn sources(ui: &mut egui::Ui, v: &mut View) {
         browse(ui, v);
         return;
     }
-    page_header(ui, tr!("nav-sources"), Some(tr!("sources-desc")), |ui| {
+    let desc = if v.settings.watch_history {
+        tr!("sources-desc")
+    } else {
+        tr!("sources-desc-no-history")
+    };
+    page_header(ui, tr!("nav-sources"), Some(desc), |ui| {
         if widgets::button(ui, Some(icons::PLUS), tr!("sources-add"), Kind::Primary).clicked() {
             v.state.source_form = Some(SourceForm::default());
         }
@@ -371,14 +376,16 @@ fn edit(v: &mut View, id: &str) {
     }
 }
 
-/// Home's row of sources: each opens its browser, the last adds one.
-/// Locked sources stay out of it until unlocked under Sources.
-pub fn source_row(ui: &mut egui::Ui, v: &mut View, back_to: Screen) {
+/// Home's sources: each opens its browser, the last adds one. In a row
+/// that scrolls sideways, or with `grid`, when nothing is above them, in
+/// rows filling the page. Locked sources stay out until unlocked under
+/// Sources.
+pub fn source_row(ui: &mut egui::Ui, v: &mut View, back_to: Screen, grid: bool) {
     let rows: Vec<Row> = rows(v)
         .into_iter()
         .filter(|r| r.lock != Lock::Locked)
         .collect();
-    page::carousel(ui, tr!("nav-sources"), None, rows.len() + 1, |ui, i| {
+    let add = |ui: &mut egui::Ui, i: usize| {
         let Some(row) = rows.get(i) else {
             let c = page::card(
                 ui,
@@ -429,7 +436,14 @@ pub fn source_row(ui: &mut egui::Ui, v: &mut View, back_to: Screen) {
                 back_to,
             });
         }
-    });
+    };
+    let n = rows.len() + 1;
+    if grid {
+        page::section_title(ui, tr!("nav-sources"), None);
+        page::grid(ui, n, page::LANDSCAPE.x, add);
+    } else {
+        page::carousel(ui, tr!("nav-sources"), None, n, add);
+    }
 }
 
 /// Unlocks a source, or sets, changes or removes its PIN.

@@ -325,6 +325,7 @@ fn general(ui: &mut egui::Ui, v: &mut View) {
             &mut s.haptics_enabled,
         );
     });
+    watch_history(ui, s, v.state, &v.services.library, v.actions);
     display(ui, &mut s.display);
     heading(ui, tr!("settings-thumbnails"));
     widgets::rows(ui, |r| {
@@ -381,6 +382,61 @@ fn general(ui: &mut egui::Ui, v: &mut View) {
             Some(tr!("settings-perf-panel-desc")),
             &mut s.perf_overlay,
         );
+    });
+}
+
+/// The switch that keeps a watch history. Turned off while the history holds
+/// something, locked sources' included, it first warns that all of it will
+/// be deleted, with a button to go ahead and one to keep it.
+fn watch_history(
+    ui: &mut egui::Ui,
+    s: &mut crate::settings::Settings,
+    state: &mut super::UiState,
+    library: &fp_library::Library,
+    actions: &mut Vec<Action>,
+) {
+    heading(ui, tr!("nav-history"));
+    let mut on = s.watch_history && !state.history_off_asked;
+    widgets::rows(ui, |r| {
+        if r.switch(tr!("history-keep"), Some(tr!("history-keep-desc")), &mut on) {
+            if on {
+                s.watch_history = true;
+                state.history_off_asked = false;
+            } else if library.has_history().unwrap_or(true) {
+                state.history_off_asked = true;
+            } else {
+                actions.push(Action::TurnOffHistory);
+            }
+        }
+        if !state.history_off_asked {
+            return;
+        }
+        r.content(|ui| {
+            ui.label(
+                RichText::new(tr!("history-off-warning"))
+                    .font(theme::font(Weight::Regular, 16.0))
+                    .color(theme::TEXT),
+            );
+            ui.add_space(10.0);
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 12.0;
+                if widgets::button(
+                    ui,
+                    Some(icons::TRASH),
+                    tr!("history-off-confirm"),
+                    Kind::Danger,
+                )
+                .clicked()
+                {
+                    actions.push(Action::TurnOffHistory);
+                    state.history_off_asked = false;
+                }
+                if widgets::button(ui, None, tr!("common-cancel"), Kind::Secondary).clicked() {
+                    state.history_off_asked = false;
+                }
+            });
+            ui.add_space(4.0);
+        });
     });
 }
 

@@ -143,6 +143,10 @@ pub struct Settings {
     pub passthrough: bool,
     pub screen_glow: ScreenGlow,
     pub house_lights: HouseLights,
+    /// What is played is kept in Watch history, where it was left with it,
+    /// and Home shows Continue watching. Off, nothing is kept, and videos
+    /// resume only from their server's resume points.
+    pub watch_history: bool,
     /// Resume videos where they were left.
     pub resume: bool,
     /// The format a video starts in when nothing identifies it (no
@@ -320,6 +324,7 @@ impl Default for Settings {
             passthrough: false,
             screen_glow: ScreenGlow::default(),
             house_lights: HouseLights::default(),
+            watch_history: true,
             resume: true,
             default_format: fp_core::format::VideoFormat::FALLBACK,
             fisheye_presets: FISHEYE_PRESETS.to_vec(),

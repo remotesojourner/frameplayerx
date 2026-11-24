@@ -1276,6 +1276,21 @@ impl Library {
         })
     }
 
+    /// Whether the watch history holds anything [`Library::clear_history`]
+    /// would delete, locked sources' videos included.
+    pub fn has_history(&self) -> Result<bool> {
+        self.with(|c| {
+            let any = c.query_row(
+                "SELECT EXISTS (SELECT 1 FROM history)
+                     OR EXISTS (SELECT 1 FROM media WHERE last_played IS NOT NULL
+                                OR resume_position > 0 OR play_count > 0)",
+                [],
+                |r| r.get(0),
+            )?;
+            Ok(any)
+        })
+    }
+
     /// Deletes the whole watch history: every session, and every video's
     /// last playback, resume position and play count. Ratings, favourites,
     /// tags, bookmarks and adjustments are kept.
@@ -2125,7 +2140,15 @@ mod tests {
         assert!(h.iter().all(|e| e.completed));
         assert!(lib.update_playback(SessionId(999), 1.0, false).is_err());
         lib.set_favorite(a, true).unwrap();
+        // A locked source's videos count, though no read shows them.
+        lib.set_hidden(Hidden {
+            sources: vec![lib.get(a).unwrap().unwrap().source_id],
+        });
+        assert!(lib.history(10).unwrap().is_empty());
+        assert!(lib.has_history().unwrap());
         lib.clear_history().unwrap();
+        assert!(!lib.has_history().unwrap());
+        lib.set_hidden(Hidden::default());
         assert!(lib.history(10).unwrap().is_empty());
         let r = lib.get(a).unwrap().unwrap();
         assert_eq!((r.last_played, r.play_count, r.favorite), (None, 0, true));
