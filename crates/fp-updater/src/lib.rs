@@ -42,16 +42,23 @@ pub use semver::Version;
 
 /// Where the latest stable release manifest is published. The signature is
 /// expected at the same URL plus `.sig`. The stable channel falls back to
-/// it when GitHub's release list can't be read (rate limits).
+/// it when neither release list can be read.
 pub const DEFAULT_MANIFEST_URL: &str =
     "https://github.com/remotesojourner/frameplayerx/releases/latest/download/manifest.json";
 
 /// GitHub's list of the most recent releases, pre-releases included. Both
 /// channels pick the highest version for them here: it is current the
 /// moment a release is published, where `releases/latest` can lag, and it
-/// goes by the version rather than GitHub's pre-release flag.
+/// goes by the version rather than GitHub's pre-release flag. GitHub
+/// answers 60 such requests an hour from one network.
 pub const RELEASES_API_URL: &str =
     "https://api.github.com/repos/remotesojourner/frameplayerx/releases?per_page=10";
+
+/// The same list as the project's website keeps it, read first: it asks
+/// GitHub once every few minutes for every player at once
+/// (tools/crash-relay/worker.js), so a network that has used up its
+/// requests to GitHub can still check.
+pub const RELEASES_URL: &str = "https://frameplayerx.org.uk/updates/releases";
 
 /// The ed25519 public key release manifests are signed with.
 ///
@@ -87,11 +94,9 @@ pub fn check(url: &str, current_version: &str, channel: Channel) -> Result<Optio
     Updater::new()?.check(url, &current, channel)
 }
 
-/// Checks FramePlayerX's GitHub releases for an update on `channel`: the
-/// highest version among recent releases ([`RELEASES_API_URL`]), stable
-/// versions only on the stable channel. Stable falls back to
-/// [`DEFAULT_MANIFEST_URL`] when the list can't be read. Otherwise as
-/// [`check`].
+/// Checks FramePlayerX's releases for an update on `channel`: the highest
+/// version among recent releases ([`channel_manifest_url`]), stable
+/// versions only on the stable channel. Otherwise as [`check`].
 pub fn check_channel(current_version: &str, channel: Channel) -> Result<Option<Update>> {
     let current = parse_version(current_version)?;
     let updater = Updater::new()?;
@@ -99,14 +104,30 @@ pub fn check_channel(current_version: &str, channel: Channel) -> Result<Option<U
     updater.check(&url, &current, channel)
 }
 
-/// The manifest of the newest release on `channel` among recent releases
+/// The manifest of the newest release on `channel` among recent releases:
+/// the website's list ([`RELEASES_URL`]), else GitHub's
 /// ([`RELEASES_API_URL`]). Stable falls back to [`DEFAULT_MANIFEST_URL`]
-/// when the list can't be read; `releases/latest` never offers a beta.
+/// when neither can be read; `releases/latest` never offers a beta, which
+/// gets GitHub's error, such as [`Error::RateLimited`].
 pub fn channel_manifest_url(updater: &Updater, channel: Channel) -> Result<String> {
-    match updater.newest_manifest_url(RELEASES_API_URL, channel) {
-        Ok(url) => Ok(url),
-        Err(_) if channel == Channel::Stable => Ok(DEFAULT_MANIFEST_URL.to_string()),
-        Err(e) => Err(e),
+    manifest_url_from(updater, &[RELEASES_URL, RELEASES_API_URL], channel)
+}
+
+pub(crate) fn manifest_url_from(
+    updater: &Updater,
+    lists: &[&str],
+    channel: Channel,
+) -> Result<String> {
+    let mut failed = None;
+    for list in lists {
+        match updater.newest_manifest_url(list, channel) {
+            Ok(url) => return Ok(url),
+            Err(e) => failed = Some(e),
+        }
+    }
+    match (channel, failed) {
+        (Channel::Stable, _) | (_, None) => Ok(DEFAULT_MANIFEST_URL.to_string()),
+        (Channel::Beta, Some(e)) => Err(e),
     }
 }
 

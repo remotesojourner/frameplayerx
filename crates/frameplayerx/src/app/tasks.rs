@@ -358,6 +358,9 @@ impl App {
                     Some(Box::new(u)),
                 ),
                 Ok(None) => Job::UpdateChecked(seq, UpdateStatus::UpToDate, None),
+                Err(fp_updater::Error::RateLimited { until }) => {
+                    Job::UpdateChecked(seq, UpdateStatus::Failed(rate_limited(until)), None)
+                }
                 Err(e) => Job::UpdateChecked(seq, UpdateStatus::Failed(e.to_string()), None),
             }
         });
@@ -1175,4 +1178,33 @@ fn remove_from_browse(b: &mut Browse, keys: &[String], thumbs: &mut ui::thumbs::
             true
         }
     });
+}
+
+/// Why an update check couldn't be made: GitHub turned away this network,
+/// until the local time it said.
+fn rate_limited(until: Option<u64>) -> String {
+    let time = until
+        .and_then(|t| i64::try_from(t).ok())
+        .filter(|&t| t > crate::clock::unix_now())
+        .map(crate::clock::time_at)
+        .filter(|time| !time.is_empty());
+    match time {
+        Some(time) => tr!("settings-update-rate-limited", time = time),
+        None => tr!("settings-update-rate-limited-later").to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_rate_limit_says_when_it_ends_by_the_headsets_clock() {
+        let soon = crate::clock::unix_now() + 600;
+        let text = rate_limited(Some(soon as u64));
+        assert!(text.contains(&crate::clock::time_at(soon)), "{text}");
+        let later = tr!("settings-update-rate-limited-later");
+        assert_eq!(rate_limited(None), later);
+        assert_eq!(rate_limited(Some(1)), later, "already over");
+    }
 }

@@ -115,6 +115,9 @@ impl Updater {
     fn get_small(&self, url: &str) -> Result<Vec<u8>> {
         let resp = self.agent.get(url).call().map_err(|e| http_err(url, e))?;
         let status = resp.status().as_u16();
+        if let Some(until) = rate_limited(status, resp.headers()) {
+            return Err(Error::RateLimited { until });
+        }
         if status != 200 {
             return Err(Error::HttpStatus {
                 url: url.to_string(),
@@ -317,6 +320,29 @@ enum Fetch {
     RestartNeeded,
 }
 
+/// GitHub's refusal of a client over its limit: 403 or 429 with no requests
+/// left (`x-ratelimit-reset` says until when), or with `retry-after` seconds
+/// for its secondary limits. `Some` of when it ends, if it said.
+fn rate_limited(status: u16, headers: &ureq::http::HeaderMap) -> Option<Option<u64>> {
+    if !matches!(status, 403 | 429) {
+        return None;
+    }
+    let header = |name: &str| {
+        headers
+            .get(name)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.trim().parse::<u64>().ok())
+    };
+    if header("x-ratelimit-remaining") == Some(0) {
+        return Some(header("x-ratelimit-reset"));
+    }
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?
+        .as_secs();
+    header("retry-after").map(|wait| Some(now + wait))
+}
+
 fn http_err(url: &str, e: ureq::Error) -> Error {
     Error::Http {
         url: url.to_string(),
@@ -381,6 +407,11 @@ mod tests {
     enum Route {
         /// Serve bytes, honouring `Range` when `ranges` is true.
         Bytes { data: Vec<u8>, ranges: bool },
+        /// Answer `status` with these headers and nothing else.
+        Refuse {
+            status: u16,
+            headers: Vec<(&'static str, String)>,
+        },
     }
 
     /// Request path and `Range` header of every request seen.
@@ -448,6 +479,13 @@ mod tests {
         match route {
             None => {
                 let _ = req.respond(Response::empty(StatusCode(404)));
+            }
+            Some(Route::Refuse { status, headers }) => {
+                let mut resp = Response::empty(StatusCode(status));
+                for (name, value) in headers {
+                    resp = resp.with_header(Header::from_bytes(name, value).unwrap());
+                }
+                let _ = req.respond(resp);
             }
             Some(Route::Bytes { data, ranges }) => {
                 let start = range
@@ -606,6 +644,110 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(got.version, Version::new(2, 0, 0));
+    }
+
+    #[test]
+    fn githubs_refusal_over_its_limit_says_until_when() {
+        let srv = Server::start();
+        let refuse = |status, headers: &[(&'static str, &str)]| Route::Refuse {
+            status,
+            headers: headers.iter().map(|(n, v)| (*n, v.to_string())).collect(),
+        };
+        srv.route(
+            "/spent",
+            refuse(
+                403,
+                &[
+                    ("x-ratelimit-remaining", "0"),
+                    ("x-ratelimit-reset", "1900000000"),
+                ],
+            ),
+        );
+        srv.route("/slow-down", refuse(429, &[("retry-after", "120")]));
+        srv.route("/forbidden", refuse(403, &[]));
+        let u = updater(&SigningKey::from_bytes(&[9; 32]));
+        let list = |path| u.newest_manifest_url(&srv.url(path), Channel::Beta);
+        assert!(
+            matches!(
+                list("/spent"),
+                Err(Error::RateLimited {
+                    until: Some(1_900_000_000)
+                })
+            ),
+            "{:?}",
+            list("/spent")
+        );
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        match list("/slow-down") {
+            Err(Error::RateLimited { until: Some(t) }) => {
+                assert!((now + 100..now + 140).contains(&t));
+            }
+            other => panic!("{other:?}"),
+        }
+        assert!(matches!(
+            list("/forbidden"),
+            Err(Error::HttpStatus { status: 403, .. })
+        ));
+        let err = list("/slow-down").unwrap_err().to_string();
+        assert!(err.contains("try again in 2 min"), "{err}");
+    }
+
+    #[test]
+    fn the_websites_list_comes_first_and_githubs_stands_in() {
+        let srv = Server::start();
+        let release = |tag: &str| {
+            serde_json::json!([{
+                "tag_name": tag,
+                "assets": [{ "name": "manifest.json", "browser_download_url": format!("https://example.com/{tag}/manifest.json") }],
+            }])
+        };
+        for (path, tag) in [("/site", "v2.1.0-beta.2"), ("/github", "v2.1.0-beta.1")] {
+            let data = serde_json::to_vec(&release(tag)).unwrap();
+            srv.route(
+                path,
+                Route::Bytes {
+                    data,
+                    ranges: false,
+                },
+            );
+        }
+        srv.route(
+            "/github-spent",
+            Route::Refuse {
+                status: 403,
+                headers: vec![
+                    ("x-ratelimit-remaining", "0".into()),
+                    ("x-ratelimit-reset", "1900000000".into()),
+                ],
+            },
+        );
+        let u = updater(&SigningKey::from_bytes(&[9; 32]));
+        let from = |lists: &[&str], channel| {
+            let urls: Vec<String> = lists.iter().map(|p| srv.url(p)).collect();
+            let urls: Vec<&str> = urls.iter().map(String::as_str).collect();
+            crate::manifest_url_from(&u, &urls, channel)
+        };
+        assert_eq!(
+            from(&["/site", "/github"], Channel::Beta).unwrap(),
+            "https://example.com/v2.1.0-beta.2/manifest.json"
+        );
+        // The website down: GitHub's list.
+        assert_eq!(
+            from(&["/gone", "/github"], Channel::Beta).unwrap(),
+            "https://example.com/v2.1.0-beta.1/manifest.json"
+        );
+        // Neither: a beta hears why from GitHub, stable takes its latest.
+        assert!(matches!(
+            from(&["/gone", "/github-spent"], Channel::Beta),
+            Err(Error::RateLimited { .. })
+        ));
+        assert_eq!(
+            from(&["/gone", "/github-spent"], Channel::Stable).unwrap(),
+            crate::DEFAULT_MANIFEST_URL
+        );
     }
 
     #[test]
