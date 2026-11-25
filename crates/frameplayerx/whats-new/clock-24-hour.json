@@ -1,0 +1,9 @@
+{
+  "kind": "feat",
+  "en": "Turn on 24-hour clock in Settings › General to show the time as 22:05 instead of 10:05 PM.",
+  "de": "Schalten Sie 24-Stunden-Uhr unter Einstellungen › Allgemein ein, um die Uhrzeit als 22:05 statt 10:05 PM anzuzeigen.",
+  "es": "Activa Reloj de 24 horas en Ajustes › General para ver la hora como 22:05 en lugar de 10:05 PM.",
+  "fr": "Activez Horloge 24 heures dans Paramètres › Général pour afficher l’heure sous la forme 22:05 au lieu de 10:05 PM.",
+  "ja": "設定 › 一般 で 24 時間表示をオンにすると、時刻が 10:05 PM ではなく 22:05 のように表示されます。",
+  "zh-CN": "在 设置 › 常规 中开启 24 小时制，时间会显示为 22:05，而不是 10:05 PM。"
+}

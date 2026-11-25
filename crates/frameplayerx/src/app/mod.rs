@@ -361,6 +361,7 @@ fn floating_panel(px: [u32; 2], width_m: f32, ppp: f32) -> Panel {
 impl App {
     pub fn new(settings: Settings, library: Library) -> App {
         crate::i18n::set_language(&settings.interface_language());
+        crate::clock::set_24_hour(settings.clock_24_hour);
         let services = Services::new(&settings, library);
         let thumbs = ui::thumbs::Thumbs::new(services.opener.clone(), services.images.clone());
         let mut panels = [
@@ -588,6 +589,9 @@ impl App {
         }
         if self.settings.ui_scale != self.saved.ui_scale {
             self.apply_ui_scale();
+        }
+        if self.settings.clock_24_hour != self.saved.clock_24_hour {
+            crate::clock::set_24_hour(self.settings.clock_24_hour);
         }
         if self.settings.language != self.saved.language {
             crate::i18n::set_language(&self.settings.interface_language());

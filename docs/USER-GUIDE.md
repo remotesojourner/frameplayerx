@@ -1276,8 +1276,9 @@ the pictures off. Press the video's length after the seek bar to show how
 much is left instead, and again for the length; FramePlayerX keeps your
 choice. Above the bar's left end are the time of day and, unless the video
 loops, when it ends at the speed playing; the library's top bar shows the
-time too, in the headset's time zone and its locale's 12- or 24-hour
-clock. What a controller shortcut changes, such as the
+time too, in the headset's time zone and on a 12-hour clock, or a
+24-hour one with **24-hour clock** on in Settings › General. What a
+controller shortcut changes, such as the
 volume or a minute's skip, shows for a moment in a small message above where
 the control bar sits.
 
