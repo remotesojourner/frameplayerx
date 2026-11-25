@@ -21,14 +21,25 @@ const LIFT_ROOM: i8 = 16;
 
 /// A page that scrolls down, reaching [`LIFT_ROOM`] past `ui`'s sides with
 /// the same room inside: what is on it stays in line, and a card lifted at
-/// its edge shows whole.
-pub fn scroll<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
-    scroll_from(ui, false, add)
+/// its edge shows whole. Pages take turns in the same place, so each keeps
+/// how far down it is by `place`, naming it: going back to one, or to its
+/// tab, finds it there, and one opened anew starts at its top.
+pub fn scroll<R>(
+    ui: &mut egui::Ui,
+    place: impl std::hash::Hash,
+    add: impl FnOnce(&mut egui::Ui) -> R,
+) -> R {
+    scroll_from(ui, place, false, add)
 }
 
 /// [`scroll`], back at the top when `top`: a list sorted or filtered anew
 /// starts from its beginning.
-pub fn scroll_from<R>(ui: &mut egui::Ui, top: bool, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
+pub fn scroll_from<R>(
+    ui: &mut egui::Ui,
+    place: impl std::hash::Hash,
+    top: bool,
+    add: impl FnOnce(&mut egui::Ui) -> R,
+) -> R {
     egui::Frame::new()
         .outer_margin(egui::Margin {
             left: -LIFT_ROOM,
@@ -36,7 +47,9 @@ pub fn scroll_from<R>(ui: &mut egui::Ui, top: bool, add: impl FnOnce(&mut egui::
             ..Default::default()
         })
         .show(ui, |ui| {
-            let mut area = egui::ScrollArea::vertical().auto_shrink(false);
+            let mut area = egui::ScrollArea::vertical()
+                .id_salt(place)
+                .auto_shrink(false);
             if top {
                 area = area.vertical_scroll_offset(0.0);
             }
@@ -1285,6 +1298,49 @@ pub fn prose(ui: &mut egui::Ui, text: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn each_page_keeps_how_far_down_it_is() {
+        let ctx = egui::Context::default();
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800.0, 400.0));
+        // Shows page `key` for a few frames, wheeled down by `wheel` points
+        // on the first; where its first row ends up.
+        let show = |key: u64, wheel: f32| {
+            let mut top = 0.0;
+            for frame in 0..30 {
+                let mut events = vec![egui::Event::PointerMoved(screen.center())];
+                if frame == 0 && wheel != 0.0 {
+                    events.push(egui::Event::MouseWheel {
+                        unit: egui::MouseWheelUnit::Point,
+                        delta: egui::vec2(0.0, -wheel),
+                        modifiers: egui::Modifiers::NONE,
+                    });
+                }
+                let input = egui::RawInput {
+                    screen_rect: Some(screen),
+                    events,
+                    ..Default::default()
+                };
+                let _ = ctx.run(input, |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        scroll(ui, ("test", key), |ui| {
+                            top = ui.cursor().top();
+                            for i in 0..200 {
+                                ui.label(format!("row {i}"));
+                            }
+                        });
+                    });
+                });
+            }
+            top
+        };
+        let at_top = show(1, 0.0);
+        let scrolled = show(1, 600.0);
+        assert!(scrolled < at_top - 300.0, "{scrolled} vs {at_top}");
+        // A page opened anew starts at its top; the first is still down.
+        assert_eq!(show(2, 0.0), at_top);
+        assert_eq!(show(1, 0.0), scrolled);
+    }
 
     #[test]
     fn a_long_trail_keeps_its_start_and_end() {

@@ -138,40 +138,50 @@ pub fn page(ui: &mut egui::Ui, v: &mut View, trail: &[String], b: &mut Browse) -
         });
     }
     let mut go: Option<(String, String)> = None;
-    egui::ScrollArea::vertical()
+    // A folder's own place, once its listing is here: the previous one's
+    // rows stay on show while it loads.
+    let mut area = egui::ScrollArea::vertical()
         .auto_shrink(false)
-        .show_list(ui, |ui| {
-            if shown.is_empty() && !b.loading && b.error.is_none() {
-                ui.add_space(30.0);
-                ui.vertical_centered(|ui| {
-                    let text = if words.is_empty() {
-                        tr!("folders-empty")
-                    } else {
-                        tr!("folders-no-match")
-                    };
-                    ui.label(egui::RichText::new(text).color(theme::TEXT_2));
+        .id_salt(("folders", &b.source));
+    if !b.placed && !b.loading {
+        area = area.vertical_scroll_offset(b.scrolled.get(&b.location).copied().unwrap_or(0.0));
+        b.placed = true;
+    }
+    let listed = area.show_list(ui, |ui| {
+        if shown.is_empty() && !b.loading && b.error.is_none() {
+            ui.add_space(30.0);
+            ui.vertical_centered(|ui| {
+                let text = if words.is_empty() {
+                    tr!("folders-empty")
+                } else {
+                    tr!("folders-no-match")
+                };
+                ui.label(egui::RichText::new(text).color(theme::TEXT_2));
+            });
+        }
+        for e in &shown {
+            let (open, more) = row(ui, v, e);
+            if more {
+                v.state.picking = Some(super::Picking {
+                    reqs: queue(&[e]),
+                    title: e.name.clone(),
+                    from_row: true,
                 });
-            }
-            for e in &shown {
-                let (open, more) = row(ui, v, e);
-                if more {
-                    v.state.picking = Some(super::Picking {
-                        reqs: queue(&[e]),
-                        title: e.name.clone(),
-                        from_row: true,
-                    });
-                } else if open {
-                    match e.kind {
-                        EntryKind::Directory => go = Some((e.name.clone(), e.location.clone())),
-                        _ => {
-                            if let Some(req) = queue(&[e]).pop() {
-                                v.actions.push(Action::Open(req));
-                            }
+            } else if open {
+                match e.kind {
+                    EntryKind::Directory => go = Some((e.name.clone(), e.location.clone())),
+                    _ => {
+                        if let Some(req) = queue(&[e]).pop() {
+                            v.actions.push(Action::Open(req));
                         }
                     }
                 }
             }
-        });
+        }
+    });
+    if b.placed && !b.loading {
+        b.offset = listed.state.offset.y;
+    }
     if let Some((name, location)) = go {
         v.actions.push(b.enter(&name, location));
     }

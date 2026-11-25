@@ -34,7 +34,7 @@ pub fn page(ui: &mut egui::Ui, v: &mut View) {
         );
         return;
     }
-    if let Some(id) = cards(ui, v, &lists) {
+    if let Some(id) = cards(ui, v, "playlists", &lists) {
         v.state.playlist = Some(id);
         v.state.renaming = false;
     }
@@ -48,10 +48,10 @@ fn playlists(v: &mut View) -> Vec<Playlist> {
         .clone()
 }
 
-/// A grid of playlists; the one clicked.
-fn cards(ui: &mut egui::Ui, v: &mut View, lists: &[Playlist]) -> Option<PlaylistId> {
+/// A grid of playlists at `place`; the one clicked.
+fn cards(ui: &mut egui::Ui, v: &mut View, place: &str, lists: &[Playlist]) -> Option<PlaylistId> {
     let mut picked = None;
-    page::scroll(ui, |ui| {
+    page::scroll(ui, place, |ui| {
         page::grid(ui, lists.len(), page::LANDSCAPE.x, |ui, i| {
             let p = &lists[i];
             let thumb = p.first.as_ref().and_then(MediaRecord::picture);
@@ -231,7 +231,7 @@ fn playlist(ui: &mut egui::Ui, v: &mut View, id: PlaylistId) {
         return;
     }
     let n = entries.len();
-    page::scroll(ui, |ui| {
+    page::scroll(ui, ("playlist", id), |ui| {
         ui.add_space(4.0);
         for (i, e) in entries.iter().enumerate() {
             let thumb = e.record.picture();
@@ -375,7 +375,7 @@ pub fn picker(ui: &mut egui::Ui, v: &mut View) {
     if !lists.is_empty() {
         widgets::section_label(ui, tr!("playlists-or-add-to"));
         ui.add_space(6.0);
-        if let Some(id) = cards(ui, v, &lists) {
+        if let Some(id) = cards(ui, v, "playlist-picker", &lists) {
             v.actions.push(Action::AddToPlaylist {
                 playlist: Some(id),
                 name: String::new(),

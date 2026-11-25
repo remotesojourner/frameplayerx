@@ -1,0 +1,9 @@
+{
+  "kind": "fix",
+  "en": "Every page keeps where it was scrolled: switching tabs, or going back to a folder, a media server's page or a playlist, finds it as you left it, and a page you open starts at its top.",
+  "de": "Jede Seite behält ihre Scrollposition: Wenn Sie den Tab wechseln oder zu einem Ordner, einer Seite eines Medienservers oder einer Playlist zurückkehren, finden Sie sie so vor, wie Sie sie verlassen haben, und eine Seite, die Sie öffnen, beginnt oben.",
+  "es": "Cada página conserva dónde estaba desplazada: al cambiar de pestaña o volver a una carpeta, a una página de un servidor multimedia o a una playlist, la encuentras como la dejaste, y una página que abres empieza arriba.",
+  "fr": "Chaque page garde l’endroit où elle était défilée : en changeant d’onglet ou en revenant à un dossier, à une page d’un serveur multimédia ou à une playlist, vous la retrouvez comme vous l’aviez laissée, et une page que vous ouvrez commence en haut.",
+  "ja": "各ページのスクロール位置が保たれるようになりました。タブを切り替えたり、フォルダー、メディアサーバーのページ、プレイリストに戻ったりすると、離れたときの位置のまま表示され、新しく開いたページは先頭から表示されます。",
+  "zh-CN": "每个页面都会保留滚动位置：切换标签页，或返回文件夹、媒体服务器页面或播放列表时，会停在你离开时的位置；新打开的页面则从顶部开始。"
+}

@@ -569,14 +569,15 @@ added, then *Add a source*. Each opens at its top, under the Sources tab,
 in a browser made for that kind of source (see [Sources](#sources)). Its
 title is the way there: **Sources**, the source's name and each folder or
 page you opened, ending with where you are; press any of them to go back
-to it, or Back for one step (from a source's top, to the list of sources).
-A long way shows "…" for the places in its middle. Sources locked with a
+to it, or Back for one step (from a source's top, to the list of sources),
+where it is scrolled as you left it; a folder or page you open starts at
+its top. A long way shows "…" for the places in its middle. Sources locked with a
 PIN stay off Home until unlocked; the padlock on a tile locks it (or,
 without a PIN yet, asks for one).
 
-Each tab stays where you left it while you use another: the source and
-folder you were in, the playlist open, a video's details. Press the tab
-you're on to go to its top.
+Each tab stays where you left it while you use another, scrolled as you
+left it: the source and folder you were in, the playlist open, a video's
+details. Press the tab you're on to go to its top.
 
 Point at a title that is cut short, here or on the control bar, to read it
 whole.

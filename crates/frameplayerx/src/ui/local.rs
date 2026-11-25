@@ -140,6 +140,7 @@ pub fn library_page(
     super::library::grid_page(
         ui,
         v,
+        ("library", source),
         &mut l.grid,
         &[
             (Sort::Added, tr!("sort-newest")),
@@ -180,6 +181,7 @@ fn roots(ui: &mut egui::Ui, v: &mut View, l: &mut LocalView) {
     };
     let builtin = crate::services::builtin_sources();
     egui::ScrollArea::vertical()
+        .id_salt("on-this-device")
         .auto_shrink(false)
         .show_list(ui, |ui| {
             widgets::card(ui, |ui| {

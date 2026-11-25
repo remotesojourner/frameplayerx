@@ -762,7 +762,7 @@ pub fn page(
     let total = shown.len();
     let list: Vec<FeedScene> = shown.into_iter().take(f.shown).cloned().collect();
     let top = std::mem::take(&mut f.to_top) || changed;
-    let picked = scene_grid(ui, v.thumbs, f, &list, total, haptics, top);
+    let picked = scene_grid(ui, v, source, f, &list, total, top);
     if f.filters_open {
         let facets = f.facets();
         let mut open = true;
@@ -1059,15 +1059,16 @@ struct Picked {
 
 fn scene_grid(
     ui: &mut egui::Ui,
-    thumbs: &mut super::thumbs::Thumbs,
+    v: &mut View,
+    source: &str,
     f: &FeedView,
     list: &[FeedScene],
     total: usize,
-    haptics: bool,
     top: bool,
 ) -> Picked {
+    let haptics = v.settings.haptics_enabled;
     let mut picked = Picked::default();
-    page::scroll_from(ui, top, |ui| {
+    page::scroll_from(ui, ("feed", source), top, |ui| {
         if list.is_empty() && !f.loading && f.error.is_none() {
             let (title, body) = if f.order.is_empty() {
                 (tr!("feed-no-scenes"), tr!("feed-no-scenes-desc"))
@@ -1086,7 +1087,7 @@ fn scene_grid(
             let badge = s.format.map(|f| widgets::format_short(&f));
             let c = page::card(
                 ui,
-                thumbs,
+                v.thumbs,
                 &Card {
                     thumb: s.thumbnail_url.as_deref(),
                     placeholder: icons::VIRTUAL_REALITY,
@@ -1171,6 +1172,7 @@ fn details(
         == Some(true);
     let queued = scene_request(source, &scene, info.as_deref(), None);
     egui::ScrollArea::vertical()
+        .id_salt(("scene", source, &scene.url))
         .auto_shrink(false)
         .show_list(ui, |ui| {
             ui.add_space(8.0);

@@ -527,7 +527,7 @@ fn home(ui: &mut egui::Ui, v: &mut View) {
     let Some(rows) = v.state.home.take() else {
         return;
     };
-    page::scroll(ui, |ui| {
+    page::scroll(ui, "home", |ui| {
         ui.add_space(14.0);
         let nothing = rows.continue_watching.is_empty()
             && rows.last_watched.is_none()
@@ -594,11 +594,13 @@ fn filters(ui: &mut egui::Ui, g: &mut LibraryGrid) -> bool {
     changed
 }
 
-/// A searchable, filterable, sortable grid of library videos, paged.
-/// `empty` draws what an empty grid says when nothing filters it.
+/// A searchable, filterable, sortable grid of library videos, paged, at
+/// `place` (see [`page::scroll`]). `empty` draws what an empty grid says
+/// when nothing filters it.
 pub fn grid_page(
     ui: &mut egui::Ui,
     v: &mut View,
+    place: impl std::hash::Hash,
     g: &mut LibraryGrid,
     sorts: &[(Sort, &str)],
     empty: impl FnOnce(&mut egui::Ui, &mut View),
@@ -641,7 +643,7 @@ pub fn grid_page(
         || g.stereo_only
         || g.format_filter != FormatFilter::All;
     let mut more = false;
-    page::scroll_from(ui, changed, |ui| {
+    page::scroll_from(ui, place, changed, |ui| {
         ui.add_space(4.0);
         if results.is_empty() {
             if filtered {
@@ -706,6 +708,7 @@ fn history(ui: &mut egui::Ui, v: &mut View) {
     grid_page(
         ui,
         v,
+        "history",
         &mut g,
         &[
             (Sort::LastPlayed, tr!("sort-recently-watched")),
@@ -747,6 +750,7 @@ fn details(ui: &mut egui::Ui, v: &mut View, id: fp_library::MediaId) {
         return;
     };
     egui::ScrollArea::vertical()
+        .id_salt(("details", id))
         .auto_shrink(false)
         .show_list(ui, |ui| {
             ui.add_space(12.0);
