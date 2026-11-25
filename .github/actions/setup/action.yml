@@ -1,0 +1,73 @@
+name: Set up a build
+description: >-
+  Rust from rust-toolchain.toml, a cargo cache, the FFmpeg builds the ffmpeg
+  job left in the cache, and the Ubuntu packages and build tools a job asks
+  for.
+
+inputs:
+  cache:
+    description: >-
+      The cargo cache's name. A cache holds what one kind of build made, so
+      jobs that build the same share one and the others stay small.
+    required: true
+  save:
+    description: Save the cargo cache at the end ('false' only restores it).
+    default: 'true'
+  apt:
+    description: Ubuntu packages to install, separated by spaces.
+    default: ''
+  tools:
+    description: Install tools/requirements.txt (zig, cargo-zigbuild, meson, git-cliff).
+    default: 'false'
+
+runs:
+  using: composite
+  steps:
+    - name: Install Rust
+      shell: bash
+      run: rustup toolchain install
+    # A new Rust starts afresh; new crates build on the last cache.
+    - name: Cargo cache
+      if: inputs.save == 'true'
+      uses: actions/cache@v6
+      with:
+        path: |
+          ~/.cargo/registry/index/
+          ~/.cargo/registry/cache/
+          ~/.cargo/git/db/
+          target/
+        key: cargo-${{ inputs.cache }}-${{ hashFiles('rust-toolchain.toml') }}-${{ hashFiles('Cargo.lock') }}
+        restore-keys: cargo-${{ inputs.cache }}-${{ hashFiles('rust-toolchain.toml') }}-
+    - name: Cargo cache (read only)
+      if: inputs.save != 'true'
+      uses: actions/cache/restore@v6
+      with:
+        path: |
+          ~/.cargo/registry/index/
+          ~/.cargo/registry/cache/
+          ~/.cargo/git/db/
+          target/
+        key: cargo-${{ inputs.cache }}-${{ hashFiles('rust-toolchain.toml') }}-${{ hashFiles('Cargo.lock') }}
+        restore-keys: cargo-${{ inputs.cache }}-${{ hashFiles('rust-toolchain.toml') }}-
+    - name: Install packages
+      if: inputs.apt != ''
+      shell: bash
+      env:
+        PACKAGES: ${{ inputs.apt }}
+      run: |
+        sudo apt-get update
+        # shellcheck disable=SC2086 # one word per package
+        sudo apt-get install -y $PACKAGES
+    - name: Install build tools
+      if: inputs.tools == 'true'
+      shell: bash
+      run: |
+        python3 -m venv "$RUNNER_TEMP/tools"
+        "$RUNNER_TEMP/tools/bin/pip" install --quiet -r tools/requirements.txt
+        echo "$RUNNER_TEMP/tools/bin" >> "$GITHUB_PATH"
+    - name: FFmpeg builds
+      uses: actions/cache/restore@v6
+      with:
+        path: third_party/ffmpeg
+        key: ffmpeg-${{ hashFiles('tools/build-ffmpeg.sh', 'tools/requirements.txt') }}
+        fail-on-cache-miss: true

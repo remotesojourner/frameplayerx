@@ -801,7 +801,7 @@ Packaging runs `tools/whats-new.sh`, which hands the build
 (`FP_WHATS_NEW`) the version that first shipped each file: the earliest
 release tag holding the commit that added it, else the version being
 built. An upgrade then lists only what the version before it lacked,
-betas included. It needs the whole history, which CI's check job fetches.
+betas included. It needs the whole history, which CI's package job fetches.
 A build without it, as local builds are, shows no What's New;
 `whats-new [FROM]` in a preview script shows every file.
 
