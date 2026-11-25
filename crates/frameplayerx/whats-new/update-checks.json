@@ -1,0 +1,9 @@
+{
+  "kind": "fix",
+  "en": "Checking for updates no longer fails when your network has made too many requests to GitHub, and if GitHub still turns it away, Settings › Updates says when to try again.",
+  "de": "Die Suche nach Updates schlägt nicht mehr fehl, wenn Ihr Netzwerk zu viele Anfragen an GitHub gestellt hat, und falls GitHub sie dennoch abweist, sagt Einstellungen › Updates, wann Sie es erneut versuchen können.",
+  "es": "Buscar actualizaciones ya no falla cuando tu red ha hecho demasiadas solicitudes a GitHub, y si GitHub aun así la rechaza, Ajustes › Actualizaciones te dice cuándo volver a intentarlo.",
+  "fr": "La recherche de mises à jour n’échoue plus quand votre réseau a envoyé trop de requêtes à GitHub, et si GitHub la refuse quand même, Paramètres › Mises à jour indique quand réessayer.",
+  "ja": "ネットワークから GitHub へのリクエストが多すぎる場合でも、アップデートの確認が失敗しなくなりました。それでも GitHub に断られた場合は、「設定」›「アップデート」にいつ再試行できるかが表示されます。",
+  "zh-CN": "当你的网络向 GitHub 发出的请求过多时，检查更新不再失败；如果 GitHub 仍然拒绝，“设置” › “更新”会告诉你何时可以重试。"
+}

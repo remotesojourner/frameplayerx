@@ -3,6 +3,8 @@
 // the token that can do that stays here instead of in the app, and answers
 // with the issue's number. Set up as docs/DEVELOPMENT.md (Crash reports)
 // describes; the secret GITHUB_TOKEN may only write issues of REPO.
+//
+// It also keeps the release list update checks read (/updates/releases).
 
 const MAX_BODY = 96 * 1024;
 // GitHub takes issue bodies up to 65536 characters.
@@ -13,8 +15,11 @@ const KEEP_START = 8000;
 const KINDS = ["crash", "diagnostics"];
 
 export default {
-  async fetch(request, env) {
+  async fetch(request, env, ctx) {
     const url = new URL(request.url);
+    if (request.method === "GET" && url.pathname === "/updates/releases") {
+      return releases(request, env, ctx);
+    }
     if (request.method !== "POST" || url.pathname !== "/report") {
       return new Response("Not found", { status: 404 });
     }
@@ -75,3 +80,51 @@ export default {
     return Response.json({ number }, { status: 201 });
   },
 };
+
+// How long a copy of the release list is kept: each of Cloudflare's data
+// centres asks GitHub for it at most this often, however many players
+// check.
+const RELEASES_TTL = 300;
+
+// GitHub's list of RELEASES_REPO's recent releases, cut to what the update
+// check reads (fp-updater's RELEASES_URL), so that players don't spend
+// their network's 60 requests an hour to GitHub. Its answers are trusted
+// no further than GitHub's: each release's manifest is signature-checked.
+async function releases(request, env, ctx) {
+  const key = new Request(new URL("/updates/releases", request.url));
+  const kept = await caches.default.match(key);
+  if (kept) {
+    return kept;
+  }
+  const headers = {
+    Accept: "application/vnd.github+json",
+    "User-Agent": "frameplayerx-website",
+    "X-GitHub-Api-Version": "2022-11-28",
+  };
+  // Cloudflare's addresses are shared, so without a token GitHub's limit
+  // there would soon be spent too.
+  if (env.RELEASES_TOKEN) {
+    headers.Authorization = `Bearer ${env.RELEASES_TOKEN}`;
+  }
+  const reply = await fetch(
+    `https://api.github.com/repos/${env.RELEASES_REPO}/releases?per_page=10`,
+    { headers },
+  );
+  if (!reply.ok) {
+    return new Response(`GitHub answered ${reply.status}`, { status: 502 });
+  }
+  const list = (await reply.json()).map((r) => ({
+    tag_name: r.tag_name,
+    draft: r.draft,
+    prerelease: r.prerelease,
+    assets: (r.assets ?? []).map((a) => ({
+      name: a.name,
+      browser_download_url: a.browser_download_url,
+    })),
+  }));
+  const response = Response.json(list, {
+    headers: { "Cache-Control": `public, max-age=${RELEASES_TTL}` },
+  });
+  ctx.waitUntil(caches.default.put(key, response.clone()));
+  return response;
+}

@@ -761,7 +761,12 @@ Merging it releases, as any merge to `main` does. A breaking crate upgrade
 
 The app and `frameplayerx-install` find releases in GitHub's release list:
 the highest version on the Stable channel without a `-` part, on Beta any
-version (`releases/latest` never offers a pre-release). In-app updates
+version (`releases/latest` never offers a pre-release). They read the
+[website's](#project-website) copy of it first, `/updates/releases`, and
+GitHub's own only when that fails: GitHub answers 60 requests an hour
+without a token from one network, which a household or a shared address
+can use up. When it refuses, Settings › Updates says when it takes
+requests again; Stable still falls back to `releases/latest`. In-app updates
 and `frameplayerx-install` without `--zip` only install releases whose
 manifest is signed with the release key.
 
@@ -813,9 +818,19 @@ all point at the latest release, so they need no change per release:
 
 ### Project website
 
-The same Cloudflare Worker serves `site/` at `https://frameplayerx.org.uk`
-and handles `POST /report`. It also keeps the original `workers.dev` URL
-active for copies of FramePlayerX that already use it.
+The same Cloudflare Worker serves `site/` at `https://frameplayerx.org.uk`,
+handles `POST /report`, and answers `GET /updates/releases`, update checks'
+copy of GitHub's release list for `RELEASES_REPO`. It keeps that copy for
+5 minutes in each of Cloudflare's data centres, so all players together ask
+GitHub a few times an hour. Cloudflare's addresses are shared, so it asks
+with a token: once, make a fine-grained GitHub token with **Public
+repositories (read-only)** access and no permissions, and from the
+repository root run
+`npx --yes wrangler@4.161.0 secret put RELEASES_TOKEN --config tools/crash-relay/wrangler.toml`.
+Without it the copy works until GitHub's limit for those addresses is
+spent; when GitHub refuses, it answers 502 and players ask GitHub
+themselves. It also keeps the original `workers.dev` URL active for copies
+of FramePlayerX that already use it.
 
 The site's user guide (`/guide`) is made from `docs/USER-GUIDE.md` when
 the site is built, one page per `## ` section, so edit the Markdown, not the
@@ -845,7 +860,8 @@ Worker's account.
 Add the repository Actions variable `CLOUDFLARE_ACCOUNT_ID` and the
 `CLOUDFLARE_API_TOKEN` Actions secret. The deploy token needs permission to
 edit Workers in the account and read the zone and manage Worker routes for
-`frameplayerx.org.uk`. The crash relay's `GITHUB_TOKEN` stays in Cloudflare.
+`frameplayerx.org.uk`. The crash relay's `GITHUB_TOKEN` and
+`RELEASES_TOKEN` stay in Cloudflare.
 
 ### Crash reports
 

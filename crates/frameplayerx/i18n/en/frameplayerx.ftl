@@ -241,6 +241,9 @@ settings-update-install = Download and install
 settings-update-restart-desc = Restart FramePlayerX to use it.
 settings-update-restart = Restart now
 settings-update-failed = The update failed
+# $time is when GitHub takes requests again, as the headset's clock shows it.
+settings-update-rate-limited = GitHub is limiting update checks from your network. Try again after { $time }.
+settings-update-rate-limited-later = GitHub is limiting update checks from your network. Try again later.
 settings-update-check = Check now
 
 ## Settings: more
