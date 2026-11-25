@@ -760,6 +760,7 @@ impl App {
                 .screen_glow
                 .look(shown.as_ref().unwrap_or(&self.settings.default_view)),
         );
+        renderer.set_crop_bars(self.settings.crop_bars);
         // The open video's colour, else the one videos start with. It is
         // sRGB; the eyes are cleared in linear light.
         let [r, g, b] = shown

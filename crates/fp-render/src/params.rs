@@ -59,6 +59,10 @@ pub(crate) struct SceneParams {
     /// then spread as the light is halfway out and at its reach, half and a
     /// quarter as many ([`crate::glow::COLOURS`] in all).
     pub glow_colours: [[u32; 4]; crate::glow::COLOURS / 4],
+    /// A flat picture's black bars cropped off ([`crate::crop`]): x off the
+    /// left and right, y off the top and bottom, shares of each eye's
+    /// picture.
+    pub crop: Vec4,
 }
 
 /// Sets `p` up for a Q10C picture of `height` rows sampled where it lies
@@ -358,10 +362,13 @@ pub(crate) fn set_comfort_focus(
     }
 }
 
+/// The scene's parameters for `video`, a flat picture's `crop` (left and
+/// right, top and bottom) left off its screen.
 pub(crate) fn build(
     video: &VideoParams,
     frame: Option<&FrameDesc>,
     inv_view_proj: [Mat4; 2],
+    crop: [f32; 2],
 ) -> SceneParams {
     let s = &video.settings;
     let deg = |d: f32| d.to_radians();
@@ -397,6 +404,12 @@ pub(crate) fn build(
     };
     let turns = video.rotation / 90 % 4;
     let (ew, eh) = eye_size(video.format.stereo, tex, video.pixel_aspect, video.rotation);
+    let crop = if kind == 0 {
+        Vec2::from(crop).clamp(Vec2::ZERO, Vec2::splat(0.25))
+    } else {
+        Vec2::ZERO
+    };
+    let (ew, eh) = (ew * (1.0 - 2.0 * crop.x), eh * (1.0 - 2.0 * crop.y));
     // A fisheye's image circle fills the eye image's shorter side, and stays
     // round when the image is not square.
     let circle = Vec4::new((eh / ew).min(1.0), (ew / eh).min(1.0), 0.0, 0.0);
@@ -492,6 +505,7 @@ pub(crate) fn build(
         fill,
         glow: Vec4::ZERO,
         glow_colours: [[0; 4]; crate::glow::COLOURS / 4],
+        crop: crop.extend(0.0).extend(0.0),
     }
 }
 
@@ -624,21 +638,25 @@ mod tests {
             &make_video(StereoLayout::SideBySide),
             Some(&frame),
             [Mat4::IDENTITY; 2],
+            [0.0; 2],
         );
         let sp_hsbs = build(
             &make_video(StereoLayout::HalfSideBySide),
             Some(&frame),
             [Mat4::IDENTITY; 2],
+            [0.0; 2],
         );
         let sp_ftb = build(
             &make_video(StereoLayout::TopBottom),
             Some(&frame),
             [Mat4::IDENTITY; 2],
+            [0.0; 2],
         );
         let sp_htb = build(
             &make_video(StereoLayout::HalfTopBottom),
             Some(&frame),
             [Mat4::IDENTITY; 2],
+            [0.0; 2],
         );
 
         // Full SBS expects 960x1080 per eye (8:9), so screen is narrow/tall:
@@ -677,7 +695,7 @@ mod tests {
                 pixel_aspect,
                 ..Default::default()
             };
-            let p = build(&video, Some(&frame), [Mat4::IDENTITY; 2]);
+            let p = build(&video, Some(&frame), [Mat4::IDENTITY; 2], [0.0; 2]);
             (p.screen.x, p.screen.y, p.display[0])
         };
         let near = |(w, h, t): (f32, f32, u32), want: (f32, f32, u32)| {
@@ -711,7 +729,7 @@ mod tests {
                     wide_gamut: false,
                 },
             };
-            let p = build(&video, Some(&frame), [Mat4::IDENTITY; 2]);
+            let p = build(&video, Some(&frame), [Mat4::IDENTITY; 2], [0.0; 2]);
             p.screen.x / p.screen.y
         };
         let near = |a: f32, want: f32| (a - want).abs() < 1e-3;
@@ -731,12 +749,42 @@ mod tests {
     }
 
     #[test]
+    fn a_cropped_flat_picture_gets_a_screen_of_its_own_shape() {
+        let screen = |projection, crop| {
+            let video = VideoParams {
+                format: VideoFormat::new(projection, StereoLayout::Mono),
+                ..Default::default()
+            };
+            let frame = FrameDesc {
+                width: 1920,
+                height: 1080,
+                layout: PixelLayout::Nv12,
+                color: ColorInfo {
+                    matrix: Matrix::Bt709,
+                    full_range: false,
+                    transfer: Transfer::Sdr,
+                    wide_gamut: false,
+                },
+            };
+            let p = build(&video, Some(&frame), [Mat4::IDENTITY; 2], crop);
+            (p.screen.x / p.screen.y, Vec2::new(p.crop.x, p.crop.y))
+        };
+        // A 2.39:1 film letterboxed in 16:9: its bars cropped off.
+        let (aspect, crop) = screen(Projection::Flat, [0.0, 0.1276]);
+        assert!((aspect - 2.39).abs() < 0.01, "{aspect}");
+        assert_eq!(crop, Vec2::new(0.0, 0.1276));
+        // Only flat pictures are cropped.
+        let (_, crop) = screen(Projection::EQUIRECT_180, [0.0, 0.1276]);
+        assert_eq!(crop, Vec2::ZERO);
+    }
+
+    #[test]
     fn comfort_focus_adds_symmetric_vergence_relief_without_moving_sphere() {
         let video = VideoParams {
             format: VideoFormat::new(Projection::EQUIRECT_180, StereoLayout::SideBySide),
             ..Default::default()
         };
-        let mut p = build(&video, None, [Mat4::IDENTITY; 2]);
+        let mut p = build(&video, None, [Mat4::IDENTITY; 2], [0.0; 2]);
         let viewer_before = p.viewer;
         assert_eq!(p.focus.z, 0.0);
 

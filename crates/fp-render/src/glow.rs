@@ -163,10 +163,12 @@ impl Default for Glow {
 
 impl Glow {
     pub fn set(&mut self, look: Option<ScreenGlow>) {
-        self.look = look;
-        if look.is_none() {
+        // Only as it turns off: set every frame, and the crop's measurements
+        // go on while it is off.
+        if look.is_none() && self.look.is_some() {
             self.reset();
         }
+        self.look = look;
     }
 
     pub fn wanted(&self) -> bool {
@@ -210,15 +212,15 @@ impl Glow {
     }
 
     /// Takes the colours and bars measured in `slot`, once its fence has
-    /// signalled.
-    pub fn read(&mut self, slot: usize) {
-        let Some((palette, bars)) = self.pass.as_mut().and_then(|p| p.take(slot)) else {
-            return;
-        };
+    /// signalled; the bars as measured, top, bottom, left and right, for
+    /// [`crate::crop`] too.
+    pub fn read(&mut self, slot: usize) -> Option<[f32; 4]> {
+        let (palette, bars) = self.pass.as_mut().and_then(|p| p.take(slot))?;
         self.bars.measured(bars);
         if self.target.replace(palette).is_none() {
             self.shown = palette;
         }
+        Some(bars)
     }
 
     /// Gives `p` the bars to measure inside and the glow at `now`; false

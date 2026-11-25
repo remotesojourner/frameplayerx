@@ -145,6 +145,8 @@ pub struct Settings {
     /// Show the real world around flat screens and the UI.
     pub passthrough: bool,
     pub screen_glow: ScreenGlow,
+    /// A flat video's black bars are cropped off its screen.
+    pub crop_bars: bool,
     pub house_lights: HouseLights,
     /// What is played is kept in Watch history, where it was left with it,
     /// and Home shows Continue watching. Off, nothing is kept, and videos
@@ -336,6 +338,7 @@ impl Default for Settings {
             presets: Vec::new(),
             passthrough: false,
             screen_glow: ScreenGlow::default(),
+            crop_bars: false,
             house_lights: HouseLights::default(),
             watch_history: true,
             resume: true,
