@@ -662,6 +662,11 @@ fn video_position(ui: &mut egui::Ui, v: &mut View) {
             "",
             2,
         );
+        r.switch(
+            tr!("settings-crop-bars"),
+            Some(tr!("settings-crop-bars-desc")),
+            &mut v.settings.crop_bars,
+        );
     });
     heading(ui, tr!("settings-vr-videos"));
     widgets::rows(ui, |r| {

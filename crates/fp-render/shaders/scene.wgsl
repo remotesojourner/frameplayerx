@@ -85,6 +85,9 @@ struct Params {
     // took 1.6 ms more GPU time a frame with 192 vec4s here, about 1 ms with
     // 112, and 0.6 ms packed like this
     glow_colours: array<vec4<u32>, 28>,
+    // A flat picture's black bars cropped off (src/crop.rs): x off the left
+    // and right, y off the top and bottom, shares of each eye's picture.
+    crop: vec4<f32>,
 };
 
 struct PushConstants {
@@ -263,7 +266,7 @@ fn flat_uv(origin: vec3<f32>, d: vec3<f32>) -> vec2<f32> {
     if (u < 0.0 || u > 1.0 || v < 0.0 || v > 1.0) { return INVALID; }
     let picture = (vec2<f32>(u, v) - 0.5) / params.fill.xy + 0.5;
     if (any(picture < vec2<f32>(0.0)) || any(picture > vec2<f32>(1.0))) { return BAR; }
-    return picture;
+    return params.crop.xy + picture * (1.0 - 2.0 * params.crop.xy);
 }
 
 // Where the ray meets the flat screen's surface, which runs on past its
@@ -614,25 +617,43 @@ fn glow_zone_point(zone: u32, along: f32, inset: f32) -> vec2<f32> {
     return vec2<f32>(inset, 1.0 - (z - 2.0 * a - d + along) / d);
 }
 
-// How deep the black bar is along `side` (top, bottom, left, right), a share
-// of the picture: rows or columns in from that edge until one has a sample
-// brighter than 5%, HyperHDR's black border threshold, up to GLOW_BAR_MAX.
+// Whether the row or column `depth` in from `side` (top, bottom, left,
+// right) has a sample brighter than 5%, HyperHDR's black border threshold.
+fn glow_lit(side: u32, depth: f32) -> bool {
+    for (var j = 0u; j < 8u; j++) {
+        let along = (f32(j) + 0.5) / 8.0;
+        var uv: vec2<f32>;
+        switch side {
+            case 0u: { uv = vec2<f32>(along, depth); }
+            case 1u: { uv = vec2<f32>(along, 1.0 - depth); }
+            case 2u: { uv = vec2<f32>(depth, along); }
+            default: { uv = vec2<f32>(1.0 - depth, along); }
+        }
+        if (max3(sample_yuv(stored_uv(to_eye_rect(uv, 0u)))) > 0.05) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// How deep the black bar is along `side`, a share of the picture: rows or
+// columns in from that edge until one is lit, up to GLOW_BAR_MAX, then back
+// in eighths of a step to the first lit one, so a crop (src/crop.rs) leaves
+// no line of the bar.
 fn glow_bar(side: u32) -> f32 {
-    let steps = 50u;
-    for (var i = 0u; i < steps; i++) {
-        let depth = (f32(i) + 0.5) / f32(steps) * GLOW_BAR_MAX;
-        for (var j = 0u; j < 8u; j++) {
-            let along = (f32(j) + 0.5) / 8.0;
-            var uv: vec2<f32>;
-            switch side {
-                case 0u: { uv = vec2<f32>(along, depth); }
-                case 1u: { uv = vec2<f32>(along, 1.0 - depth); }
-                case 2u: { uv = vec2<f32>(depth, along); }
-                default: { uv = vec2<f32>(1.0 - depth, along); }
+    let step = GLOW_BAR_MAX / 50.0;
+    for (var i = 0u; i < 50u; i++) {
+        let depth = (f32(i) + 0.5) * step;
+        if (glow_lit(side, depth)) {
+            var edge = depth;
+            for (var k = 1u; k <= 8u; k++) {
+                let d = depth - f32(k) * step / 8.0;
+                if (d < 0.0 || !glow_lit(side, d)) {
+                    break;
+                }
+                edge = d;
             }
-            if (max3(sample_yuv(stored_uv(to_eye_rect(uv, 0u)))) > 0.05) {
-                return f32(i) / f32(steps) * GLOW_BAR_MAX;
-            }
+            return edge;
         }
     }
     return GLOW_BAR_MAX;

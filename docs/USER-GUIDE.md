@@ -884,6 +884,17 @@ Position tab. Its size is its width, so zooming a flat screen with the
 controller makes it wider or narrower, and **Zoom** shows only for 180°,
 360° and fisheye videos.
 
+**Crop black bars**, under Flat videos in Settings › Video position, gives
+a flat video with black bars above and below, or beside it, a screen of
+the picture's own shape: a 2.39:1 film made 16:9 gets a wide screen with
+no bars on it. It is off at first. The bars are cropped once they have
+stayed the same for two seconds, so a fade to black changes nothing, and
+the screen changes shape over about a third of a second. When the picture
+reaches into the bars, as subtitles placed in a bar or the taller scenes
+of an IMAX film do, the screen opens out to fit it and keeps that shape
+for the rest of the video. In a cinema, the cropped picture fills as much
+of the screen as its shape allows.
+
 Around a flat screen, and behind the menus, is a near-black grey, or a
 [cinema](#cinema). Settings › Video position › **Background** picks the
 colour videos start with: black, grey, navy, or any colour with the
