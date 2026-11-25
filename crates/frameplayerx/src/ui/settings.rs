@@ -313,6 +313,11 @@ fn general(ui: &mut egui::Ui, v: &mut View) {
             "×",
             2,
         );
+        r.switch(
+            tr!("settings-clock-24-hour"),
+            Some(tr!("settings-clock-24-hour-desc")),
+            &mut s.clock_24_hour,
+        );
         // Panels that trail the head can't be pointed at with it.
         let hands_free = s.hands_free;
         r.row(

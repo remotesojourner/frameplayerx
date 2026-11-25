@@ -135,6 +135,9 @@ pub struct Settings {
     /// The interface's language, one of [`crate::i18n::LANGUAGES`]; none
     /// follows Steam's.
     pub language: Option<String>,
+    /// The time shows on a 24-hour clock (22:05), else a 12-hour one
+    /// (10:05 PM).
+    pub clock_24_hour: bool,
     /// Defaults for videos without saved adjustments.
     pub default_view: ViewSettings,
     /// Adjustments saved to apply to any video, in the order they were made.
@@ -328,6 +331,7 @@ impl Default for Settings {
                 .unwrap_or("en")
                 .to_string(),
             language: None,
+            clock_24_hour: false,
             default_view: ViewSettings::default(),
             presets: Vec::new(),
             passthrough: false,
