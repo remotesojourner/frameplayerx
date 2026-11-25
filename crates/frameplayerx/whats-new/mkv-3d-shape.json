@@ -1,0 +1,9 @@
+{
+  "kind": "fix",
+  "en": "3D videos in MKV files no longer show each eye twice too wide or too tall when the file stores the whole picture's size, as files made with MKVToolNix do.",
+  "de": "3D-Videos in MKV-Dateien zeigen nicht mehr jedes Auge doppelt so breit oder hoch, wenn die Datei die Größe des ganzen Bildes speichert, wie mit MKVToolNix erstellte Dateien.",
+  "es": "Los vídeos 3D en archivos MKV ya no muestran cada ojo el doble de ancho o de alto cuando el archivo guarda el tamaño de la imagen completa, como hacen los archivos creados con MKVToolNix.",
+  "fr": "Les vidéos 3D en fichiers MKV n’affichent plus chaque œil deux fois trop large ou trop haut quand le fichier enregistre la taille de l’image entière, comme les fichiers créés avec MKVToolNix.",
+  "ja": "MKV ファイルの 3D 映像で、MKVToolNix で作成したファイルのように画像全体のサイズが記録されている場合でも、片目の映像が 2 倍の幅や高さで表示されなくなりました。",
+  "zh-CN": "当 MKV 文件记录的是整个画面的尺寸（如用 MKVToolNix 制作的文件）时，其中的 3D 视频不再将每只眼的画面显示为两倍宽或两倍高。"
+}

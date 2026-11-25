@@ -253,7 +253,36 @@ fn pixel_aspect(fmt: *mut ff::AVFormatContext, st: *mut ff::AVStream) -> f64 {
     // SAFETY: both are valid while the input is open; a null frame is allowed.
     let sar = unsafe { ff::av_guess_sample_aspect_ratio(fmt, st, std::ptr::null_mut()) };
     let a = q2d(sar);
-    if (0.25..=4.0).contains(&a) { a } else { 1.0 }
+    let a = if (0.25..=4.0).contains(&a) { a } else { 1.0 };
+    // SAFETY: as above.
+    let (fmt, par) = unsafe { (&*fmt, &*(*st).codecpar) };
+    if is_matroska(fmt) {
+        whole_frame_display(par, a)
+    } else {
+        a
+    }
+}
+
+/// A Matroska file's display size is the whole frame's, as MKVToolNix
+/// writes it, but in a file marked side by side or top and bottom FFmpeg
+/// reads it as one eye's, doubling the pixel aspect along the packing:
+/// square pixels come out 2:1 or 1:2, and each eye twice as wide or tall
+/// as it is. FFmpeg's own files store one eye's size and read back 1:1.
+fn whole_frame_display(par: &ff::AVCodecParameters, a: f64) -> f64 {
+    let near = |v: f64| (a - v).abs() < 0.01;
+    match stereo3d_side_data(par).map(|s| s.type_) {
+        Some(ff::AV_STEREO3D_SIDEBYSIDE) if near(2.0) => 1.0,
+        Some(ff::AV_STEREO3D_TOPBOTTOM) if near(0.5) => 1.0,
+        _ => a,
+    }
+}
+
+fn is_matroska(fmt: &ff::AVFormatContext) -> bool {
+    // SAFETY: iformat->name is a static string.
+    !fmt.iformat.is_null()
+        && unsafe { CStr::from_ptr((*fmt.iformat).name) }
+            .to_bytes()
+            .starts_with(b"matroska")
 }
 
 /// How the video stream at `index` is shown: its clockwise turn in degrees
@@ -529,6 +558,28 @@ pub(crate) mod tests {
             (v.rotation, v.pixel_aspect, v.display_size()),
             (0, 1.0, (640, 320))
         );
+    }
+
+    #[test]
+    fn stereo_mkvs_storing_the_whole_frames_size_have_square_pixels() {
+        // 128x32 side by side and 64x64 top and bottom, as MKVToolNix
+        // writes them, and as FFmpeg does (one eye's size).
+        for (name, shown) in [
+            ("h264_sbs_whole_width.mkv", (128, 32)),
+            ("h264_tb_whole_height.mkv", (64, 64)),
+            ("h264_sbs_eye_width.mkv", (128, 32)),
+        ] {
+            let info = read_info(&open(name));
+            let v = info.video_stream().unwrap();
+            assert_eq!((v.pixel_aspect, v.display_size()), (1.0, shown), "{name}");
+        }
+        // Marked 1:2 with no 3D tag, as some full side-by-side re-encodes
+        // are: left as it is, for StereoLayout::eye_pixel_aspect to square.
+        let v = read_info(&open("h264_sbs_marked_1_2.mkv"))
+            .video_stream()
+            .cloned()
+            .unwrap();
+        assert_eq!((v.pixel_aspect, v.display_size()), (0.5, (64, 32)));
     }
 
     #[test]
