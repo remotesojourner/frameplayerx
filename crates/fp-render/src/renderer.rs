@@ -1680,7 +1680,7 @@ impl Renderer {
         self.glow.set(glow);
     }
 
-    /// Crops a flat video's black bars off its screen ([`crate::crop`]).
+    /// Crops a flat video's black bars off its screen.
     pub fn set_crop_bars(&mut self, on: bool) {
         self.crop.set(on);
     }
