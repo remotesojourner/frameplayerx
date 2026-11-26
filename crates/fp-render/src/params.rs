@@ -495,7 +495,7 @@ pub(crate) fn build(
             0.0,
         ),
         viewer: glam::vec3(0.0, s.height, -s.forward).extend(SPHERE_RADIUS),
-        display: [turns, 0, 0, 0],
+        display: [turns, cinema.is_some() as u32, 0, 0],
         hdr: hdr_levels(crate::hdr::DEFAULT_PEAK),
         tp10: Vec4::ZERO,
         tp10_uv: Vec4::ZERO,

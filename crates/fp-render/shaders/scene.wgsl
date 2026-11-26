@@ -50,7 +50,8 @@ struct Params {
     // xyz: the viewer's offset (height, forward) in the room frame, metres,
     // for spherical video; w: radius of the sphere it is drawn on when offset
     viewer: vec4<f32>,
-    // x: clockwise quarter turns that show the frame upright
+    // x: clockwise quarter turns that show the frame upright; y: 1 in a
+    // cinema
     display: vec4<u32>,
     // HDR, as PQ codes: x the scene's peak, y the screen's white
     hdr: vec4<f32>,
@@ -119,6 +120,9 @@ const PI: f32 = 3.14159265358979;
 const INVALID: vec2<f32> = vec2<f32>(-1.0, -1.0);
 // On the screen, beside or above the picture.
 const BAR: vec2<f32> = vec2<f32>(-2.0, -2.0);
+// Pixels a flat picture's edge fades over, so its outline doesn't step and
+// crawl as the head moves.
+const EDGE_PIXELS: f32 = 1.5;
 
 fn rot_y(a: f32) -> mat3x3<f32> {
     let c = cos(a); let s = sin(a);
@@ -234,16 +238,20 @@ fn eac_uv(d: vec3<f32>, h_fov: f32) -> vec2<f32> {
     return uv;
 }
 
-fn flat_uv(origin: vec3<f32>, d: vec3<f32>) -> vec2<f32> {
+// Where the ray meets the flat screen: xy where in the frame (or INVALID,
+// BAR), z how far the picture's nearest edge is from it, as an angle seen
+// from the eye.
+fn flat_uv(origin: vec3<f32>, d: vec3<f32>) -> vec3<f32> {
     let o = (params.screen_inv * vec4<f32>(origin, 1.0)).xyz;
     let dir = normalize((params.screen_inv * vec4<f32>(d, 0.0)).xyz);
     let w = params.screen.x; let h = params.screen.y; let arc = params.screen.z;
     var p: vec3<f32>;
     var u: f32;
+    var t: f32;
     if (arc < 1e-3) {
-        if (dir.z >= -1e-6) { return INVALID; }
-        let t = -o.z / dir.z;
-        if (t <= 0.0) { return INVALID; }
+        if (dir.z >= -1e-6) { return vec3<f32>(INVALID, 0.0); }
+        t = -o.z / dir.z;
+        if (t <= 0.0) { return vec3<f32>(INVALID, 0.0); }
         p = o + t * dir;
         u = p.x / w + 0.5;
     } else {
@@ -255,18 +263,19 @@ fn flat_uv(origin: vec3<f32>, d: vec3<f32>) -> vec2<f32> {
         let qb = 2.0 * dot(oc, dd);
         let qc = dot(oc, oc) - r * r;
         let disc = qb * qb - 4.0 * qa * qc;
-        if (disc < 0.0) { return INVALID; }
-        let t = (-qb + sqrt(disc)) / (2.0 * qa);
-        if (t <= 0.0) { return INVALID; }
+        if (disc < 0.0) { return vec3<f32>(INVALID, 0.0); }
+        t = (-qb + sqrt(disc)) / (2.0 * qa);
+        if (t <= 0.0) { return vec3<f32>(INVALID, 0.0); }
         p = o + t * dir;
         let phi = atan2(p.x, r - p.z);
         u = 0.5 + phi * r / w;
     }
     let v = 0.5 - p.y / h;
-    if (u < 0.0 || u > 1.0 || v < 0.0 || v > 1.0) { return INVALID; }
+    if (u < 0.0 || u > 1.0 || v < 0.0 || v > 1.0) { return vec3<f32>(INVALID, 0.0); }
     let picture = (vec2<f32>(u, v) - 0.5) / params.fill.xy + 0.5;
-    if (any(picture < vec2<f32>(0.0)) || any(picture > vec2<f32>(1.0))) { return BAR; }
-    return params.crop.xy + picture * (1.0 - 2.0 * params.crop.xy);
+    if (any(picture < vec2<f32>(0.0)) || any(picture > vec2<f32>(1.0))) { return vec3<f32>(BAR, 0.0); }
+    let edge = min(picture, 1.0 - picture) * vec2<f32>(w, h) * params.fill.xy;
+    return vec3<f32>(params.crop.xy + picture * (1.0 - 2.0 * params.crop.xy), min(edge.x, edge.y) / t);
 }
 
 // Where the ray meets the flat screen's surface, which runs on past its
@@ -451,8 +460,16 @@ fn shade(in: VsOut, comfort: bool, glow: bool) -> vec4<f32> {
     }
 
     var uv: vec2<f32>;
+    // How much of the pixel the picture covers: less within EDGE_PIXELS of
+    // its edge on a flat screen.
+    var cover = 1.0;
     if (params.mode.x == 0u) {
-        uv = flat_uv(origin, world_dir);
+        // The pixel's angle, taken while every pixel is on the same path, as
+        // derivatives need.
+        let pixel = max(length(dpdx(world_dir)), length(dpdy(world_dir)));
+        let hit = flat_uv(origin, world_dir);
+        uv = hit.xy;
+        cover = clamp(hit.z / (pixel * EDGE_PIXELS), 0.0, 1.0);
         if (glow && uv.x == INVALID.x) {
             let s = flat_surface(origin, world_dir);
             if (s.z > 0.0) {
@@ -507,7 +524,20 @@ fn shade(in: VsOut, comfort: bool, glow: bool) -> vec4<f32> {
 
     let col = shown(rgb);
     // Over the (premultiplied) background: keyed-out pixels show it.
-    return vec4<f32>(col * alpha + params.bg_color.rgb * (1.0 - alpha), alpha + params.bg_color.a * (1.0 - alpha));
+    let out = vec4<f32>(col * alpha + params.bg_color.rgb * (1.0 - alpha), alpha + params.bg_color.a * (1.0 - alpha));
+    if (cover >= 1.0) {
+        return out;
+    }
+    // The edge fades into what is round the picture: black in a cinema,
+    // whose own screen must not show through, else the background or its
+    // glow.
+    var around = params.bg_color;
+    if (params.display.y != 0u) {
+        around = vec4<f32>(0.0, 0.0, 0.0, 1.0);
+    } else if (glow) {
+        around = glow_round(flat_surface(origin, world_dir).xy);
+    }
+    return mix(around, out, cover);
 }
 
 // The video's colour `rgb` as the screen shows it, linear.
