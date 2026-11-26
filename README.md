@@ -20,24 +20,20 @@ A VR video player for the Valve Steam Frame. It plays flat, 180°, 360° and fis
 
 ## Features
 
-- **Video formats**: 180°, 360°, fisheye, flat and interlaced (1080i, DVD) videos, in 2D or 3D: side by side or top/bottom at full or half size, frame sequential, and 3D Blu-ray (disc images, MKV rips and `.ssif` files) in full 3D. The format is detected automatically, and you can change it for any video and have a flat film's black bars cropped off its screen
-- **Cinema**: watch flat videos in a full-size cinema instead of on a floating screen: the Classic, a stadium hall with red velvet seats, or the Luxe, an open room with neon lights and leather recliners. Pick your row and how much the screen curves around you, and the house lights dim as the film starts, as far and as slowly as you like, and come up when you pause
-- **Hardware decoding**: HEVC (H.265) and AV1 (on SteamOS 0.5.10 and later) in 8 and 10 bits, and H.264, up to 8K, play on the Frame's own video decoder, even past a damaged stretch of a file; VP9, interlaced video, AV1 on earlier SteamOS versions and anything else play with software decoding
-- **Performance**: out of the box, 8K 60 fps video, 10-bit included, plays at full frame rate with the display at 120 Hz and 3744 pixels per eye, and the CPU stays almost idle: the decoder's pictures are drawn without being copied, and foveated rendering that follows your eyes keeps full detail where you look. Refresh rate, resolution and foveation can be changed in Settings, even while a video plays
-- **HDR**: HDR10 and HLG videos are fitted to the Frame's screen scene by scene, and colours it can't show are toned down instead of cut off
-- **Adjustments**: position, zoom, depth, comfort focus to keep what you look at whole as you tilt your head or lie down and ease its depth up close, picture settings and fisheye lens calibration, kept for each video or saved as presets to use on any video, and a screen that follows your head for watching lying down
-- **Passthrough videos**: see your room around the people in passthrough videos, and behind green or blue screens
-- **Subtitles and spatial audio**: subtitles from a file, inside the video or found on OpenSubtitles from the player and kept on your headset with their timing set for each video, picked in your language and shown in any script, and 360° audio that follows your head
-- **Videos on the headset**: browse any folder on the headset, a microSD card or a USB drive, including cards formatted on Windows or a Mac, and make libraries of your folders, with thumbnails, seek bar previews, filters and sorting
-- **Media servers**: browse and play, or download to watch with no connection, from Jellyfin, Emby and Plex, which can transcode while you watch, sync watch state and show their preview pictures above the seek bar; any server with a DeoVR feed or HereSphere API, transcoding when it offers that, syncing watch state with HereSphere and showing timeline previews with DeoVR; and, with seek bar previews made from the video, network shares (SMB, NFS), SFTP servers, WebDAV, DLNA servers and web folders
-- **Watch history, Up next and playlists**: carry on where you left off, or keep no history on the headset at all, queue videos to play one after another, a folder's subfolders included, in order or shuffled, and loop the queue or a single video; keep playlists of videos from any source, mark favorites and ratings, and delete the files of videos you're done with
-- **PIN locks**: hide a source behind a PIN until you unlock it
-- **Haptic devices**: optional, off until turned on; syncs supported haptic devices with videos that have scripts
-- **Phone remote**: control the player from your phone's browser, which pairs with a code the headset shows and can type into the headset too, or from apps made for DeoVR's remote
-- **Custom controls**: choose what each controller button does, or go hands-free: point with your head, and rest its dot on a button to press it
-- **Languages**: English, German, Spanish, French, Japanese and Simplified Chinese, following the language Steam is set to; the phone remote follows the headset
-- **Updates**: checks for a new version when it starts, installs it from Settings when you choose to and then shows what's new since the version you had, on a Stable or a Beta channel
-- **No FramePlayerX account or tracking**: it connects to the servers you add, to Plex's account services if you link Plex (to sign in, find your servers and renew access), to OpenSubtitles when you use Find subtitles or sign in to it (the video's title, year, episode and IDs, and a fingerprint of the file) and to FramePlayerX's website, or GitHub when the website doesn't answer, to check for updates, and sends nothing after a crash, or when you report a problem with Send diagnostics, unless you choose to send the report, which you can read first (no video names, folders or server addresses)
+- **Video formats**: flat, 180°, 360° and fisheye videos in 2D or 3D, 3D Blu-rays and interlaced video, detected automatically
+- **Hardware decoding**: HEVC and H.264 up to 8K, and AV1 on SteamOS 0.5.10 and later, on the Frame's own video decoder
+- **Performance**: foveated rendering that follows your eyes keeps 8K 10-bit video at full frame rate, with the CPU almost idle
+- **HDR**: HDR10 and HLG videos fitted to the Frame's screen
+- **Cinema**: a full-size cinema for flat videos, with house lights that dim as the film starts
+- **Your videos**: on the headset, a microSD card or a USB drive, network shares, Jellyfin, Emby, Plex and any server with a DeoVR feed or HereSphere API, with downloads to watch offline
+- **Watch history, Up next and playlists**: carry on where you left off, queue videos and keep playlists from any source
+- **Subtitles**: from a file, inside the video or found on OpenSubtitles from the player
+- **Adjustments**: position, depth, picture and comfort focus for each video, and a screen that follows you lying down
+- **Passthrough videos**: your room around the people in passthrough videos and behind green or blue screens
+- **Controls**: choose what each button does, go hands-free, or use your phone as a remote
+- **No FramePlayerX account or tracking**: it connects only to the servers and services you set up or use, and to check for updates
+
+Every feature, in more detail, is on the website's [Features page](https://frameplayerx.org.uk/features).
 
 ---
 

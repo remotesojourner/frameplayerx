@@ -59,7 +59,7 @@
               Install
               <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 3v10.5M5.5 9l4.5 4.5L14.5 9M4 17h12"/></svg>
             </a>
-            <a class="btn btn-secondary" href="/guide">User guide</a>
+            <a class="btn btn-secondary" href="/features">All features</a>
           </div>
           <ul class="assurances">
             <li>Free and open source</li>
@@ -77,7 +77,7 @@
       <dl class="specs">
         <div>
           <dt>8K at 60 fps</dt>
-          <dd>HEVC and AV1 in 8 and 10 bits, and H.264, played by the Frame's own video decoder</dd>
+          <dd>HEVC in 8 and 10 bits and H.264 on the Frame's own video decoder, and AV1 on SteamOS 0.5.10 and later</dd>
         </div>
         <div>
           <dt>120 Hz</dt>
@@ -94,50 +94,99 @@
       </dl>
     </section>
 
-    <section class="section band" id="cinema" aria-labelledby="cinema-title">
+    <section class="section band" aria-labelledby="tour-title">
       <div class="wrap">
-        <div class="section-head">
-          <h2 id="cinema-title">A cinema for flat videos</h2>
-          <p>Watch flat videos in a full-size cinema instead of on a floating screen: the Classic, a stadium hall with red velvet seats, or the Luxe, an open room with neon lights and leather recliners. Pick your row and how much the screen curves around you, and the house lights dim as the film starts, as far and as slowly as you like, and come up when you pause. <a href="/guide/adjusting-a-video#cinema">How the cinema works</a>.</p>
+        <h2 id="tour-title">A look around</h2>
+        <div class="tour">
+          <figure>
+            <img src="/media/cinema.webp" alt="The Luxe cinema in FramePlayerX from the sixth row, with a beach at sunset on its wide screen, neon lights by the exits and rows of leather recliners" width="1650" height="1045" loading="lazy" decoding="async">
+            <figcaption><strong>A cinema for flat videos</strong> The Luxe from the sixth row, or the Classic, a stadium hall with red velvet seats. The house lights dim as the film starts. <a href="/features#cinema-title">The cinema</a></figcaption>
+          </figure>
+          <figure>
+            <img src="/media/jellyfin.webp" alt="A Jellyfin server in FramePlayerX: its libraries, and the latest VR videos with their formats" width="1650" height="1045" loading="lazy" decoding="async">
+            <figcaption><strong>Your media server</strong> Jellyfin, Emby and Plex with their transcoding, watch state and preview pictures, and network shares, DLNA and DeoVR or HereSphere servers too. <a href="/features#sources-title">Where videos come from</a></figcaption>
+          </figure>
+          <figure>
+            <img src="/media/up-next.webp" alt="The Up next queue in FramePlayerX, with buttons to save it as a playlist, shuffle it and loop it" width="1650" height="1045" loading="lazy" decoding="async">
+            <figcaption><strong>Up next and playlists</strong> Queue videos from any source, shuffle and loop them, and keep the queue as a playlist. <a href="/features#library-title">Your library</a></figcaption>
+          </figure>
+          <figure>
+            <img src="/media/controller.webp" alt="FramePlayerX's controller settings: both Steam Frame controllers, with what each button does" width="1650" height="1045" loading="lazy" decoding="async">
+            <figcaption><strong>Your controls</strong> Choose what every button does, or put the controllers down and press with your head. <a href="/features#control-title">Control</a></figcaption>
+          </figure>
         </div>
       </div>
     </section>
 
-    <section class="section" id="sources" aria-labelledby="sources-title">
-      <div class="wrap split">
-        <figure class="split-media">
-          <img src="/media/jellyfin.webp" alt="A Jellyfin server in FramePlayerX: its libraries, and the latest VR videos with their formats" width="1650" height="1045" loading="lazy" decoding="async">
-        </figure>
-        <div class="split-copy">
-          <h2 id="sources-title">Your videos, wherever they are</h2>
-          <p>Browse any folder on the headset, a microSD card or a USB drive, including cards formatted on Windows or a Mac, and make libraries of your folders. Or add a server:</p>
-          <ul class="chips" aria-label="Servers">
-            <li>Jellyfin</li>
-            <li>Emby</li>
-            <li>Plex</li>
-            <li>DeoVR feed</li>
-            <li>HereSphere API</li>
-            <li>SMB shares</li>
-            <li>NFS shares</li>
-            <li>SFTP</li>
-            <li>WebDAV</li>
-            <li>DLNA</li>
-            <li>Web folders</li>
-          </ul>
-          <p class="note">Jellyfin, Emby and Plex can transcode while you watch and sync what you've watched. A DeoVR feed or HereSphere API transcodes when the server offers it, and HereSphere syncs watch state too.</p>
+    <section class="section" aria-labelledby="highlights-title">
+      <div class="wrap">
+        <h2 id="highlights-title">Made for watching in VR</h2>
+        <div class="ruled">
+          <div>
+            <h3>Formats found for you</h3>
+            <p>Flat, 180°, 360° and fisheye, in 2D or 3D, 3D Blu-rays included, picked from the file; one press changes it.</p>
+          </div>
+          <div>
+            <h3>Comfort focus</h3>
+            <p>What you look at stays whole as you tilt your head or lie down, in stereo 180° and fisheye videos.</p>
+          </div>
+          <div>
+            <h3>Watching lying down</h3>
+            <p>Recenter as you lie back, or let the screen and the menus follow your head.</p>
+          </div>
+          <div>
+            <h3>Subtitles</h3>
+            <p>From the video, a file beside it or OpenSubtitles, at the depth and size you set, and in 3D.</p>
+          </div>
+          <div>
+            <h3>Passthrough videos</h3>
+            <p>Your room around the people in passthrough videos, and behind green or blue screens.</p>
+          </div>
+          <div>
+            <h3>Watch offline</h3>
+            <p>Download from shares and media servers to the headset or a card, and watch with no connection.</p>
+          </div>
+        </div>
+        <p class="more"><a href="/features">Every feature</a></p>
+      </div>
+    </section>
+
+    <section class="section band" aria-labelledby="start-title">
+      <div class="wrap">
+        <h2 id="start-title">Get started</h2>
+        <div class="ruled">
+          <div>
+            <h3>1. Install</h3>
+            <p>On the headset in Desktop Mode, with no PC needed, or from a PC. <a href="/install">How to install</a></p>
+          </div>
+          <div>
+            <h3>2. Add your videos</h3>
+            <p>A folder on the headset or a card, a network share or your media server, under Sources › Add source. <a href="/guide/sources">Sources in the guide</a></p>
+          </div>
+          <div>
+            <h3>3. Press play</h3>
+            <p>The format is picked for you, and the control bar and the Adjust panel change anything else. <a href="/guide">The user guide</a></p>
+          </div>
         </div>
       </div>
     </section>
 
-    <section class="section band" aria-labelledby="cta-title">
-      <div class="wrap cta">
-        <div>
-          <h2 id="cta-title">Install FramePlayerX</h2>
-          <p>It's free. Install it on the headset in Desktop Mode, with no PC needed, or from a PC.</p>
-        </div>
-        <div class="actions">
-          <a class="btn btn-primary" href="/install">How to install</a>
-          <a class="btn btn-secondary" href="/features">All features</a>
+    <section class="section" aria-labelledby="help-title">
+      <div class="wrap">
+        <h2 id="help-title">Help</h2>
+        <div class="ruled">
+          <div>
+            <h3>Questions</h3>
+            <p><a href="https://discord.gg/tDZRuZDY7d">Ask on Discord</a>, or read the <a href="/faq">FAQ</a>.</p>
+          </div>
+          <div>
+            <h3>Problems</h3>
+            <p><a href="https://github.com/remotesojourner/frameplayerx/issues">Report an issue on GitHub</a>; Send diagnostics in Settings › About gives you a reference to quote.</p>
+          </div>
+          <div>
+            <h3>Translations</h3>
+            <p>Improve a language on <a href="https://translate.codeberg.org/projects/frameplayerx/">Codeberg Translate</a>, with no Git needed.</p>
+          </div>
         </div>
       </div>
     </section>

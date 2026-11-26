@@ -4,14 +4,14 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Features · FramePlayerX</title>
-  <meta name="description" content="Everything FramePlayerX does: video formats, hardware decoding up to 8K, HDR, media servers, playlists, adjustments, a phone remote and more.">
+  <meta name="description" content="Everything FramePlayerX does: video formats, hardware decoding up to 8K, HDR, a cinema, media servers, downloads, subtitles, adjustments, a phone remote and more.">
   <meta name="theme-color" content="#0a0c16">
   <link rel="canonical" href="https://frameplayerx.org.uk/features">
   <link rel="icon" href="/assets/logo.svg" type="image/svg+xml">
   <meta property="og:type" content="website">
   <meta property="og:site_name" content="FramePlayerX">
   <meta property="og:title" content="Features · FramePlayerX">
-  <meta property="og:description" content="Everything FramePlayerX does: video formats, hardware decoding up to 8K, HDR, media servers, playlists, adjustments, a phone remote and more.">
+  <meta property="og:description" content="Everything FramePlayerX does: video formats, hardware decoding up to 8K, HDR, a cinema, media servers, downloads, subtitles, adjustments, a phone remote and more.">
   <meta property="og:url" content="https://frameplayerx.org.uk/features">
   <meta property="og:image" content="https://frameplayerx.org.uk/media/og.jpg">
   <meta property="og:image:width" content="1200">
@@ -55,8 +55,11 @@
     </div>
 
     <section class="section band" aria-labelledby="cinema-title">
-      <div class="wrap">
-        <div class="section-head">
+      <div class="wrap split">
+        <figure class="split-media">
+          <img src="/media/cinema.webp" alt="The Luxe cinema in FramePlayerX from the sixth row, with a beach at sunset on its wide screen, neon lights by the exits and rows of leather recliners" width="1650" height="1045" decoding="async">
+        </figure>
+        <div class="split-copy">
           <h2 id="cinema-title">Cinema</h2>
           <p>Watch flat videos in a full-size cinema instead of on a floating screen: the Classic, a stadium hall with red velvet seats, or the Luxe, an open room with neon lights and leather recliners. Pick your row and how much the screen curves around you, and the house lights dim as the film starts, as far and as slowly as you like, and come up when you pause.</p>
         </div>
@@ -66,54 +69,190 @@
     <section class="section" aria-labelledby="playback-title">
       <div class="wrap">
         <h2 id="playback-title">Playback</h2>
-        <div class="ruled two">
+        <div class="ruled">
           <div>
             <h3>Video formats</h3>
-            <p>180°, 360°, fisheye, flat and interlaced (1080i, DVD) videos, in 2D or 3D: side by side or top/bottom at full or half size, frame sequential, and 3D Blu-ray (disc images, MKV rips and <code>.ssif</code> files) in full 3D. The format is detected automatically, and you can change it for any video.</p>
+            <p>Flat, 180°, 360° and fisheye videos, in 2D or 3D: side by side or top and bottom at full or half size, or frame sequential, and interlaced video from TV recordings and DVDs. The format comes from the file's metadata, its name or its shape, and you can change it for any video.</p>
+          </div>
+          <div>
+            <h3>3D Blu-rays</h3>
+            <p>Disc images, MKV rips and <code>.ssif</code> files play in full 3D, each eye at full 1080p. A disc image plays its main title, with its chapters and its audio and subtitle languages.</p>
+          </div>
+          <div>
+            <h3>Fisheye lenses</h3>
+            <p>Presets for 180°, 190°, 200° and 220° lenses and the angles you add, with sliders for a lens's edges and centre for footage straight from a camera.</p>
           </div>
           <div>
             <h3>Hardware decoding</h3>
-            <p>HEVC (H.265) and AV1 (on SteamOS 0.5.10 and later) in 8 and 10 bits, and H.264, up to 8K, play on the Frame's own video decoder, even past a damaged stretch of a file; VP9, interlaced video, AV1 on earlier SteamOS versions and anything else play with software decoding.</p>
+            <p>HEVC in 8 and 10 bits, H.264, and AV1 on SteamOS 0.5.10 and later play up to 8K on the Frame's own video decoder, even past a damaged stretch of a file. Anything else plays with software decoding, and the control bar says why.</p>
           </div>
           <div>
             <h3>Performance</h3>
-            <p>Out of the box, 8K 60 fps video, 10-bit included, plays at full frame rate with the display at 120 Hz and 3744 pixels per eye, and the CPU stays almost idle: the decoder's pictures are drawn without being copied, and foveated rendering that follows your eyes keeps full detail where you look. Refresh rate, resolution and foveation can be changed in Settings, even while a video plays.</p>
+            <p>Out of the box, 8K 60 fps video, 10-bit included, plays at full frame rate with the display at 120 Hz and 3744 pixels per eye, and the CPU stays almost idle. Foveated rendering follows your eyes, keeping full detail where you look; refresh rate, resolution and foveation can be changed in Settings, even while a video plays.</p>
           </div>
           <div>
             <h3>HDR</h3>
-            <p>HDR10 and HLG videos are fitted to the Frame's screen scene by scene, and colours it can't show are toned down instead of cut off.</p>
+            <p>HDR10 and HLG videos are fitted to the Frame's screen scene by scene: midtones keep their brightness, highlights keep their detail, and colours the screen can't show are toned down instead of cut off.</p>
           </div>
           <div>
-            <h3>Passthrough videos</h3>
-            <p>See your room around the people in passthrough videos, and behind green or blue screens.</p>
+            <h3>Seek bar previews</h3>
+            <p>Pointing along the seek bar shows a picture of that moment: the server's own previews where it makes them, else one taken from the video.</p>
           </div>
           <div>
-            <h3>Subtitles and spatial audio</h3>
-            <p>Subtitles from a file, inside the video or found on OpenSubtitles from the player and kept on your headset with their timing set for each video, picked in your language and shown in any script, and 360° audio that follows your head.</p>
+            <h3>Chapters and bookmarks</h3>
+            <p>A video's chapters and your own bookmarks, each a press away; grip and X or Y step through them.</p>
+          </div>
+          <div>
+            <h3>Clock</h3>
+            <p>A clock above the controls shows the time and when the video will end, and pressing the video's length shows how much is left. A 24-hour clock is a switch in Settings.</p>
           </div>
         </div>
       </div>
     </section>
 
-    <section class="section band" aria-labelledby="library-title">
+    <section class="section band" aria-labelledby="picture-title">
+      <div class="wrap">
+        <h2 id="picture-title">Picture and comfort</h2>
+        <div class="ruled">
+          <div>
+            <h3>Adjustments</h3>
+            <p>Position, size, depth and eye alignment for each video, with keyframes that change them smoothly along it.</p>
+          </div>
+          <div>
+            <h3>Presets</h3>
+            <p>Save adjustments as a preset to give any video at once, and step through presets with a button while you watch.</p>
+          </div>
+          <div>
+            <h3>Picture</h3>
+            <p>Brightness, contrast, saturation, gamma and sharpening for each video, or as the start for every video.</p>
+          </div>
+          <div>
+            <h3>Comfort focus</h3>
+            <p>Keeps what you look at whole as you tilt your head or lie down, and eases its depth up close, in stereo 180° and fisheye videos.</p>
+          </div>
+          <div>
+            <h3>Watching lying down</h3>
+            <p>Recenter as you lie back, or let a flat screen and the menus follow your head as you turn, lie back or roll onto your side.</p>
+          </div>
+          <div>
+            <h3>Flat screen</h3>
+            <p>Set a flat screen's distance, width and curve and the colour around it, let screen glow light that colour with the picture's edges, and crop a film's black bars off the screen.</p>
+          </div>
+          <div>
+            <h3>Passthrough videos</h3>
+            <p>Videos with their own mask (<code>_alpha</code>) show your room around the people in them, with nothing to set.</p>
+          </div>
+          <div>
+            <h3>Green and blue screens</h3>
+            <p>Remove a green or blue screen, or any colour, to show your room instead. The screen's colour is found in the video, and sliders set how much goes and take its tint off edges.</p>
+          </div>
+          <div>
+            <h3>Your room around the screen</h3>
+            <p>The Room button shows your room around a flat video's screen and the menus.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" aria-labelledby="subtitles-title">
+      <div class="wrap">
+        <h2 id="subtitles-title">Subtitles and sound</h2>
+        <div class="ruled two">
+          <div>
+            <h3>Subtitles</h3>
+            <p>From inside the video, from files beside it or from your server, in any script the headset has fonts for. They start in your language when the audio is in another, always, or never, as you choose.</p>
+          </div>
+          <div>
+            <h3>OpenSubtitles</h3>
+            <p>Find subtitles from the player by the video's IDs or file name, download them with or without an account, keep them on the headset and shift their timing for each video.</p>
+          </div>
+          <div>
+            <h3>Subtitles in 3D</h3>
+            <p>Set how deep, big and high subtitles show; picture subtitles from Blu-rays are drawn for each eye.</p>
+          </div>
+          <div>
+            <h3>Audio</h3>
+            <p>Pick the audio track and subtitles side by side while you watch, kept with the video, and hear 360° audio that follows your head.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section band" aria-labelledby="sources-title">
+      <div class="wrap">
+        <h2 id="sources-title">Where your videos come from</h2>
+        <div class="ruled">
+          <div>
+            <h3>On the headset</h3>
+            <p>Any folder on the headset, a microSD card or a USB drive, including cards formatted on Windows or a Mac.</p>
+          </div>
+          <div>
+            <h3>Libraries</h3>
+            <p>Make libraries of your folders, with thumbnails, search, filters and sorting.</p>
+          </div>
+          <div>
+            <h3>Network shares</h3>
+            <p>SMB shares from Windows, Samba and most NAS, and NFS exports.</p>
+          </div>
+          <div>
+            <h3>SFTP, WebDAV and web folders</h3>
+            <p>Any computer you can sign in to with SSH, Nextcloud and other WebDAV servers, and a web server's folder listing.</p>
+          </div>
+          <div>
+            <h3>DLNA servers</h3>
+            <p>Browse and play from DLNA servers on your network.</p>
+          </div>
+          <div>
+            <h3>Jellyfin and Emby</h3>
+            <p>Browse your libraries with filters, and play with the server's transcoding, its watch state and its preview pictures above the seek bar.</p>
+          </div>
+          <div>
+            <h3>Plex</h3>
+            <p>Link your Plex account to find your servers, then browse and play with Plex's transcoding, watch state and preview thumbnails.</p>
+          </div>
+          <div>
+            <h3>DeoVR feeds and HereSphere APIs</h3>
+            <p>Any server with a DeoVR feed or HereSphere API, transcoding when it offers that, syncing watch state with HereSphere and showing timeline previews with DeoVR.</p>
+          </div>
+          <div>
+            <h3>Downloads</h3>
+            <p>Keep videos from shares and servers on the headset, a card or a USB drive to watch with no connection; a download that stops carries on where it got to.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" aria-labelledby="library-title">
       <div class="wrap split">
         <figure class="split-media">
           <img src="/media/up-next.webp" alt="The Up next queue in FramePlayerX, with buttons to save it as a playlist, shuffle it and loop it" width="1650" height="1045" loading="lazy" decoding="async">
         </figure>
         <div class="split-copy">
-          <h2 id="library-title">Your videos</h2>
+          <h2 id="library-title">Your library</h2>
           <dl class="feature-list">
             <div>
-              <dt>Videos on the headset</dt>
-              <dd>Browse any folder on the headset, a microSD card or a USB drive, including cards formatted on Windows or a Mac, and make libraries of your folders, with thumbnails, filters and sorting.</dd>
+              <dt>Home</dt>
+              <dd>Resume what you were watching, then Continue watching, your favorites and your sources.</dd>
             </div>
             <div>
-              <dt>Media servers</dt>
-              <dd>Browse and play from Jellyfin, Emby and Plex, which can transcode while you watch, sync watch state and show their preview pictures above the seek bar; any server with a DeoVR feed or HereSphere API, transcoding when it offers that, syncing watch state with HereSphere and showing timeline previews with DeoVR; and network shares (SMB, NFS), SFTP servers, WebDAV, DLNA servers and web folders.</dd>
+              <dt>Watch history</dt>
+              <dd>Everything you've played, from any source, with search and filters, or no history kept on the headset at all.</dd>
             </div>
             <div>
-              <dt>Watch history, Up next and playlists</dt>
-              <dd>Carry on where you left off, or keep no history on the headset at all, queue videos to play one after another, a folder's subfolders included, in order or shuffled, and loop the queue or a single video; keep playlists of videos from any source, mark favorites and ratings, and delete the files of videos you're done with.</dd>
+              <dt>Up next</dt>
+              <dd>Queue videos to play one after another, a folder's subfolders included, in order or shuffled, and loop the queue or a single video.</dd>
+            </div>
+            <div>
+              <dt>Playlists</dt>
+              <dd>Keep playlists of videos from any source.</dd>
+            </div>
+            <div>
+              <dt>Favorites and ratings</dt>
+              <dd>Mark favorites and rate videos, and filter and sort by them.</dd>
+            </div>
+            <div>
+              <dt>Deleting files</dt>
+              <dd>Delete the file of a video you're done with, on the headset, a share or a server that lets you.</dd>
             </div>
             <div>
               <dt>PIN locks</dt>
@@ -124,21 +263,25 @@
       </div>
     </section>
 
-    <section class="section" aria-labelledby="control-title">
+    <section class="section band" aria-labelledby="control-title">
       <div class="wrap split reverse">
         <figure class="split-media">
           <img src="/media/controller.webp" alt="FramePlayerX's controller settings: both Steam Frame controllers, with what each button does" width="1650" height="1045" loading="lazy" decoding="async">
         </figure>
         <div class="split-copy">
-          <h2 id="control-title">Comfort and control</h2>
+          <h2 id="control-title">Control</h2>
           <dl class="feature-list">
             <div>
-              <dt>Adjustments</dt>
-              <dd>Position, zoom, depth, comfort focus to keep what you look at whole as you tilt your head or lie down and ease its depth up close, picture settings and fisheye lens calibration, kept for each video or saved as presets to use on any video, and a screen that follows your head for watching lying down.</dd>
+              <dt>Custom controls</dt>
+              <dd>Choose what each button and thumbstick direction does, with and without the grip held.</dd>
             </div>
             <div>
-              <dt>Custom controls</dt>
-              <dd>Choose what each controller button does, or go hands-free: point with your head, and rest its dot on a button to press it.</dd>
+              <dt>Hands-free</dt>
+              <dd>Put the controllers down: point with your head, and rest its dot on a button to press it.</dd>
+            </div>
+            <div>
+              <dt>Moving things</dt>
+              <dd>Drag the screen, the control bar and the menus where you want them, and put them all back with one press.</dd>
             </div>
             <div>
               <dt>Phone remote</dt>
@@ -146,34 +289,38 @@
             </div>
             <div>
               <dt>Haptic devices</dt>
-              <dd>Optional, off until turned on; syncs supported haptic devices with videos that have scripts.</dd>
+              <dd>Optional and off until turned on: syncs Intiface Central, TCode devices and The Handy with videos that have scripts.</dd>
             </div>
           </dl>
         </div>
       </div>
     </section>
 
-    <section class="section band" aria-labelledby="rest-title">
+    <section class="section" aria-labelledby="rest-title">
       <div class="wrap">
         <h2 id="rest-title">And the rest</h2>
-        <div class="ruled">
+        <div class="ruled two">
           <div>
             <h3>Languages</h3>
             <p>English, German, Spanish, French, Japanese and Simplified Chinese, following the language Steam is set to; the phone remote follows the headset. <a href="https://translate.codeberg.org/projects/frameplayerx/">Help translate</a>.</p>
           </div>
           <div>
             <h3>Updates</h3>
-            <p>Checks for a new version when it starts, and installs it from Settings when you choose to, on a Stable or a Beta channel.</p>
+            <p>Checks for a new version when it starts, installs it from Settings when you choose to, on a Stable or a Beta channel, and then shows what's new since the version you had.</p>
+          </div>
+          <div>
+            <h3>Send diagnostics</h3>
+            <p>Report a problem from Settings › About: you can read the report first, and you get a reference to quote when you tell us about it.</p>
           </div>
           <div>
             <h3>No FramePlayerX account or tracking</h3>
-            <p>It connects to the servers you add, to Plex's account services if you link Plex (to sign in, find your servers and renew access), to OpenSubtitles when you use Find subtitles or sign in to it (the video's title, year, episode and IDs, and a fingerprint of the file) and to FramePlayerX's website, or GitHub when the website doesn't answer, to check for updates, and sends nothing after a crash unless you choose to send the report, which you can read first (no video names, folders or server addresses).</p>
+            <p>It connects to the servers you add, to Plex's account services if you link Plex (to sign in, find your servers and renew access), to OpenSubtitles when you use Find subtitles or sign in to it (the video's title, year, episode and IDs, and a fingerprint of the file) and to FramePlayerX's website, or GitHub when the website doesn't answer, to check for updates, and sends nothing after a crash, or when you report a problem, unless you choose to send the report (no video names, folders or server addresses).</p>
           </div>
         </div>
       </div>
     </section>
 
-    <section class="section" aria-labelledby="cta-title">
+    <section class="section band" aria-labelledby="cta-title">
       <div class="wrap cta">
         <div>
           <h2 id="cta-title">Install FramePlayerX</h2>
