@@ -1,0 +1,9 @@
+{
+  "kind": "fix",
+  "en": "The edges of a flat video now look smooth instead of jagged, and no longer flicker as you move your head, on the floating screen and in the cinema.",
+  "de": "Die Ränder flacher Videos sehen jetzt glatt statt gezackt aus und flimmern nicht mehr, wenn Sie den Kopf bewegen, auf dem schwebenden Bildschirm wie im Kino.",
+  "es": "Los bordes de los vídeos planos ahora se ven suaves en lugar de dentados y ya no parpadean al mover la cabeza, tanto en la pantalla flotante como en el cine.",
+  "fr": "Les bords des vidéos plates sont désormais lisses au lieu d’être crénelés et ne scintillent plus quand vous bougez la tête, sur l’écran flottant comme au cinéma.",
+  "ja": "フラット映像の縁がギザギザではなく滑らかに表示され、頭を動かしてもちらつかなくなりました。浮かんだ画面でも映画館でも同様です。",
+  "zh-CN": "平面视频的边缘现在平滑而不再呈锯齿状，转动头部时也不再闪烁，悬浮屏幕和影院中均是如此。"
+}
