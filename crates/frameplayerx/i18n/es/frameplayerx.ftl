@@ -162,10 +162,11 @@ settings-pair-new-code = Nuevo código de vinculación
 settings-pair-open = En tu móvil, abre
 settings-pair-enter = e introduce
 settings-pair-stopped = La vinculación se detuvo tras cinco códigos incorrectos.
-settings-pair-phones = { $count ->
-    [one] { $count } móvil conectado
-   *[other] { $count } móviles conectados
-}
+settings-pair-phones =
+    { $count ->
+        [one] { $count } móvil conectado
+       *[other] { $count } móviles conectados
+    }
 settings-unpair-all = Desvincular todos los móviles
 settings-no-network = No estás conectado a ninguna red.
 settings-check-updates = Buscar actualizaciones al iniciar
@@ -204,10 +205,11 @@ settings-device-hint-tcode = /dev/ttyACM0 o tcp://192.168.1.30:8000
 settings-device-hint-handy = clave de conexión
 settings-device-connected = Conectado · ejes { $axes }
 settings-scripts-found = Los scripts se buscan junto a sus vídeos y en { $folder }
-settings-deovr-api-clients = { $count ->
-    [one] API de DeoVR en el puerto { $port } · { $count } cliente
-   *[other] API de DeoVR en el puerto { $port } · { $count } clientes
-}
+settings-deovr-api-clients =
+    { $count ->
+        [one] API de DeoVR en el puerto { $port } · { $count } cliente
+       *[other] API de DeoVR en el puerto { $port } · { $count } clientes
+    }
 settings-update-available = La versión { $version } está disponible
 settings-update-installed = La versión { $version } está instalada
 settings-about-tagline = FramePlayerX { $version } · un reproductor de vídeo VR nativo para Steam Frame
@@ -401,7 +403,7 @@ adjust-chapter-go = Ir
 adjust-bookmark-remove = Quitar marcador
 tracks-audio = Audio
 tracks-no-audio = Sin audio
-tracks-spatial = {" · espacial"}
+tracks-spatial = { " · espacial" }
 tracks-off = No
 tracks-quality = Calidad
 tracks-quality-automatic = Automática
@@ -441,20 +443,22 @@ lens-top-across = Arriba, horizontal
 lens-top-up = Arriba, vertical
 lens-bottom-across = Abajo, horizontal
 lens-bottom-up = Abajo, vertical
-adjust-clear-keyframes = { $count ->
-    [one] Borrar { $count } fotograma clave
-   *[other] Borrar { $count } fotogramas clave
-}
+adjust-clear-keyframes =
+    { $count ->
+        [one] Borrar { $count } fotograma clave
+       *[other] Borrar { $count } fotogramas clave
+    }
 key-green-screen = Pantalla verde
 key-blue-screen = Pantalla azul
 key-magenta = Magenta
 adjust-stats-hardware = { $decoder } (hardware)
 adjust-stats = Vídeo: { $decoder } · { $dropped } perdidos de { $frames } · { $stalls } parones · Audio: { $audio } por { $sink }
 haptics-no-script = No hay script háptico para este vídeo.
-haptics-scripts-loaded = { $count ->
-    [one] { $count } eje de script cargado.
-   *[other] { $count } ejes de script cargados.
-}
+haptics-scripts-loaded =
+    { $count ->
+        [one] { $count } eje de script cargado.
+       *[other] { $count } ejes de script cargados.
+    }
 adjust-forward = Adelante
 adjust-forward-desc = Acércate a la escena o aléjate de ella.
 sources-local-facts = Carpetas, microSD y USB
@@ -582,26 +586,31 @@ source-library-overlap = Esta carpeta está dentro de { $other }, o la contiene
 quick-connect-authorized-desc = Autorizado en el servidor.
 quick-connect-authorized = Quick Connect autorizado
 quick-connect-error = Error: { $error }
-count-scenes = { $count ->
-    [one] { $count } escena
-   *[other] { $count } escenas
-}
-count-folders = { $count ->
-    [one] { $count } carpeta
-   *[other] { $count } carpetas
-}
-count-videos = { $count ->
-    [one] { $count } vídeo
-   *[other] { $count } vídeos
-}
-count-items = { $count ->
-    [one] { $count } elemento
-   *[other] { $count } elementos
-}
-count-seasons = { $count ->
-    [one] { $count } temporada
-   *[other] { $count } temporadas
-}
+count-scenes =
+    { $count ->
+        [one] { $count } escena
+       *[other] { $count } escenas
+    }
+count-folders =
+    { $count ->
+        [one] { $count } carpeta
+       *[other] { $count } carpetas
+    }
+count-videos =
+    { $count ->
+        [one] { $count } vídeo
+       *[other] { $count } vídeos
+    }
+count-items =
+    { $count ->
+        [one] { $count } elemento
+       *[other] { $count } elementos
+    }
+count-seasons =
+    { $count ->
+        [one] { $count } temporada
+       *[other] { $count } temporadas
+    }
 feed-reading = Leyendo las escenas del servidor…
 filter-length = Duración
 filter-rating = Valoración
@@ -786,20 +795,21 @@ toast-no-subtitles = Este vídeo no tiene subtítulos
 toast-subtitles-off = Subtítulos desactivados
 player-skipping-damaged = Saltando vídeo dañado…
 size-kb = { $n } kB
-date-short = { $day } { $month ->
-     [1] ene
-     [2] feb
-     [3] mar
-     [4] abr
-     [5] may
-     [6] jun
-     [7] jul
-     [8] ago
-     [9] sept
-     [10] oct
-     [11] nov
-    *[12] dic
-} { $year }
+date-short =
+    { $day } { $month ->
+        [1] ene
+        [2] feb
+        [3] mar
+        [4] abr
+        [5] may
+        [6] jun
+        [7] jul
+        [8] ago
+        [9] sept
+        [10] oct
+        [11] nov
+       *[12] dic
+    } { $year }
 tracks-track = Pista { $number }
 tracks-subtitles-file = Subtítulos { $number }
 tracks-forced = Forzados
@@ -808,10 +818,11 @@ library-opening = Abriendo { $title }
 library-could-not-open = No se pudo abrir: { $error }
 library-watched-times = visto { $count }×
 library-last-watched = última vez el { $date }
-library-haptic-scripts = { $count ->
-    [one] { $count } script háptico
-   *[other] { $count } scripts hápticos
-}
+library-haptic-scripts =
+    { $count ->
+        [one] { $count } script háptico
+       *[other] { $count } scripts hápticos
+    }
 library-unreadable = No se pudo leer el archivo: { $error }
 library-missing = Falta el archivo (¿unidad desconectada?)
 toast-volume = Volumen { $percent } %
@@ -947,10 +958,11 @@ controller-press = Pulsar: { $action }
 controller-thumbstick = Joystick
 controller-title = { $hand } · { $input }
 controller-title-grip = { $hand } · Agarre + { $input }
-scan-progress = { $count ->
-    [one] Escaneando: { $count } vídeo
-   *[other] Escaneando: { $count } vídeos
-}
+scan-progress =
+    { $count ->
+        [one] Escaneando: { $count } vídeo
+       *[other] Escaneando: { $count } vídeos
+    }
 scan-done = { $name }: { $added } nuevos, { $missing } faltan
 scan-failed = No se pudo escanear { $name }: { $error }
 dlna-search-failed = La búsqueda en la red falló: { $error }
@@ -976,18 +988,20 @@ error-remove-bookmark = No se pudo quitar el marcador: { $error }
 error-save-adjustments = No se pudieron guardar los ajustes: { $error }
 error-add-to-playlist = No se pudo añadir a la playlist: { $error }
 error-clear-history = No se pudo borrar el historial: { $error }
-toast-retrying = { $count ->
-    [one] Reintentando { $count } vídeo
-   *[other] Reintentando { $count } vídeos
-}
+toast-retrying =
+    { $count ->
+        [one] Reintentando { $count } vídeo
+       *[other] Reintentando { $count } vídeos
+    }
 toast-image-cache-cleared = Caché de imágenes vaciada: { $mb } MB liberados
 toast-plays-next = { $title } se reproduce a continuación
 toast-added-up-next = { $title } añadido a A continuación
 toast-playlist-made = { $name } creada
-toast-playlist-added = { $count ->
-    [one] Añadido a { $name }
-   *[other] { $count } vídeos añadidos a { $name }
-}
+toast-playlist-added =
+    { $count ->
+        [one] Añadido a { $name }
+       *[other] { $count } vídeos añadidos a { $name }
+    }
 queue-plays-through = { $at } de { $of } · se reproduce hasta el final
 queue-plays-round = { $at } de { $of } · se reproduce hasta el final y vuelve a empezar por el primero
 queue-steps = { $at } de { $of } · X e Y recorren la lista
@@ -1007,18 +1021,20 @@ perf-video-value = { $fps } de { $film } fps
 perf-video-paused = En pausa
 perf-video-buffering = Cargando búfer
 perf-video-ended = Terminado
-perf-stutter = { $dropped } descartados · { $stalls ->
-    [one] { $stalls } parón
-   *[other] { $stalls } parones
-}
+perf-stutter =
+    { $dropped } descartados · { $stalls ->
+        [one] { $stalls } parón
+       *[other] { $stalls } parones
+    }
 perf-buffer = Búfer
 perf-buffer-value = { $ahead } de { $target } s
 perf-network = Red
 perf-network-idle = Inactiva
-perf-retries = { $count ->
-    [one] { $count } reintento
-   *[other] { $count } reintentos
-}
+perf-retries =
+    { $count ->
+        [one] { $count } reintento
+       *[other] { $count } reintentos
+    }
 perf-last-skip = Último salto
 perf-opened = Apertura
 perf-first-read = primera lectura { $secs } s
@@ -1137,13 +1153,12 @@ remote-pair-stopped = Demasiados códigos incorrectos. En el visor, pulsa Nuevo 
 remote-pair-stays = Este móvil sigue vinculado hasta que pulses Desvincular todos los móviles en el visor.
 remote-connected = Conectado
 remote-reconnecting = Reconectando…
-remote-sent = Enviado al visor
+remote-sent = Enviado a los auriculares
 remote-unreachable = No se puede contactar con el visor
 remote-command-failed = Falló la orden: { $error }
 remote-not-sent = No enviado: { $error }
 remote-position = { $position } de { $duration }
 keyboard-space = espacio
-
 source-kind-plex-desc = Plex Media Server
 plex-sign-in = Vincular con código
 plex-link-desc = Obtén un código e introdúcelo en plex.tv/link desde tu teléfono u ordenador.
@@ -1169,6 +1184,7 @@ plex-test-required = Conecta con un servidor antes de guardar.
 plex-new-account-source = Volver a vincular la cuenta o cambiar el token añade una fuente separada y conserva esta.
 
 ## Búsqueda y descargas de OpenSubtitles
+
 subtitle-find = Buscar subtítulos
 subtitle-title = Título del vídeo
 subtitle-refine = Afinar búsqueda
