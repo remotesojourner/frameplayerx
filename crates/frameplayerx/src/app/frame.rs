@@ -30,12 +30,14 @@ impl Default for Cinema {
 pub(super) const ROW_PULL: f32 = 0.4;
 
 impl Cinema {
-    /// The house lights `dt` seconds on: going down while a video plays,
-    /// up when it stops, held while it buffers.
-    fn lights_at(&mut self, state: PlayerState, has_frame: bool, dt: f32) -> f32 {
+    /// The house lights `dt` seconds on: going down over `dim_secs` while a
+    /// video plays, up when it stops, held while it buffers.
+    fn lights_at(&mut self, state: PlayerState, has_frame: bool, dt: f32, dim_secs: f32) -> f32 {
         let dt = dt.max(0.0);
         match state {
-            PlayerState::Playing if has_frame => self.lights = (self.lights - dt / 1.4).max(0.0),
+            PlayerState::Playing if has_frame => {
+                self.lights = (self.lights - dt / dim_secs).max(0.0);
+            }
             PlayerState::Playing | PlayerState::Buffering => {}
             PlayerState::Paused | PlayerState::Ended | PlayerState::Failed => {
                 self.lights = (self.lights + dt / 0.7).min(1.0);
@@ -464,6 +466,7 @@ impl App {
         self.panels[BAR].visible = playing && self.ui_visible && !self.show_browser;
         self.panels[ADJUST].visible = self.panels[BAR].visible && self.ui.adjust_open;
         self.panels[TRACKS].visible = self.panels[BAR].visible && self.ui.tracks_open;
+        self.panels[CLOCK].visible = self.panels[BAR].visible;
         let over_video = playing && !browser;
         let live = self
             .ui
@@ -517,6 +520,7 @@ impl App {
             strip.pose = owner.pose * Mat4::from_translation(Vec3::new(x, 0.0, 0.0));
         }
         self.panels[TRACKS].pose = above_bar(&self.panels[BAR], &self.panels[TRACKS]);
+        self.panels[CLOCK].pose = clock_pose(&self.panels[BAR], &self.panels[CLOCK]);
         self.panels[TOAST].pose = toast_pose(
             &self.panels[BAR],
             self.panels[TRACKS]
@@ -655,8 +659,8 @@ impl App {
         }
         let devices = self.services.haptic_statuses();
         let passthrough_available = input.passthrough_available;
-        let mut painted = [false; 7];
-        for idx in [MAIN, BAR, ADJUST, TRACKS, TOAST, WAKE] {
+        let mut painted = [false; 8];
+        for idx in [MAIN, BAR, ADJUST, TRACKS, TOAST, WAKE, CLOCK] {
             if !self.panels[idx].needs_paint() {
                 continue;
             }
@@ -698,6 +702,7 @@ impl App {
                 }
                 TRACKS => ui::player::tracks_panel(ctx, &mut view),
                 TOAST => ui::player::toast_panel(ctx, &mut view),
+                CLOCK => ui::player::clock_panel(ctx, &mut view),
                 WAKE => ui::player::wake_panel(ctx, &mut view),
                 _ => ui::player::adjust_panel(ctx, &mut view),
             });
@@ -755,6 +760,7 @@ impl App {
                 .screen_glow
                 .look(shown.as_ref().unwrap_or(&self.settings.default_view)),
         );
+        renderer.set_crop_bars(self.settings.crop_bars);
         // The open video's colour, else the one videos start with. It is
         // sRGB; the eyes are cleared in linear light.
         let [r, g, b] = shown
@@ -805,14 +811,19 @@ impl App {
                     showing = true;
                     let seat = room.seat(p.cinema_row(&self.settings));
                     let pose = room.pose(player, seat);
-                    let lights = self
-                        .cinema
-                        .lights_at(p.player.state(), frame.is_some(), input.dt);
+                    let house = self.settings.house_lights;
+                    let lights = self.cinema.lights_at(
+                        p.player.state(),
+                        frame.is_some(),
+                        input.dt,
+                        house.dim_secs,
+                    );
                     let curvature = room.curvature(p.cinema_curvature(&self.settings));
                     video.cinema = Some(CinemaParams {
                         room,
                         pose,
                         lights,
+                        lights_down: house.playing,
                         curvature,
                     });
                     video.screen_pose = pose * Mat4::from_translation(room.screen_centre());
@@ -1002,14 +1013,14 @@ pub(super) fn key(key: egui::Key) -> egui::Event {
 }
 
 /// What a pointer can land on, in the order of its panel indices: the
-/// panels up to the toast, which rays pass through, the performance overlay
-/// at [`PERF`], then the scroll strips.
+/// panels up to the toast, which rays pass through as they do the clock, the
+/// performance overlay at [`PERF`], then the scroll strips.
 fn pointable<'a>(
-    panels: &'a mut [Panel; 7],
+    panels: &'a mut [Panel; 8],
     perf: &'a mut Panel,
     strips: &'a mut [Panel; 3],
 ) -> [&'a mut Panel; 10] {
-    let [a, b, c, d, e, wake, _toast] = panels;
+    let [a, b, c, d, e, wake, _toast, _clock] = panels;
     let [s0, s1, s2] = strips;
     [a, b, c, d, e, wake, perf, s0, s1, s2]
 }
@@ -1034,6 +1045,21 @@ fn above_bar(bar: &Panel, picker: &Panel) -> Mat4 {
     let right = bar.size.x / 2.0 - (room.right as f32 + ui::player::BAR_MARGIN as f32) * b;
     let x = right + room.right as f32 * p - picker.size.x / 2.0;
     let y = top + picker.size.y / 2.0;
+    bar.pose * Mat4::from_translation(Vec3::new(x, y, 0.0))
+}
+
+/// Where the clock goes: on the control bar's plane, its bottom edge on the
+/// top of the bar's body and its pill's left edge over the start of what the
+/// bar holds.
+fn clock_pose(bar: &Panel, clock: &Panel) -> Mat4 {
+    let room = ui::widgets::SHADOW_ROOM;
+    // Metres per point of each.
+    let b = bar.size.x / bar.points().x;
+    let c = clock.size.x / clock.points().x;
+    let top = bar.size.y / 2.0 - room.top as f32 * b;
+    let left = -bar.size.x / 2.0 + (room.left as f32 + ui::player::BAR_MARGIN as f32) * b;
+    let x = left - room.left as f32 * c + clock.size.x / 2.0;
+    let y = top + clock.size.y / 2.0;
     bar.pose * Mat4::from_translation(Vec3::new(x, y, 0.0))
 }
 
@@ -1111,13 +1137,17 @@ mod tests {
     #[test]
     fn house_lights_dim_for_playback_hold_through_buffering_and_rise_on_pause() {
         let mut cinema = Cinema::default();
-        assert_eq!(cinema.lights_at(PlayerState::Buffering, false, 0.5), 1.0);
-        assert_eq!(cinema.lights_at(PlayerState::Playing, false, 0.7), 1.0);
-        assert!((cinema.lights_at(PlayerState::Playing, true, 0.7) - 0.5).abs() < 1e-6);
-        assert!((cinema.lights_at(PlayerState::Buffering, true, 0.5) - 0.5).abs() < 1e-6);
-        assert_eq!(cinema.lights_at(PlayerState::Playing, true, 0.7), 0.0);
-        assert!((cinema.lights_at(PlayerState::Paused, true, 0.35) - 0.5).abs() < 1e-6);
-        assert_eq!(cinema.lights_at(PlayerState::Ended, true, 1.0), 1.0);
+        let at = |c: &mut Cinema, state, frame, dt| c.lights_at(state, frame, dt, 1.4);
+        assert_eq!(at(&mut cinema, PlayerState::Buffering, false, 0.5), 1.0);
+        assert_eq!(at(&mut cinema, PlayerState::Playing, false, 0.7), 1.0);
+        assert!((at(&mut cinema, PlayerState::Playing, true, 0.7) - 0.5).abs() < 1e-6);
+        assert!((at(&mut cinema, PlayerState::Buffering, true, 0.5) - 0.5).abs() < 1e-6);
+        assert_eq!(at(&mut cinema, PlayerState::Playing, true, 0.7), 0.0);
+        assert!((at(&mut cinema, PlayerState::Paused, true, 0.35) - 0.5).abs() < 1e-6);
+        assert_eq!(at(&mut cinema, PlayerState::Ended, true, 1.0), 1.0);
+        // Dimming over 8 s takes as long; coming back up doesn't change.
+        assert!((cinema.lights_at(PlayerState::Playing, true, 2.0, 8.0) - 0.75).abs() < 1e-6);
+        assert!((cinema.lights_at(PlayerState::Paused, true, 0.07, 8.0) - 0.85).abs() < 1e-6);
     }
 
     #[test]

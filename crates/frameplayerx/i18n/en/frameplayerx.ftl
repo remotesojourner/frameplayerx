@@ -63,6 +63,8 @@ settings-language-automatic-chip = Automatic
 settings-language-desc = Automatic follows the language Steam is set to.
 settings-interface-size = Interface size
 settings-interface-size-desc = Text and buttons on every panel.
+settings-clock-24-hour = 24-hour clock
+settings-clock-24-hour-desc = The time as 22:05 instead of 10:05 PM.
 settings-follow = Screen follows you
 settings-follow-desc = Flat videos and the menus stay in front of you as you turn, lie back or roll onto your side.
 settings-haptic-devices = Haptic devices
@@ -115,7 +117,7 @@ settings-seek-step-desc = How far one push of the thumbstick jumps.
 settings-auto-hide = Hide controls after
 settings-auto-hide-desc = While playing, without moving the pointer.
 settings-seek-previews = Seek bar previews
-settings-seek-previews-desc = Pointing along the seek bar shows a picture of that moment, where the server has made them: Jellyfin, Emby, Plex or a DeoVR feed.
+settings-seek-previews-live-desc = Pointing along the seek bar shows a picture of that moment: the server's own where Jellyfin, Emby, Plex or a DeoVR feed has made them, else one FramePlayerX takes from the video.
 settings-default-format = Default format
 settings-default-format-desc = For videos whose file, name and shape say nothing about their format. 16:9, 4:3 and scope movies start flat on their own.
 settings-fisheye-presets = Fisheye presets
@@ -132,6 +134,8 @@ settings-screen-distance = Screen distance
 settings-screen-width = Screen width
 settings-screen-width-desc = Its longer side: a portrait video's height.
 settings-screen-curvature = Screen curvature
+settings-crop-bars = Crop black bars
+settings-crop-bars-desc = A video with black bars gets a screen of its own shape. If the picture or subtitles reach into the bars, the screen opens out to fit them.
 settings-vr-videos = 180° and 360° videos
 settings-all-videos = All videos
 settings-3d-videos = 3D videos
@@ -153,6 +157,12 @@ background-classic = Classic
 # Short: a chip. A modern cinema room with neon lights and leather recliners.
 background-luxe = Luxe
 background-room-desc = Around flat videos as they play. Your room replaces it while it shows.
+settings-cinema = Cinema
+settings-cinema-desc = These apply to every video that plays in a cinema, and to nothing else.
+settings-lights-playing = Lights while playing
+settings-lights-playing-desc = How much of the cinema's light stays on while a video plays. At 0% even the exit signs go out, and only the screen shows.
+settings-dimming-time = Dimming time
+settings-dimming-time-desc = How long the lights take to go down when a video starts. They still come up quickly when you pause.
 # Short: a chip.
 background-black = Black
 # Short: a chip.
@@ -235,6 +245,9 @@ settings-update-install = Download and install
 settings-update-restart-desc = Restart FramePlayerX to use it.
 settings-update-restart = Restart now
 settings-update-failed = The update failed
+# $time is when GitHub takes requests again, as the headset's clock shows it.
+settings-update-rate-limited = GitHub is limiting update checks from your network. Try again after { $time }.
+settings-update-rate-limited-later = GitHub is limiting update checks from your network. Try again later.
 settings-update-check = Check now
 
 ## Settings: more
@@ -291,8 +304,10 @@ settings-about-discord = FramePlayerX on Discord
 settings-about-github = FramePlayerX on GitHub
 settings-about-issue = Report a problem
 settings-about-sponsor = Sponsor FramePlayerX
-# Under the links.
-settings-about-issue-note = To report a problem, choose Bug report on GitHub's form and attach the log named below.
+# Short: a button, under the links.
+settings-about-diagnostics = Send diagnostics
+# Under Send diagnostics.
+settings-about-report-note = To report a problem, send diagnostics first, then choose Bug report on GitHub's form and give the reference you get.
 settings-about-licences = Video decoding uses FFmpeg (LGPL 2.1+) and dav1d (BSD), shipped as separate libraries in lib/. Text is set in Inter (OFL) with Phosphor icons (MIT). Licences and the source offer are in the licenses/ folder.
 
 ## Language names, as subtitles and audio tracks name them
@@ -384,6 +399,12 @@ player-loop-video = Loop this video
 player-autoplay = Autoplay the next video
 # A tooltip.
 player-speed = Speed
+# The time of day ($now) and when the video playing ends at its speed ($end), above the control bar: 22:05  ·  Ends at 23:23.
+player-clock-end = { $now }  ·  Ends at { $end }
+# A tooltip on the video's length after the seek bar, which pressing swaps for how much is left: $time is that, as 1:18:45.
+player-remaining-tip = Remaining { $time }
+# A tooltip on how much of the video is left after the seek bar, which pressing swaps for its length: $time is that, as 1:42:10.
+player-duration-tip = Duration { $time }
 # A tooltip.
 player-unmute = Unmute
 # A tooltip.
@@ -595,13 +616,14 @@ adjust-forward-desc = Move closer to or back from the scene.
 # Short: under a card on Home.
 sources-local-facts = Folders, microSD and USB
 sources-desc = Browse the headset and your servers. What you watch is kept in Watch history.
+sources-desc-no-history = Browse the headset and your servers.
 # Short: a button.
 sources-add = Add source
 sources-heading = On this device and your network
 # Short: a button.
 sources-unlock = Unlock
 # A tooltip on Remove source.
-sources-remove = Remove (and forget its unwatched videos)
+sources-remove-all = Remove (and forget all its videos)
 # A tooltip.
 sources-edit = Edit
 # A tooltip: locks the source again.
@@ -666,7 +688,8 @@ source-self-signed = Accept self-signed certificates
 source-self-signed-desc = For HTTPS servers on your own network.
 # A switch on a server's form, with the description below it.
 source-parallel-downloads = Parallel downloads
-source-parallel-downloads-desc = Downloads several parts of a video at once over separate connections, like a download manager. This helps if the server limits the speed of each connection. If it doesn't, it may gain nothing, and a server on hard drives can get slower.
+# Under Parallel downloads in a server's form: the switch is for playback.
+source-parallel-downloads-play-desc = While a video plays, downloads several parts of it at once over separate connections, like a download manager. This helps if the server limits the speed of each connection. If it doesn't, it may gain nothing, and a server on hard drives can get slower. Downloading a video to the headset always does this.
 # A switch on a folder source's form, with the number beside it and the description below.
 source-play-all-limit = Limit videos from subfolders
 source-play-all-limit-desc = The most videos Play all takes when it includes subfolders. Off, it takes them all, and Cancel stops it.
@@ -953,6 +976,10 @@ sort-recently-watched = Recently watched
 # Short: a sort.
 sort-most-watched = Most watched
 library-history-empty-desc = Videos you play from any source show up here, with where you left off.
+history-keep = Keep watch history
+history-keep-desc = What you play is kept in Watch history and Continue watching on Home, with where you left off. Off, videos resume only where their server keeps your place.
+history-off-warning = Turning this off deletes your whole watch history from this headset, with where you left each video. Videos will then resume only where their server keeps your place.
+history-off-confirm = Turn off and delete
 # Short: a button.
 library-browse-sources = Browse sources
 # Short: a button.
@@ -1222,6 +1249,33 @@ crash-show-report = Show the report
 # Short: a button.
 crash-dont-send = Don't send
 crash-report-heading = The report, exactly as it would be sent
+# The page the first start after an update shows.
+whats-new-title = What's new
+# $from is the version used before, $to the one now running.
+whats-new-versions = Version { $from } → { $to }
+# The version now running, when the one before isn't known.
+whats-new-version = Version { $version }
+whats-new-features = Features
+whats-new-fixes = Fixes
+whats-new-performance = Performance
+# Short: a button.
+whats-new-close = Got it
+# The page Send diagnostics opens, in Settings › About.
+diagnostics-title = Send diagnostics
+diagnostics-desc = Diagnostics show FramePlayerX's developers what the headset was doing, so that they can find what went wrong. Nothing is sent unless you choose Send.
+diagnostics-what = What went wrong?
+diagnostics-what-hint = For example: the picture stutters a few minutes into a video
+diagnostics-contains-words = What you write above.
+diagnostics-contains-versions = The versions of FramePlayerX and of the headset's system software, and what About lists under This headset.
+diagnostics-contains-video = For the video that is open: its format, size, frame rate and decoder, and how many frames were dropped.
+diagnostics-contains-settings = Your settings, and which kinds of sources you have.
+diagnostics-contains-logs = FramePlayerX's log of this session and the end of the one before: what it was doing, and the errors it met.
+diagnostics-gathering = Gathering…
+# Short: a button.
+diagnostics-send = Send
+diagnostics-sent = Sent. Thank you!
+# $number is the report's number: D-12, say.
+diagnostics-reference = Your reference is D-{ $number }. Give it when you report the problem on GitHub or Discord.
 toast-adjustments-saved = Adjustments saved
 toast-preset-saved = Saved as { $name }
 toast-preset = Preset: { $name }
@@ -1592,3 +1646,97 @@ subtitle-earlier = Earlier
 subtitle-later = Later
 subtitle-remove = Remove download
 subtitle-review = Check timing for this version
+
+## Downloads
+
+# Why a download stopped: the headset or card it goes to is too full.
+download-no-space = There isn't enough room for it
+# Why a download stopped, starting in lower case: the connection ended part way.
+download-ended-early = the server stopped sending it before the end
+# Short: a button on a video's page that downloads it to the headset or a card.
+download = Download
+# A tooltip on Download.
+download-tip = Keep it on the headset or a card, to watch with no connection
+# Short: a button, greyed out while the server is asked whether it may be downloaded.
+download-starting = Starting…
+# Short: a button and a line under a download: $percent is how much has come, 0 to 100.
+download-progress = Downloading { $percent } %
+# Short: a button, for a download whose size the server didn't say.
+download-under-way = Downloading…
+# Short: a button and a line under a download that waits its turn.
+download-waiting = Waiting to download
+# A line under a download: downloads wait while a video plays from a network source.
+download-waits-streaming = Waits while a video streams
+# A line under a download that lost its connection: $error says why.
+download-retrying = Waiting to try again: { $error }
+# Short: a button that stops a download and deletes what has come.
+download-cancel = Cancel download
+# Short: Cancel download asks again before it stops the download.
+download-cancel-confirm = Cancel it?
+# Short: a button that deletes the downloaded video; it stays on its server.
+download-remove = Remove download
+# Short: Remove download asks again before it deletes the download.
+download-remove-confirm = Remove it?
+# Short: a button on a video whose download stopped.
+download-retry-video = Retry download
+# Short: a button beside a download that stopped.
+download-retry = Retry
+# A line under a download that stopped: $error says why.
+download-failed = Stopped: { $error }
+# How much of a download has come: $done and $size are sizes, like 1.8 GB.
+download-of = { $done } of { $size }
+# How fast a download comes: $speed is a size, like 18 MB.
+download-speed = { $speed }/s
+# Why a download couldn't start, starting in lower case: the server's user may not download.
+download-not-allowed = the server doesn't allow downloading it
+# $error says why, starting in lower case.
+download-remove-failed = Couldn't remove the download: { $error }
+# $title is the video's name.
+toast-download-started = Downloading { $title }
+# $title is the video's name.
+toast-downloaded = Downloaded { $title }
+# $title is the video's name; $error says why, starting in lower case.
+toast-download-failed = Couldn't download { $title }: { $error }
+# A place in Sources and a tile on Home, for the videos downloaded.
+downloads = Downloads
+# Under Downloads in Sources, until something is downloaded.
+downloads-desc = Videos from your sources kept on the headset or a card, to watch with no connection
+downloads-none = No downloads
+downloads-count = { $count ->
+    [one] { $count } download
+   *[other] { $count } downloads
+}
+# Downloads that haven't finished, after the count of downloads.
+downloads-unfinished = { $count ->
+    [one] { $count } not finished
+   *[other] { $count } not finished
+}
+# Under the Downloads title: where new downloads go (Settings › General › Download to).
+downloads-to-headset = New downloads go to the headset
+# Under the Downloads title: $card is the microSD card's or USB drive's name.
+downloads-to-card = New downloads go to { $card }
+# After where new downloads go: $size is how much room is left there.
+downloads-free = { $size } free
+# After where new downloads go, starting in lower case: the card chosen is out.
+downloads-card-missing = the card isn't inserted
+# Under a download: where it is kept.
+downloads-on-headset = On the headset
+# Under a download: $card is the microSD card's or USB drive's name.
+downloads-on-card = On { $card }
+# Under a download kept on a card that is out.
+downloads-card-out = On a card that isn't inserted
+# Short: a button that opens a source's downloads.
+downloads-open = Open
+downloads-no-sources = No network sources
+downloads-no-sources-desc = Add a source under Sources to download its videos.
+downloads-empty = Nothing downloaded yet
+downloads-empty-desc = Download a video from its page, or from the ⋯ beside it in a folder.
+# Settings › General: where new downloads go.
+settings-download-to = Download to
+settings-download-to-desc = Where new downloads go. Those already downloaded stay where they are.
+# Short: a chip under Download to. $size is how much room is left.
+settings-download-headset = Headset · { $size } free
+# Short: a chip under Download to: $card is the card's name, $size how much room is left.
+settings-download-card = { $card } · { $size } free
+# Short: a chip under Download to: the card chosen before, now out.
+settings-download-card-out = { $card } · not inserted

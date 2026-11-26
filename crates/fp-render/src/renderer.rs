@@ -231,6 +231,7 @@ pub struct Renderer {
     /// The video frame shown ([`fp_media::VideoFrame::id`]).
     shown_frame: Option<u64>,
     glow: crate::glow::Glow,
+    crop: crate::crop::Crop,
     /// Times each frame's parts on the GPU, where it has timestamps.
     timer: Option<FrameTimer>,
     /// The parts of the last frame the GPU finished.
@@ -468,6 +469,7 @@ impl Renderer {
                 focus_drawn: [None; SLOTS],
                 shown_frame: None,
                 glow: Default::default(),
+                crop: Default::default(),
                 timer: FrameTimer::new(&gpu, SLOTS),
                 gpu_times: None,
                 imports: Default::default(),
@@ -939,7 +941,9 @@ impl Renderer {
             let gave = self.comfort_focus.ingest(&scores, along);
             self.focus_log.read_back(gave);
         }
-        self.glow.read(self.current);
+        if let Some(bars) = self.glow.read(self.current) {
+            self.crop.measured(bars);
+        }
         if let Some(t) = self.timer.as_mut() {
             // Read before `begin` resets the queries for this frame.
             self.gpu_times = t.read(&self.gpu, self.current);
@@ -1266,6 +1270,7 @@ impl Renderer {
     fn forget_scene(&mut self) {
         self.hdr_peak.reset();
         self.glow.reset();
+        self.crop.reset();
         if let Some(p) = self.peak.as_mut() {
             p.discard();
         }
@@ -1675,6 +1680,11 @@ impl Renderer {
         self.glow.set(glow);
     }
 
+    /// Crops a flat video's black bars off its screen.
+    pub fn set_crop_bars(&mut self, on: bool) {
+        self.crop.set(on);
+    }
+
     /// Records both eye passes.
     pub fn draw(
         &mut self,
@@ -1743,7 +1753,12 @@ impl Renderer {
             cinema.room.fail();
             video.cinema = None;
         }
-        let mut p = params::build(&video, frame_desc.as_ref(), inv);
+        let now = std::time::Instant::now();
+        let flat = video.format.projection == fp_core::format::Projection::Flat
+            && self.slots[slot_idx].has_video
+            && frame_desc.is_some();
+        let crop = if flat { self.crop.shown(now) } else { [0.0; 2] };
+        let mut p = params::build(&video, frame_desc.as_ref(), inv, crop);
         if video.cinema.is_some() {
             let depth = eyes.map(|e| {
                 crate::cinema::screen_depth(
@@ -1757,8 +1772,8 @@ impl Renderer {
         }
         p.hdr = params::hdr_levels(self.hdr_peak.peak_nits());
         // Screen glow, round a flat screen on an opaque background: not in a
-        // cinema, nor over passthrough or a chroma key.
-        let now = std::time::Instant::now();
+        // cinema, nor over passthrough or a chroma key. Its measurements
+        // also find the bars a flat video's crop takes.
         let glow_shows = self.glow.wanted()
             && video.cinema.is_none()
             && p.mode[0] == 0
@@ -1767,7 +1782,8 @@ impl Renderer {
             && p.key2.z == 0.0
             && self.slots[slot_idx].has_video
             && frame_desc.is_some();
-        let (glow, measure_glow) = if glow_shows
+        let crop_measures = flat && self.crop.wanted();
+        let (glow, measure_glow) = if (glow_shows || crop_measures)
             && self.glow.prepare(
                 &self.gpu,
                 self.color_format,
@@ -1775,7 +1791,10 @@ impl Renderer {
                 (self.scene_pl, self.tp10_eyes.as_ref().map(|t| t.layout)),
                 SLOTS,
             ) {
-            (self.glow.apply(&mut p, now), self.glow.due(now))
+            (
+                glow_shows && self.glow.apply(&mut p, now),
+                self.glow.due(now),
+            )
         } else {
             self.glow.reset();
             (false, false)

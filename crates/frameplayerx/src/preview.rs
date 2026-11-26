@@ -38,6 +38,8 @@
 //! | `shot NAME` | save the left eye as OUT_DIR/NAME.png |
 //! | `sbs NAME` | save both eyes side by side |
 //! | `screen NAME [TAB]` | show a browser screen (`home`, `library`, `sources`, `settings` and its tab) |
+//! | `enter NAME` | open a folder of the listing on screen, as pressing it does |
+//! | `tab NAME` | press a tab in the top bar (`home`, `history`, `sources`, `settings`, `playlists`) |
 //! | `adjust [TAB]` | open the adjustments panel (at tab TAB) |
 //! | `tracks` | open the audio and subtitles picker |
 //! | `subtitle-preview [results|empty|unavailable|allowance|account]` | show a fixture for the OpenSubtitles panel |
@@ -75,6 +77,20 @@ struct Sim {
     frames: u64,
     gpu_ms: crate::perf::GpuWindow,
     out: std::path::PathBuf,
+}
+
+/// The screen a script names.
+fn screen_named(name: &str) -> Result<crate::ui::Screen, Error> {
+    use crate::ui::Screen;
+    Ok(match name {
+        "home" => Screen::Home,
+        "history" => Screen::History,
+        "sources" => Screen::Sources,
+        "settings" => Screen::Settings,
+        "playlists" => Screen::Playlists,
+        "upnext" => Screen::UpNext,
+        other => return Err(format!("no screen {other:?}").into()),
+    })
 }
 
 fn dir_quat(yaw: f32, pitch: f32) -> Quat {
@@ -249,24 +265,42 @@ impl Sim {
                     std::thread::sleep(Duration::from_millis(11));
                 }
             }
+            // Opens a folder of the listing on screen, as pressing it does:
+            // `enter NAME` (the name may contain spaces).
+            Some("enter") => {
+                let name = line.trim().strip_prefix("enter").unwrap_or("").trim();
+                let b = self
+                    .app
+                    .ui
+                    .folder_mut()
+                    .ok_or("no folder listing on screen")?;
+                let location = b
+                    .entries
+                    .iter()
+                    .find(|e| e.name == name)
+                    .map(|e| e.location.clone())
+                    .ok_or_else(|| format!("no folder {name:?} here"))?;
+                let list = b.enter(name, location);
+                self.app.apply(list);
+                self.app.repaint_all();
+                self.run_frames(3)?;
+            }
+            Some("tab") => {
+                let screen = screen_named(parts.get(1).copied().unwrap_or("home"))?;
+                self.app.ui.press_tab(screen);
+                self.app.repaint_all();
+                self.run_frames(3)?;
+            }
             Some("screen") => {
-                use crate::ui::{Screen, SettingsTab};
-                let screen = match parts.get(1).copied().unwrap_or("home") {
-                    "home" => Screen::Home,
-                    "history" => Screen::History,
-                    "sources" => Screen::Sources,
-                    "settings" => Screen::Settings,
-                    "playlists" => Screen::Playlists,
-                    "upnext" => Screen::UpNext,
-                    other => return Err(format!("no screen {other:?}").into()),
-                };
+                use crate::ui::SettingsTab;
+                let screen = screen_named(parts.get(1).copied().unwrap_or("home"))?;
                 let ui = &mut self.app.ui;
                 ui.screen = screen;
                 ui.details = None;
                 ui.remap_open = None;
                 ui.remap_grip = false;
-                // As the tab does: Sources shows the list, not a source or
-                // a form.
+                // At its top: Sources shows the list, not a source or a
+                // form.
                 ui.source = None;
                 ui.source_form = None;
                 ui.pin_form = None;
@@ -547,6 +581,65 @@ impl Sim {
                 self.app.repaint_all();
                 self.run_frames(3)?;
             }
+            // Send diagnostics, with WORDS written in it once gathered;
+            // `diagnostics shown WORDS` opens the report too, and saves it
+            // as diagnostics.txt.
+            Some("diagnostics") => {
+                self.app.apply(crate::ui::Action::OpenDiagnostics);
+                let shown = parts.get(1) == Some(&"shown");
+                let words = parts[if shown { 2 } else { 1 }.min(parts.len())..].join(" ");
+                for _ in 0..600 {
+                    if self
+                        .app
+                        .ui
+                        .diagnostics
+                        .as_ref()
+                        .is_none_or(|f| f.gathered.is_some())
+                    {
+                        break;
+                    }
+                    self.run_frames(1)?;
+                }
+                if let Some(f) = &mut self.app.ui.diagnostics {
+                    f.words = words;
+                    if shown {
+                        f.shown = Some((String::new(), String::new()));
+                    }
+                }
+                self.app.repaint_all();
+                self.run_frames(3)?;
+                if let Some((_, text)) = self
+                    .app
+                    .ui
+                    .diagnostics
+                    .as_ref()
+                    .and_then(|f| f.shown.as_ref())
+                {
+                    std::fs::write(self.out.join("diagnostics.txt"), text)?;
+                }
+            }
+            // The diagnostics page as after sending, with reference N.
+            Some("diagnostics-sent") => {
+                if let Some(f) = &mut self.app.ui.diagnostics {
+                    f.sent = true;
+                    f.reference = parts.get(1).and_then(|n| n.parse().ok());
+                }
+                self.app.repaint_all();
+                self.run_frames(3)?;
+            }
+            // What's New with every change this build holds, as after an
+            // upgrade from FROM (`whats-new 0.20.0`), else from a version
+            // not known.
+            Some("whats-new") => {
+                let current = fp_updater::Version::parse(env!("CARGO_PKG_VERSION"))
+                    .map_err(|e| e.to_string())?;
+                self.app.ui.whats_new = crate::whats_new::everything(&current).map(|mut w| {
+                    w.from = parts.get(1).map(ToString::to_string);
+                    w
+                });
+                self.app.repaint_all();
+                self.run_frames(3)?;
+            }
             // The page offered after a crash, its report made from this
             // run's log as if it had ended in a crash; `crash-report shown`
             // opens the report.
@@ -667,6 +760,22 @@ impl Sim {
             Some("grip") => self.hand.squeeze = num(1)?,
             Some("trigger") => self.hand.trigger = num(1)?,
             Some("status") => println!("status: {}", self.app.status_line()),
+            // The open video's decoding counters, without its name.
+            Some("stats") => {
+                if let Some(p) = &self.app.playback {
+                    let st = p.player.stats();
+                    println!(
+                        "stats: {} hardware={} shown={} dropped={} stalls={} ahead={:.1}/{:.1}",
+                        st.video_decoder,
+                        st.hardware,
+                        st.frames_shown,
+                        st.frames_dropped,
+                        st.stalls,
+                        st.read_ahead.0,
+                        st.read_ahead.1
+                    );
+                }
+            }
             // The GPU's time per frame since the last `gpu`: `gpu`.
             Some("gpu") => {
                 if let Some(line) = self.gpu_ms.take_line() {
@@ -722,6 +831,154 @@ impl Sim {
                 self.app.repaint_all();
                 self.run_frames(3)?;
             }
+            // Downloads a video, as its Download button does:
+            // `download SOURCE LOCATION` (the location without spaces).
+            Some("download") => {
+                let source = parts.get(1).ok_or("download needs a source")?.to_string();
+                let location = parts.get(2).ok_or("download needs a location")?.to_string();
+                let name = fp_sources::urlutil::last_segment(&location);
+                self.app.apply(crate::ui::Action::Download {
+                    req: crate::playback::OpenRequest {
+                        entry: Some(fp_sources::file_entry(
+                            name.clone(),
+                            location.clone(),
+                            None,
+                            None,
+                        )),
+                        location,
+                        source_id: Some(source),
+                        ..Default::default()
+                    },
+                    title: name,
+                });
+                self.run_frames(3)?;
+            }
+            // Downloads the first video found in a source, looking into its
+            // first folders in turn: `download-first SOURCE [LOCATION]`.
+            Some("download-first") => {
+                let source = parts
+                    .get(1)
+                    .ok_or("download-first needs a source")?
+                    .to_string();
+                let (_, opener) = self.app.downloads();
+                let src = opener.source(&source).ok_or("no such source")?;
+                let mut at = parts.get(2).map(|l| (*l).to_string());
+                let mut found = None;
+                for _ in 0..6 {
+                    let entries = src.list(at.as_deref())?;
+                    if let Some(video) = entries
+                        .iter()
+                        .find(|e| e.kind == fp_core::source::EntryKind::Video)
+                    {
+                        found = Some(video.clone());
+                        break;
+                    }
+                    match entries
+                        .iter()
+                        .find(|e| e.kind == fp_core::source::EntryKind::Directory)
+                    {
+                        Some(folder) => at = Some(folder.location.clone()),
+                        None => break,
+                    }
+                }
+                let video = found.ok_or("no video found")?;
+                println!("downloading {} ({:?} bytes)", video.name, video.size);
+                self.app.apply(crate::ui::Action::Download {
+                    req: crate::playback::OpenRequest {
+                        location: video.location.clone(),
+                        source_id: Some(source),
+                        title: Some(video.name.clone()),
+                        entry: Some(video.clone()),
+                        ..Default::default()
+                    },
+                    title: video.name,
+                });
+                self.run_frames(3)?;
+            }
+            // Waits up to SECS for the downloads to finish, saying how they
+            // go every few seconds: `wait-downloads SECS`.
+            Some("wait-downloads") => {
+                let until = Instant::now() + Duration::from_secs_f32(num(1)?);
+                let mut said = Instant::now();
+                // A download is noted once its server answers.
+                let started = Instant::now();
+                while Instant::now() < until {
+                    if self.step()? {
+                        return Ok(true);
+                    }
+                    let (downloads, _) = self.app.downloads();
+                    let progress = downloads.progress();
+                    let waiting = self
+                        .app
+                        .library()
+                        .all_downloads()?
+                        .iter()
+                        .any(|(_, d)| d.state == fp_library::DownloadState::Waiting);
+                    if said.elapsed() >= Duration::from_secs(5) {
+                        said = Instant::now();
+                        if let Some(p) = progress {
+                            println!(
+                                "download {}: {} of {:?} bytes, {:.1} MB/s",
+                                p.media_id,
+                                p.received,
+                                p.size,
+                                p.speed / 1e6
+                            );
+                        }
+                    }
+                    if !waiting && started.elapsed() > Duration::from_secs(3) {
+                        break;
+                    }
+                    std::thread::sleep(Duration::from_millis(11));
+                }
+                for (location, d) in self.app.library().all_downloads()? {
+                    println!(
+                        "{location}: {:?}, {} of {:?} bytes, {} subtitles, {} scripts {}",
+                        d.state,
+                        d.received,
+                        d.size,
+                        d.subtitles.len(),
+                        d.scripts.len(),
+                        d.error.unwrap_or_default()
+                    );
+                }
+            }
+            // A source's downloads, as pressing it in Downloads shows them:
+            // `downloads-of SOURCE`.
+            Some("downloads-of") => {
+                let source = parts
+                    .get(1)
+                    .ok_or("downloads-of needs a source")?
+                    .to_string();
+                self.app.open_downloads_of(source);
+                self.app.repaint_all();
+                self.run_frames(3)?;
+            }
+            // A folder row's ⋯ sheet for a video: `folder-sheet SOURCE
+            // LOCATION` (the location without spaces).
+            Some("folder-sheet") => {
+                let source = parts
+                    .get(1)
+                    .ok_or("folder-sheet needs a source")?
+                    .to_string();
+                let location = parts
+                    .get(2)
+                    .ok_or("folder-sheet needs a location")?
+                    .to_string();
+                let name = fp_sources::urlutil::last_segment(&location);
+                self.app.ui.screen = crate::ui::Screen::Sources;
+                self.app.ui.picking = Some(crate::ui::Picking {
+                    reqs: vec![crate::playback::OpenRequest {
+                        location,
+                        source_id: Some(source),
+                        ..Default::default()
+                    }],
+                    title: name,
+                    from_row: true,
+                });
+                self.app.repaint_all();
+                self.run_frames(3)?;
+            }
             // The order of the folder being browsed: `browse-sort newest`.
             Some("browse-sort") => {
                 let name = parts.get(1).ok_or("browse-sort needs an order")?;
@@ -741,10 +998,7 @@ impl Sim {
                     .get(1)
                     .ok_or("open-source needs a source")?
                     .to_string();
-                self.app.apply(crate::ui::Action::OpenSource {
-                    source,
-                    back_to: crate::ui::Screen::Home,
-                });
+                self.app.apply(crate::ui::Action::OpenSource(source));
                 self.app.repaint_all();
                 self.run_frames(3)?;
             }
@@ -870,7 +1124,8 @@ impl Sim {
                     limit: Some(1),
                     ..Default::default()
                 })?;
-                self.app.ui.details = first.first().map(|r| r.id);
+                let on = self.app.ui.screen;
+                self.app.ui.details = first.first().map(|r| (on, r.id));
                 self.app.repaint_all();
                 self.run_frames(3)?;
             }
@@ -890,7 +1145,7 @@ impl Sim {
                 self.app.ui.picking = Some(crate::ui::Picking {
                     reqs,
                     title,
-                    with_delete: false,
+                    from_row: false,
                 });
                 self.app.repaint_all();
                 self.run_frames(3)?;
@@ -940,6 +1195,16 @@ impl Sim {
                 self.app.repaint_all();
                 self.run_frames(3)?;
             }
+            // Removes a source, as its form's Remove does: `remove-source SOURCE`.
+            Some("remove-source") => {
+                let source = parts
+                    .get(1)
+                    .ok_or("remove-source needs a source")?
+                    .to_string();
+                self.app.apply(crate::ui::Action::RemoveSource(source));
+                self.app.repaint_all();
+                self.run_frames(3)?;
+            }
             // `unlock SOURCE PIN`, as the PIN form does.
             Some("unlock") => {
                 let source = parts.get(1).ok_or("unlock needs a source")?.to_string();
@@ -949,7 +1214,8 @@ impl Sim {
                 self.app.repaint_all();
                 self.run_frames(3)?;
             }
-            // The PIN form of a source: `pin-form SOURCE [set] [wrong]`.
+            // The PIN form of a source: `pin-form SOURCE [set] [wrong]
+            // [downloads]` (asked for from Downloads).
             Some("pin-form") => {
                 let source = parts.get(1).ok_or("pin-form needs a source")?.to_string();
                 let name = self.app.source_name(&source);
@@ -959,6 +1225,7 @@ impl Sim {
                     name,
                     set: parts.contains(&"set"),
                     wrong: parts.contains(&"wrong"),
+                    downloads: parts.contains(&"downloads"),
                     ..Default::default()
                 });
                 self.app.repaint_all();

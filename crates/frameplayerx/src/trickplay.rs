@@ -1,9 +1,14 @@
-//! Decodes one preview sheet on a worker and hands the UI only the tile
-//! underneath the seek pointer. The worker owns no renderer resources.
+//! Pictures over the seek bar, made on a worker that hands the UI only the
+//! tile underneath the seek pointer: from the server's preview sheets, or,
+//! for a video without them, live from the keyframe at that moment in the
+//! file. The worker owns no renderer resources.
 
+use crate::services::Opener;
 use crossbeam_channel::{Receiver, RecvTimeoutError, Sender, bounded};
 use egui::ColorImage;
 use fp_core::Entry;
+use fp_media::thumb::{Crop, Grabber};
+use fp_sources::urlutil::last_segment;
 use fp_sources::{
     Source, TRICKPLAY_MAX_DIMENSION, TRICKPLAY_MAX_PIXELS, TRICKPLAY_SHEET_BYTES, Trickplay,
     TrickplayTiming,
@@ -12,10 +17,13 @@ use image::{DynamicImage, ImageReader, Limits};
 use std::io::Cursor;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 const TILE_WIDTH: u32 = 256;
 const TILE_HEIGHT: u32 = 144;
+/// Live pictures kept, about 9 MB: going back and forth along the bar
+/// decodes nothing again.
+const LIVE_TILES: usize = 64;
 
 /// Per-playback request state. A closed playback cancels its requests and
 /// lets the worker discard the sheet, even if another video never opens.
@@ -28,12 +36,25 @@ pub(crate) struct Preview {
     current: Option<FrameRange>,
     failed: Option<FrameRange>,
     tile: Option<ColorImage>,
+    /// The eye a live picture shows, as the video's format has it.
+    crop: Crop,
 }
 
 struct Query {
-    source: Arc<dyn Source>,
-    entry: Entry,
-    cancelled: AtomicBool,
+    kind: Kind,
+    /// Also stops a live preview's reads in progress.
+    cancelled: Arc<AtomicBool>,
+}
+
+enum Kind {
+    /// The server's preview sheets.
+    Server(Arc<dyn Source>, Box<Entry>),
+    /// Keyframes decoded from the file, read anew through the opener.
+    Live {
+        opener: Arc<Opener>,
+        source_id: Option<String>,
+        location: String,
+    },
 }
 
 impl Query {
@@ -51,6 +72,7 @@ struct Position {
 struct Job {
     query: Arc<Query>,
     at: Position,
+    crop: Crop,
     reply: Sender<Reply>,
 }
 
@@ -74,16 +96,28 @@ enum Reply {
 }
 
 impl Preview {
+    /// The server's previews of `entry`, if it has them.
     pub fn new(source: Arc<dyn Source>, entry: &Entry) -> Option<Self> {
-        if !source.has_trickplay(entry) {
-            return None;
-        }
+        source
+            .has_trickplay(entry)
+            .then(|| Self::with(Kind::Server(source, Box::new(entry.clone()))))
+    }
+
+    /// Pictures made from `location` itself as the pointer moves.
+    pub fn live(opener: Arc<Opener>, source_id: Option<String>, location: String) -> Self {
+        Self::with(Kind::Live {
+            opener,
+            source_id,
+            location,
+        })
+    }
+
+    fn with(kind: Kind) -> Self {
         let (send, receive) = bounded(1);
-        Some(Self {
+        Self {
             query: Arc::new(Query {
-                source,
-                entry: entry.clone(),
-                cancelled: AtomicBool::new(false),
+                kind,
+                cancelled: Arc::new(AtomicBool::new(false)),
             }),
             send,
             receive,
@@ -92,14 +126,30 @@ impl Preview {
             current: None,
             failed: None,
             tile: None,
-        })
+            crop: Crop::Full,
+        }
     }
 
     /// Whether there is a picture to show for `hover`: its own, or while
     /// that loads, the one the pointer was on a moment ago, so moving along
     /// the bar doesn't blink. A newly decoded tile can then be taken once for
-    /// upload by the panel that owns it.
-    pub fn update(&mut self, hover: Option<f64>, duration: f64) -> bool {
+    /// upload by the panel that owns it. A live preview shows the `crop`
+    /// eye, and only reads the file while `may_read`, so that it never
+    /// takes from a stream that isn't well ahead.
+    pub fn update(
+        &mut self,
+        hover: Option<f64>,
+        duration: f64,
+        crop: Crop,
+        may_read: bool,
+    ) -> bool {
+        let live = matches!(self.query.kind, Kind::Live { .. });
+        if live && crop != self.crop {
+            self.crop = crop;
+            self.current = None;
+            self.failed = None;
+            self.tile = None;
+        }
         if let Ok(reply) = self.receive.try_recv() {
             self.pending = false;
             match reply {
@@ -130,12 +180,14 @@ impl Preview {
             .is_some_and(|range| range.contains(seconds, duration))
             && !self.pending
             && !self.unavailable
+            && (may_read || !live)
         {
             if let Some(worker) = worker() {
                 self.pending = worker
                     .try_send(Job {
                         query: self.query.clone(),
                         at: Position { seconds, duration },
+                        crop,
                         reply: self.send.clone(),
                     })
                     .is_ok();
@@ -171,10 +223,32 @@ fn worker() -> Option<&'static Sender<Job>> {
         .as_ref()
 }
 
+/// What the worker keeps of the video previewed last.
+enum Cache {
+    Sheets(SheetCache),
+    Live(Box<LiveCache>),
+}
+
+impl Cache {
+    fn query(&self) -> &Arc<Query> {
+        match self {
+            Cache::Sheets(c) => &c.query,
+            Cache::Live(c) => &c.query,
+        }
+    }
+
+    fn tile(&mut self, at: Position, crop: Crop) -> Option<Reply> {
+        match self {
+            Cache::Sheets(c) => c.tile(at),
+            Cache::Live(c) => c.tile(at, crop),
+        }
+    }
+}
+
 fn run_worker(receive: &Receiver<Job>) {
-    let mut cache: Option<SheetCache> = None;
+    let mut cache: Option<Cache> = None;
     loop {
-        if cache.as_ref().is_some_and(|c| c.query.cancelled()) {
+        if cache.as_ref().is_some_and(|c| c.query().cancelled()) {
             cache = None;
         }
         let job = match if cache.is_some() {
@@ -191,20 +265,27 @@ fn run_worker(receive: &Receiver<Job>) {
         }
         if !cache
             .as_ref()
-            .is_some_and(|c| Arc::ptr_eq(&c.query, &job.query))
+            .is_some_and(|c| Arc::ptr_eq(c.query(), &job.query))
         {
-            cache = None;
-            if let Ok(Some(provider)) = job.query.source.trickplay(&job.query.entry) {
-                cache = Some(SheetCache {
+            cache = match &job.query.kind {
+                Kind::Server(source, entry) => match source.trickplay(entry) {
+                    Ok(Some(provider)) => Some(Cache::Sheets(SheetCache {
+                        query: job.query.clone(),
+                        provider,
+                        sheets: Vec::new(),
+                    })),
+                    _ => None,
+                },
+                Kind::Live { .. } => Some(Cache::Live(Box::new(LiveCache {
                     query: job.query.clone(),
-                    provider,
-                    sheets: Vec::new(),
-                });
-            }
+                    grabber: None,
+                    tiles: Vec::new(),
+                }))),
+            };
         }
         let reply = cache
             .as_mut()
-            .and_then(|c| c.tile(job.at))
+            .and_then(|c| c.tile(job.at, job.crop))
             .unwrap_or(Reply::Unavailable);
         if matches!(reply, Reply::Unavailable) {
             cache = None;
@@ -330,6 +411,93 @@ impl SheetCache {
     }
 }
 
+/// A video's file, opened for its keyframes, and the pictures made from
+/// them, the most recently used last.
+struct LiveCache {
+    query: Arc<Query>,
+    grabber: Option<Grabber>,
+    /// Each picture's stretch of the bar and eye.
+    tiles: Vec<(u32, Crop, ColorImage)>,
+}
+
+impl LiveCache {
+    /// The picture for the stretch of the bar `at` is in; `None` when the
+    /// file can't be opened for them.
+    fn tile(&mut self, at: Position, crop: Crop) -> Option<Reply> {
+        let step = live_step(at.duration);
+        let stretch = (at.seconds / step).floor() as u32;
+        let range = FrameRange {
+            duration: at.duration,
+            bounds: [f64::from(stretch) * step, f64::from(stretch + 1) * step],
+        };
+        if let Some(i) = self
+            .tiles
+            .iter()
+            .position(|(s, c, _)| *s == stretch && *c == crop)
+        {
+            let tile = self.tiles.remove(i);
+            let image = tile.2.clone();
+            self.tiles.push(tile);
+            return Some(Reply::Tile(range, image));
+        }
+        if self.grabber.is_none() {
+            let Kind::Live {
+                opener,
+                source_id,
+                location,
+            } = &self.query.kind
+            else {
+                return None;
+            };
+            let opened = opener
+                .open_in(source_id.as_deref(), location)
+                .and_then(|src| {
+                    Grabber::open(src, &last_segment(location), self.query.cancelled.clone())
+                        .map_err(|e| e.to_string())
+                });
+            match opened {
+                Ok(g) => self.grabber = Some(g),
+                Err(e) => {
+                    log::info!("no live seek previews: {e}");
+                    return None;
+                }
+            }
+        }
+        let grabber = self.grabber.as_mut()?;
+        // The middle of its stretch, so the picture is never from after it.
+        let moment = ((f64::from(stretch) + 0.5) * step).min(at.duration);
+        let started = Instant::now();
+        match grabber.keyframe_before(moment, TILE_WIDTH, TILE_HEIGHT, crop) {
+            Ok((picture, _)) => {
+                log::debug!(
+                    "live seek preview at {moment:.1} s in {} ms",
+                    started.elapsed().as_millis()
+                );
+                let image = ColorImage::from_rgba_unmultiplied(
+                    [picture.width as usize, picture.height as usize],
+                    &picture.pixels,
+                );
+                self.tiles.push((stretch, crop, image.clone()));
+                if self.tiles.len() > LIVE_TILES {
+                    self.tiles.remove(0);
+                }
+                Some(Reply::Tile(range, image))
+            }
+            Err(_) if self.query.cancelled() => None,
+            Err(e) => {
+                log::info!("live seek preview at {moment:.1} s: {e}");
+                Some(Reply::Failed(range))
+            }
+        }
+    }
+}
+
+/// How much of a video one live picture stands for: about 500 along the
+/// bar, between 1 and 10 seconds each, as servers space theirs.
+fn live_step(duration: f64) -> f64 {
+    (duration / 500.0).clamp(1.0, 10.0)
+}
+
 /// Where tile `within` of a sheet `columns` tiles wide is: x, y, width,
 /// height.
 fn tile_at(within: u32, columns: u32, [width, height]: [u32; 2]) -> Option<[u32; 4]> {
@@ -395,5 +563,39 @@ mod tests {
         }
         assert_eq!(frame_at(0.0, 0.0, 4), None);
         assert_eq!(frame_at(0.0, 5.0, 0), None);
+    }
+
+    #[test]
+    fn live_pictures_stand_for_a_few_seconds_each() {
+        assert_eq!(live_step(60.0), 1.0);
+        assert_eq!(live_step(1500.0), 3.0);
+        assert_eq!(live_step(7200.0), 10.0);
+    }
+
+    #[test]
+    fn a_live_preview_shows_the_keyframe_of_the_moment_pointed_at() {
+        let file = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../fp-media/tests/data/h264_aac_180_LR.mp4");
+        let mut p = Preview::live(
+            Arc::new(Opener::new()),
+            None,
+            file.to_string_lossy().into_owned(),
+        );
+        let until = Instant::now() + Duration::from_secs(20);
+        let mut shown = false;
+        while Instant::now() < until {
+            if p.update(Some(1.2), 2.0, Crop::LeftHalf, true) {
+                shown = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(shown, "no picture");
+        let tile = p.take_tile().expect("a new tile");
+        assert_eq!(tile.size, [144, 144], "the left eye, as large as fits");
+        // Not while the stream isn't ahead.
+        let mut q = Preview::live(Arc::new(Opener::new()), None, "/nowhere.mp4".into());
+        q.update(Some(1.0), 2.0, Crop::Full, false);
+        assert!(!q.pending);
     }
 }

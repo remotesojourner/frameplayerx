@@ -1,6 +1,6 @@
 //! Sources: the list, the browser each kind gets, adding one, PINs.
 
-use super::page::{self, Card};
+use super::page::{self, Card, Go};
 use super::theme::{self, Weight};
 use super::widgets::{self, Kind, ListArea, Tip};
 use super::{Action, Back, PinForm, QuickConnect, Screen, SourceForm, SourcePage, View, icons};
@@ -125,8 +125,8 @@ struct Row {
     lock: Lock,
 }
 
-/// The headset first, then the sources the user added.
-fn rows(v: &View) -> Vec<Row> {
+/// The headset first, then its downloads, then the sources the user added.
+fn rows(v: &mut View) -> Vec<Row> {
     let local = Row {
         id: crate::services::LOCAL_HUB.into(),
         name: local_name().into(),
@@ -136,7 +136,28 @@ fn rows(v: &View) -> Vec<Row> {
         builtin: true,
         lock: Lock::None,
     };
-    std::iter::once(local)
+    // Counted from the sources not locked only, so it gives none away.
+    let total = super::downloads::total(&super::downloads::counts(v));
+    let downloads = Row {
+        id: crate::services::DOWNLOADS_HUB.into(),
+        name: tr!("downloads").into(),
+        desc: if total.videos == 0 {
+            tr!("downloads-desc").into()
+        } else {
+            super::downloads::summary(&total)
+        },
+        facts: if total.videos == 0 {
+            tr!("downloads-none").into()
+        } else {
+            tr!("downloads-count", count = total.videos)
+        },
+        icon: icons::DOWNLOAD_SIMPLE,
+        builtin: true,
+        lock: Lock::None,
+    };
+    let v = &*v;
+    [local, downloads]
+        .into_iter()
         .chain(v.services.source_configs.iter().map(|c| {
             let lock = lock_of(v, c.id());
             let kind = match c {
@@ -179,6 +200,7 @@ pub fn sources(ui: &mut egui::Ui, v: &mut View) {
     if v.state.source_form.is_some() {
         // Editing adds the PIN rows: taller than the panel.
         egui::ScrollArea::vertical()
+            .id_salt("source-form")
             .auto_shrink(false)
             .show_list(ui, |ui| add_form(ui, v));
         return;
@@ -187,28 +209,35 @@ pub fn sources(ui: &mut egui::Ui, v: &mut View) {
         browse(ui, v);
         return;
     }
-    page_header(ui, tr!("nav-sources"), Some(tr!("sources-desc")), |ui| {
+    let desc = if v.settings.watch_history {
+        tr!("sources-desc")
+    } else {
+        tr!("sources-desc-no-history")
+    };
+    page_header(ui, tr!("nav-sources"), Some(desc), |ui| {
         if widgets::button(ui, Some(icons::PLUS), tr!("sources-add"), Kind::Primary).clicked() {
             v.state.source_form = Some(SourceForm::default());
         }
     });
-    egui::ScrollArea::vertical().show_list(ui, |ui| {
-        widgets::section_label(ui, tr!("sources-heading"));
-        ui.add_space(4.0);
-        widgets::card(ui, |ui| {
-            for (i, row) in rows(v).into_iter().enumerate() {
-                if i > 0 {
-                    let x = ui.max_rect().x_range();
-                    ui.painter().hline(
-                        (x.min + 84.0)..=(x.max - 16.0),
-                        ui.cursor().top(),
-                        egui::Stroke::new(1.0_f32, theme::STROKE),
-                    );
+    egui::ScrollArea::vertical()
+        .id_salt("sources")
+        .show_list(ui, |ui| {
+            widgets::section_label(ui, tr!("sources-heading"));
+            ui.add_space(4.0);
+            widgets::card(ui, |ui| {
+                for (i, row) in rows(v).into_iter().enumerate() {
+                    if i > 0 {
+                        let x = ui.max_rect().x_range();
+                        ui.painter().hline(
+                            (x.min + 84.0)..=(x.max - 16.0),
+                            ui.cursor().top(),
+                            egui::Stroke::new(1.0_f32, theme::STROKE),
+                        );
+                    }
+                    list_row(ui, v, row);
                 }
-                list_row(ui, v, row);
-            }
+            });
         });
-    });
 }
 
 fn list_row(ui: &mut egui::Ui, v: &mut View, row: Row) {
@@ -288,10 +317,7 @@ fn list_row(ui: &mut egui::Ui, v: &mut View, row: Row) {
                     )
                     .clicked()
                     {
-                        v.actions.push(Action::OpenSource {
-                            source: id.clone(),
-                            back_to: Screen::Sources,
-                        });
+                        v.actions.push(Action::OpenSource(id.clone()));
                     }
                 });
             });
@@ -303,37 +329,27 @@ fn browse(ui: &mut egui::Ui, v: &mut View) {
     let Some(mut sv) = v.state.source.take() else {
         return;
     };
-    let kind = v
-        .services
-        .source_config(&sv.source)
-        .map(|c| kind_label(c.kind()))
-        .unwrap_or(tr!("sources-folder"));
-    let back = match &mut sv.page {
-        SourcePage::Folders(b) => {
-            let address = v
-                .services
-                .opener
-                .source(&sv.source)
-                .and_then(|s| s.display_location(b.location.as_deref()));
-            super::folders::page(ui, v, &sv.name, kind, address, b)
-        }
-        SourcePage::Local(l) => super::local::page(ui, v, l),
-        SourcePage::Library(l) => super::local::library_page(ui, v, &sv.source, &sv.name, l),
-        SourcePage::Catalog(j) => super::catalog::page(ui, v, &sv.source, &sv.name, j),
-        SourcePage::Feed(f) => super::feeds::page(ui, v, &sv.source, &sv.name, f),
+    // The list of sources first, then the source's own places.
+    let mut trail = vec![tr!("nav-sources").to_string()];
+    trail.extend(sv.trail());
+    let go = match &mut sv.page {
+        SourcePage::Folders(b) => super::folders::page(ui, v, &trail, b),
+        SourcePage::Local(l) => super::local::page(ui, v, &trail, l),
+        SourcePage::Library(l) => super::local::library_page(ui, v, &sv.source, &trail, l),
+        SourcePage::Catalog(j) => super::catalog::page(ui, v, &sv.source, &trail, j),
+        SourcePage::Feed(f) => super::feeds::page(ui, v, &sv.source, &trail, f),
+        SourcePage::Downloads(d) => super::downloads::page(ui, v, &trail, d),
     };
-    if back {
-        match sv.back() {
-            Back::Done => {}
-            Back::Parent(a) => v.actions.push(*a),
-            Back::Leave => {
-                v.state.screen = sv.back_to;
-                if sv.back_to == Screen::Home {
-                    v.state.home = None;
-                }
-                return;
-            }
-        }
+    let step = match go {
+        None => Back::Done,
+        Some(Go::Back) => sv.back(),
+        Some(Go::To(0)) => Back::Leave,
+        Some(Go::To(place)) => sv.up_to(place - 1),
+    };
+    match step {
+        Back::Done => {}
+        Back::Parent(a) => v.actions.push(*a),
+        Back::Leave => return,
     }
     // Something on the page may have opened another source meanwhile.
     if v.state.source.is_none() {
@@ -371,14 +387,16 @@ fn edit(v: &mut View, id: &str) {
     }
 }
 
-/// Home's row of sources: each opens its browser, the last adds one.
-/// Locked sources stay out of it until unlocked under Sources.
-pub fn source_row(ui: &mut egui::Ui, v: &mut View, back_to: Screen) {
+/// Home's sources: each opens its browser, the last adds one. In a row
+/// that scrolls sideways, or with `grid`, when nothing is above them, in
+/// rows filling the page. Locked sources stay out until unlocked under
+/// Sources.
+pub fn source_row(ui: &mut egui::Ui, v: &mut View, grid: bool) {
     let rows: Vec<Row> = rows(v)
         .into_iter()
         .filter(|r| r.lock != Lock::Locked)
         .collect();
-    page::carousel(ui, tr!("nav-sources"), None, rows.len() + 1, |ui, i| {
+    let add = |ui: &mut egui::Ui, i: usize| {
         let Some(row) = rows.get(i) else {
             let c = page::card(
                 ui,
@@ -424,12 +442,16 @@ pub fn source_row(ui: &mut egui::Ui, v: &mut View, back_to: Screen) {
         if c.action {
             lock_source(v, &row.id, &row.name);
         } else if c.open {
-            v.actions.push(Action::OpenSource {
-                source: row.id.clone(),
-                back_to,
-            });
+            v.actions.push(Action::OpenSource(row.id.clone()));
         }
-    });
+    };
+    let n = rows.len() + 1;
+    if grid {
+        page::section_title(ui, tr!("nav-sources"), None);
+        page::grid(ui, n, page::LANDSCAPE.x, add);
+    } else {
+        page::carousel(ui, tr!("nav-sources"), None, n, add);
+    }
 }
 
 /// Unlocks a source, or sets, changes or removes its PIN.
@@ -651,7 +673,7 @@ fn remove_button(ui: &mut egui::Ui, f: &mut SourceForm) -> bool {
         tr!("source-remove-confirm"),
         |ui, label, kind| {
             widgets::button_sized(ui, Some(icons::TRASH), label, kind, 44.0)
-                .tip(tr!("sources-remove"))
+                .tip(tr!("sources-remove-all"))
         },
     )
 }
@@ -1045,7 +1067,7 @@ fn server_form(
                 );
                 r.switch(
                     tr!("source-parallel-downloads"),
-                    Some(tr!("source-parallel-downloads-desc")),
+                    Some(tr!("source-parallel-downloads-play-desc")),
                     &mut f.parallel_downloads,
                 );
             }

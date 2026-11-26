@@ -20,17 +20,9 @@ pub enum PlayAllStatus {
     },
 }
 
-/// A folder listing of `b` under `title` (the source), the folder it is in
-/// underneath: `address` when the source gives one, else `root` at the top
-/// and the folder's location below it; true when Back was clicked.
-pub fn page(
-    ui: &mut egui::Ui,
-    v: &mut View,
-    title: &str,
-    root: &str,
-    address: Option<String>,
-    b: &mut Browse,
-) -> bool {
+/// A folder listing of `b` under the way to it, `trail`; what was pressed
+/// on the header.
+pub fn page(ui: &mut egui::Ui, v: &mut View, trail: &[String], b: &mut Browse) -> Option<page::Go> {
     let words: Vec<String> = b.filter.split_whitespace().map(str::to_lowercase).collect();
     let shown: Vec<Entry> = b
         .entries
@@ -47,13 +39,8 @@ pub fn page(
         .filter(|e| e.kind == EntryKind::Video)
         .collect();
     let has_subfolders = b.entries.iter().any(|e| e.kind == EntryKind::Directory);
-    let subtitle = match (address, &b.location) {
-        (Some(address), _) => shorten(&address),
-        (None, Some(l)) => short_location(l),
-        (None, None) => root.to_string(),
-    };
     let (mut refresh, mut play_all) = (false, false);
-    let back = page::header(ui, title, Some(&subtitle), |ui| {
+    let back = page::trail_header(ui, trail, None, |ui| {
         refresh = widgets::icon_button(ui, icons::ARROWS_CLOCKWISE, 44.0, false)
             .tip(tr!("feed-refresh"))
             .clicked();
@@ -150,50 +137,53 @@ pub fn page(
             location: b.location.clone(),
         });
     }
-    let mut go: Option<String> = None;
-    egui::ScrollArea::vertical()
+    let mut go: Option<(String, String)> = None;
+    // A folder's own place, once its listing is here: the previous one's
+    // rows stay on show while it loads.
+    let mut area = egui::ScrollArea::vertical()
         .auto_shrink(false)
-        .show_list(ui, |ui| {
-            if shown.is_empty() && !b.loading && b.error.is_none() {
-                ui.add_space(30.0);
-                ui.vertical_centered(|ui| {
-                    let text = if words.is_empty() {
-                        tr!("folders-empty")
-                    } else {
-                        tr!("folders-no-match")
-                    };
-                    ui.label(egui::RichText::new(text).color(theme::TEXT_2));
+        .id_salt(("folders", &b.source));
+    if !b.placed && !b.loading {
+        area = area.vertical_scroll_offset(b.scrolled.get(&b.location).copied().unwrap_or(0.0));
+        b.placed = true;
+    }
+    let listed = area.show_list(ui, |ui| {
+        if shown.is_empty() && !b.loading && b.error.is_none() {
+            ui.add_space(30.0);
+            ui.vertical_centered(|ui| {
+                let text = if words.is_empty() {
+                    tr!("folders-empty")
+                } else {
+                    tr!("folders-no-match")
+                };
+                ui.label(egui::RichText::new(text).color(theme::TEXT_2));
+            });
+        }
+        for e in &shown {
+            let (open, more) = row(ui, v, e);
+            if more {
+                v.state.picking = Some(super::Picking {
+                    reqs: queue(&[e]),
+                    title: e.name.clone(),
+                    from_row: true,
                 });
-            }
-            for e in &shown {
-                let (open, more) = row(ui, v, e);
-                if more {
-                    v.state.picking = Some(super::Picking {
-                        reqs: queue(&[e]),
-                        title: e.name.clone(),
-                        with_delete: true,
-                    });
-                } else if open {
-                    match e.kind {
-                        EntryKind::Directory => go = Some(e.location.clone()),
-                        _ => {
-                            if let Some(req) = queue(&[e]).pop() {
-                                v.actions.push(Action::Open(req));
-                            }
+            } else if open {
+                match e.kind {
+                    EntryKind::Directory => go = Some((e.name.clone(), e.location.clone())),
+                    _ => {
+                        if let Some(req) = queue(&[e]).pop() {
+                            v.actions.push(Action::Open(req));
                         }
                     }
                 }
             }
-        });
-    if let Some(loc) = go {
-        b.stack.push(b.location.clone());
-        b.location = Some(loc.clone());
-        b.loading = true;
-        b.filter.clear();
-        v.actions.push(Action::Browse {
-            source: b.source.clone(),
-            location: Some(loc),
-        });
+        }
+    });
+    if b.placed && !b.loading {
+        b.offset = listed.state.offset.y;
+    }
+    if let Some((name, location)) = go {
+        v.actions.push(b.enter(&name, location));
     }
     back
 }
@@ -368,26 +358,4 @@ fn row(ui: &mut egui::Ui, v: &mut View, e: &Entry) -> (bool, bool) {
         more = m.tip(tip).clicked();
     }
     (resp.clicked() && !more, more)
-}
-
-fn short_location(l: &str) -> String {
-    let l = crate::libraries::display_location(l);
-    shorten(l.split('#').next().unwrap_or(&l))
-}
-
-/// `l`, or its last 57 characters after an ellipsis when longer than 60.
-fn shorten(l: &str) -> String {
-    if l.chars().count() > 60 {
-        let tail: String = l
-            .chars()
-            .rev()
-            .take(57)
-            .collect::<Vec<_>>()
-            .into_iter()
-            .rev()
-            .collect();
-        format!("…{tail}")
-    } else {
-        l.to_string()
-    }
 }

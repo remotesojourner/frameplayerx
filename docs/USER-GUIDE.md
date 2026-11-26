@@ -103,7 +103,9 @@ FramePlayerX checks for a new version each time it starts, but doesn't
 install it by itself. To update, open **Settings › Updates**: when a new
 version is out it's listed there with what changed. Press **Download and
 install**, then **Restart now**. **Check now** looks again without
-restarting.
+restarting. The first start of the new version shows **What's new**: the
+features, fixes and speed-ups since the version you used before, so on
+Beta each test version shows only its own.
 
 The **Stable** channel gets finished releases only; **Beta** also gets
 test versions before they are released. Switch off **Check for updates at
@@ -511,13 +513,14 @@ scenes from last time while the server sends the current list
 The pencil next to a source under **Sources** opens its details: rename
 it, change its address, user name and password or its PIN, or remove it
 with **Remove source** at the top, which turns red as *Remove it?* and
-removes the source when pressed again within 4 seconds. Its type stays; a Jellyfin server signed in with Quick Connect keeps that sign-in
+removes the source when pressed again within 4 seconds, forgetting all its
+videos, watched or not. Its type stays; a Jellyfin server signed in with Quick Connect keeps that sign-in
 unless you clear it.
 
 When a server's address, IP address or root folder changes, edit the
 source rather than adding it again: history, resume points, playlists and
-adjustments follow it, while a removed and added source is a different
-one. HTTP(S), WebDAV, SMB, SFTP and NFS sources keep paths relative to
+adjustments follow it, while removing the source forgets them all.
+HTTP(S), WebDAV, SMB, SFTP and NFS sources keep paths relative to
 their root, Jellyfin and Emby item and version IDs, DLNA object IDs, and
 Plex its server and item IDs. A feed keeps scene, media and picture
 addresses as published, unless a scene ID it gives allows looking it up
@@ -531,7 +534,8 @@ recovered from a new server address alone.
 the headset, press the padlock next to it under **Sources** (or on its
 tile on Home) and choose a PIN (4 to 8 digits). While it is locked it
 can't be browsed, it is left off Home, and its videos are left out of the
-watch history, search and the phone remote; opening one asks for the PIN.
+watch history, search, Downloads and the phone remote; opening one asks for
+the PIN.
 **Unlock** opens it until FramePlayerX restarts; one press of the padlock
 locks it again. To change the PIN or remove it, edit the source; removing
 the source removes its PIN too. This keeps guests out, it doesn't encrypt
@@ -542,7 +546,8 @@ same videos.
 
 **Parallel downloads:** a server's form has this switch, off to begin
 with. On, FramePlayerX downloads several parts of a video at once over
-separate connections while it plays, the way some download managers do.
+separate connections while it plays, the way some download managers do and
+[downloading a video](#downloading-a-video) always does.
 This helps if the server limits the speed of each connection. If it
 doesn't, the switch may gain nothing, and a server on hard drives can get
 slower, because the drives have to jump between parts of the file. SMB and
@@ -556,13 +561,23 @@ frameplayerx.log and not sent again.
 ## Browsing and history
 
 **Home** opens on what you were watching (a banner to resume, then
-*Continue watching* and *Favorites*) and ends with a row of your sources:
+*Continue watching*, while the watch history is kept, and *Favorites*) and
+ends with a row of your sources, or a grid of them with the watch history
+off:
 **On this device** first, then your libraries and every other source you
-added, then *Add a source*. Each opens in a browser made for that kind of
-source (see [Sources](#sources)); Back returns to Home. Its title is always
-the source's name, with where you are in it underneath. Sources locked
-with a PIN stay off Home until unlocked; the padlock on a tile locks it
-(or, without a PIN yet, asks for one).
+added, then *Add a source*. Each opens at its top, under the Sources tab,
+in a browser made for that kind of source (see [Sources](#sources)). Its
+title is the way there: **Sources**, the source's name and each folder or
+page you opened, ending with where you are; press any of them to go back
+to it, or Back for one step (from a source's top, to the list of sources),
+where it is scrolled as you left it; a folder or page you open starts at
+its top. A long way shows "…" for the places in its middle. Sources locked with a
+PIN stay off Home until unlocked; the padlock on a tile locks it (or,
+without a PIN yet, asks for one).
+
+Each tab stays where you left it while you use another, scrolled as you
+left it: the source and folder you were in, the playlist open, a video's
+details. Press the tab you're on to go to its top.
 
 Point at a title that is cut short, here or on the control bar, to read it
 whole.
@@ -590,7 +605,16 @@ the same search, format filters and orders (recently watched, title, most
 watched, rating, length). Remove one video from its details with *Remove
 from history*, or everything with *Clear history*; favorites and ratings
 stay. Browsing a network source never adds anything here. Removing a source
-forgets its videos, except those you watched, marked or put in a playlist.
+forgets all its videos, those you watched, marked or put in a playlist too,
+and deletes their downloads.
+
+**Keep watch history**, in Settings › General, turns all of this off.
+Turning it off deletes the history there is, after a warning, along with
+where you left each video. From then on nothing you watch is kept on the
+headset: this page goes, Home has no banner to resume or *Continue
+watching*, and a video resumes only where its server keeps your place
+(Jellyfin, Emby and Plex). Servers still hear how far you watched. Turn it
+on again to start a new history.
 
 A video you stopped part way shows the frame where you left off, made
 shortly after it stops. Past 90 % it counts as watched: its card gets a ✓,
@@ -607,7 +631,45 @@ Emby, Plex and HereSphere servers that let you delete. DeoVR feeds, DLNA
 servers and web folders can't delete, and a folder is never deleted. A
 server deletes the way its own apps do: Jellyfin takes a video's folder
 with it when the video has one to itself. The video also leaves your
-history, queue and playlists.
+history, queue, playlists and downloads.
+
+### Downloading a video
+
+**Download**, on a video's details and under the ⋯ on its row in a folder,
+keeps the video's file on the headset, or on the microSD card or USB drive
+chosen in **Settings › General › Download to**, so it plays with no
+connection. It's there for videos on SMB and NFS shares, SFTP and WebDAV
+servers, web folders, DLNA servers, DeoVR feeds, HereSphere APIs, Jellyfin,
+Emby and Plex. A video a server only transcodes has no file to download,
+and neither has a Plex video in several parts. Jellyfin, Emby and Plex
+follow the server's setting for your user: with downloads turned off there,
+the button doesn't show.
+
+The video's subtitle files and haptic scripts come with it; subtitles you
+found on OpenSubtitles are on the headset already. A download is still the
+same video: wherever you open it, it plays from the download, and keeps its
+history, resume point, adjustments and playlists. Watched while its server
+is out of reach, it starts where you left off on the headset the next time
+you play it with the server there, and the server hears from that point.
+
+Downloads come one at a time, in the order you asked for them, each over
+several connections at once, while FramePlayerX is open. They wait while a video plays from a network source,
+so it keeps the bandwidth, and carry on while you watch a download or a
+video on the headset. A download that loses its connection, or that
+FramePlayerX closed part way, carries on from where it got to; one the
+server refuses stops, with *Retry*.
+
+**Downloads**, in Sources and on Home, lists every network source with how
+many of its videos are downloaded. A source locked with a PIN shows only
+that it is locked, with *Unlock*, which opens its downloads. Open a
+source for its downloads: how each is going, *Play*, and *Cancel download*
+or *Remove download*, which ask first and delete the downloaded file. The
+video stays on its server and in your history.
+
+Downloads on the headset go in `~/.local/share/frameplayerx/downloads`; on
+a card they go in a hidden `.frameplayerx-downloads` folder, so a library
+on the card doesn't list them again. While a card is out, its downloads say
+so and its videos play from their servers.
 
 ### Thumbnails
 
@@ -695,7 +757,9 @@ side; Settings › Playback › **Default format** picks another.
 Videos are shown as their file says: a phone clip stored sideways stands
 upright, and anamorphic video (DVDs, anamorphic lenses) is widened to its
 real shape. A full side-by-side file marked to show at one eye's shape in
-2D players (a 1:2 pixel aspect) still shows each eye at its own shape. A
+2D players (a 1:2 pixel aspect), and an MKV marked side by side or top and
+bottom with the whole frame's display size, still show each eye at its own
+shape. A
 portrait video's screen is as tall as **Screen width**. When a 3D file's
 metadata says the right eye comes first, the eyes are swapped to match.
 
@@ -820,6 +884,17 @@ Position tab. Its size is its width, so zooming a flat screen with the
 controller makes it wider or narrower, and **Zoom** shows only for 180°,
 360° and fisheye videos.
 
+**Crop black bars**, under Flat videos in Settings › Video position, gives
+a flat video with black bars above and below, or beside it, a screen of
+the picture's own shape: a 2.39:1 film made 16:9 gets a wide screen with
+no bars on it. It is off at first. The bars are cropped once they have
+stayed the same for two seconds, so a fade to black changes nothing, and
+the screen changes shape over about a third of a second. When the picture
+reaches into the bars, as subtitles placed in a bar or the taller scenes
+of an IMAX film do, the screen opens out to fit it and keeps that shape
+for the rest of the video. In a cinema, the cropped picture fills as much
+of the screen as its shape allows.
+
 Around a flat screen, and behind the menus, is a near-black grey, or a
 [cinema](#cinema). Settings › Video position › **Background** picks the
 colour videos start with: black, grey, navy, or any colour with the
@@ -886,6 +961,14 @@ out the floating screen's Distance, Width and Curvature, which stay as
 they are for when the cinema doesn't show. Recentering, **Put back** and
 dragging the picture turn the whole cinema with it, and recentering lying
 back tips it back with you. **Screen follows you** stays off in a cinema.
+
+Under **Cinema** in Settings › Video position, whatever background is
+picked there, **Lights while playing** and **Dimming time** set how much of
+the cinema's light stays on while a video plays, down to 0%, where even
+the exit signs go out and only the screen shows, and how long the lights
+take to go down, from 0.5 to 10 seconds. They apply to every video that
+plays in a cinema and to nothing else, and the lights still come up
+quickly when you pause.
 
 The cinema doesn't show while your room does, or for a chroma-keyed video.
 
@@ -1192,11 +1275,21 @@ picture. Play/pause and seeking are under either thumb.
 | Trigger | Click; on empty space, show or hide the controls | The same |
 
 On the control bar, point at the speaker for the volume slider above it;
-press the speaker to mute. Pointing along the seek bar shows the time there,
-and a picture of that moment where the server has made them: Jellyfin's
-trickplay images, Emby's and Plex's video preview thumbnails, or a DeoVR
-feed's timeline preview. **Settings › Playback › Seek bar previews** turns
-the pictures off. What a controller shortcut changes, such as the
+press the speaker to mute. Pointing along the seek bar shows the time there
+and a picture of that moment: the server's own where it has made them
+(Jellyfin's trickplay images, Emby's and Plex's video preview thumbnails, or
+a DeoVR feed's timeline preview), else one FramePlayerX takes from the video
+itself, the keyframe just before that moment. Over a network it reads the
+video for them only while playback is well ahead, so they never make it
+stutter, and on a slow connection a picture can take a moment; a video the
+server transcodes has none. **Settings › Playback › Seek bar previews** turns
+the pictures off. Press the video's length after the seek bar to show how
+much is left instead, and again for the length; FramePlayerX keeps your
+choice. Above the bar's left end are the time of day and, unless the video
+loops, when it ends at the speed playing; the library's top bar shows the
+time too, in the headset's time zone and on a 12-hour clock, or a
+24-hour one with **24-hour clock** on in Settings › General. What a
+controller shortcut changes, such as the
 volume or a minute's skip, shows for a moment in a small message above where
 the control bar sits.
 
@@ -1420,9 +1513,16 @@ issue with the language, where it shows and the wording you'd expect.
   nothing is sent unless you choose **Send report**.
 - For help, or to report a problem yourself, **Settings › About** starts
   with links to FramePlayerX's website, this guide, its Discord server, its
-  GitHub page, its issue form (choose Bug report and attach the log below)
-  and its GitHub Sponsors page. A link opens in Steam's browser; the
-  address on it works on a phone or a computer too.
+  GitHub page, its issue form and its GitHub Sponsors page. A link opens in
+  Steam's browser; the address on it works on a phone or a computer too.
+- To report a problem, press **Send diagnostics** in **Settings › About**
+  first and write what went wrong. It goes the same way as a crash report,
+  with the same names replaced, and holds what you wrote, the versions,
+  what the open video's decoder was doing, your settings, the kinds of
+  sources you have, and the log of this session and the end of the one
+  before. Send it before restarting FramePlayerX if it froze. It gives you
+  a reference such as D-142: give it in the issue form (choose Bug report)
+  or on Discord, so the developers can find your diagnostics.
 - Log: `~/.local/share/frameplayerx/frameplayerx.log`; the run before is kept
   as `frameplayerx.log.old` (the one to send after a freeze or crash, once
   FramePlayerX has been started again)

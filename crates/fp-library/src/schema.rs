@@ -137,9 +137,31 @@ CREATE TABLE user_subtitles (
     UNIQUE (media_id, provider, provider_file_id, download_parameters)
 );";
 
+/// Version 6: videos downloaded to the headset or a card, one folder each.
+/// `folder` is a path or a `volume:` location; `subtitles` and `scripts`
+/// name the side files in it. `played_offline`: the last play's position
+/// never reached the server.
+const V6: &str = "
+CREATE TABLE downloads (
+    media_id       INTEGER PRIMARY KEY REFERENCES media(id) ON DELETE CASCADE,
+    folder         TEXT    NOT NULL UNIQUE,
+    file           TEXT    NOT NULL,
+    size           INTEGER,
+    received       INTEGER NOT NULL DEFAULT 0,
+    state          TEXT    NOT NULL DEFAULT 'waiting'
+                   CHECK (state IN ('waiting', 'done', 'failed')),
+    error          TEXT,
+    subtitles      TEXT    NOT NULL DEFAULT '[]',
+    scripts        TEXT    NOT NULL DEFAULT '[]',
+    played_offline INTEGER NOT NULL DEFAULT 0,
+    added_at       INTEGER NOT NULL,
+    finished_at    INTEGER
+);
+CREATE INDEX downloads_added ON downloads(added_at);";
+
 /// All migrations, oldest first. The schema version equals the number of
 /// migrations applied.
-pub(crate) const MIGRATIONS: &[&str] = &[V1, V2, V3, V4, V5];
+pub(crate) const MIGRATIONS: &[&str] = &[V1, V2, V3, V4, V5, V6];
 
 /// Schema version this build writes.
 pub const SCHEMA_VERSION: i64 = MIGRATIONS.len() as i64;
@@ -201,6 +223,7 @@ mod tests {
         assert_eq!(version(&conn).unwrap(), SCHEMA_VERSION);
         let tables = table_names(&conn);
         for t in [
+            "downloads",
             "history",
             "markers",
             "media",

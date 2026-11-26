@@ -29,6 +29,11 @@ impl App {
         &self.services.library
     }
 
+    /// The downloads, and the sources they come from.
+    pub(crate) fn downloads(&self) -> (&crate::downloads::Downloads, &crate::services::Opener) {
+        (&self.services.downloads, &self.services.opener)
+    }
+
     pub(crate) fn source_config(&self, id: &str) -> Option<&fp_sources::SourceConfig> {
         self.services.source_config(id)
     }
@@ -107,7 +112,6 @@ impl App {
             self.ui.source = Some(SourceView {
                 source: source.clone(),
                 name: src.name().to_string(),
-                back_to: Screen::Sources,
                 page: SourcePage::Folders(Browse {
                     source: source.clone(),
                     ..Default::default()
@@ -169,10 +173,11 @@ impl App {
         });
     }
 
-    /// Opens a source in the browser its kind gets: the headset's videos
-    /// and folders, a Jellyfin/Emby client, a feed's scenes, or folders.
-    pub(super) fn open_source(&mut self, source: String, back_to: Screen) {
-        self.ui.details = None;
+    /// Opens a source at its top in the browser its kind gets: the
+    /// headset's videos and folders, a Jellyfin/Emby client, a feed's
+    /// scenes, or folders.
+    pub(super) fn open_source(&mut self, source: String) {
+        self.ui.close_details_on(Screen::Sources);
         self.ui.pin_form = None;
         self.ui.source_form = None;
         self.ui.screen = Screen::Sources;
@@ -180,8 +185,15 @@ impl App {
             self.ui.source = Some(SourceView {
                 source,
                 name: tr!("sources-local").into(),
-                back_to,
                 page: SourcePage::Local(Default::default()),
+            });
+            return;
+        }
+        if source == crate::services::DOWNLOADS_HUB {
+            self.ui.source = Some(SourceView {
+                source,
+                name: tr!("downloads").into(),
+                page: SourcePage::Downloads(Default::default()),
             });
             return;
         }
@@ -202,7 +214,6 @@ impl App {
         let view = |page| SourceView {
             source: source.clone(),
             name: name.clone(),
-            back_to,
             page,
         };
         match kind {
@@ -234,6 +245,19 @@ impl App {
                 })));
                 self.browse(source, None);
             }
+        }
+    }
+
+    /// Downloads, on source `source`'s downloads.
+    pub(crate) fn open_downloads_of(&mut self, source: String) {
+        self.open_source(crate::services::DOWNLOADS_HUB.into());
+        let name = self.source_name(&source);
+        if let Some(SourceView {
+            page: SourcePage::Downloads(d),
+            ..
+        }) = self.ui.source.as_mut()
+        {
+            d.source = Some((source, name));
         }
     }
 
@@ -650,7 +674,7 @@ impl App {
                     Some(e) => tr!("source-added-unsaved", name = cfg.name(), error = e),
                     None => tr!("source-added", name = cfg.name()),
                 });
-                self.open_source(cfg.id().to_string(), Screen::Sources);
+                self.open_source(cfg.id().to_string());
                 saved
             }
         }
@@ -741,11 +765,20 @@ impl App {
         self.ui.unlocked_sources.remove(id);
         self.close_source_view(id);
         let _ = std::fs::remove_file(fp_sources::FeedLibrary::cache_path(id));
-        // Its videos go with it, except what was watched or marked.
-        match self.services.library.forget_unwatched(id) {
-            Ok(n) if n > 0 => log::info!("forgot {n} unwatched videos of {id}"),
+        // Its downloads are found while their videos still say whose they
+        // are.
+        let folders = self.services.downloads.release_source(id);
+        // Its videos go with it, watched or not.
+        match self.services.library.forget_source(id) {
+            Ok(n) if n > 0 => log::info!("forgot the {n} videos of {id}"),
             Ok(_) => {}
             Err(e) => log::warn!("forgetting the videos of {id}: {e}"),
+        }
+        if !folders.is_empty() {
+            self.jobs.spawn("remove-downloads", move || {
+                crate::downloads::delete_folders(&folders);
+                Job::Done
+            });
         }
         self.ui.invalidate();
         self.ui.delete_checks.clear();
@@ -777,10 +810,14 @@ impl App {
             .get(&source)
             .is_some_and(|h| crate::pin::verify(h, pin));
         if right {
+            let downloads = self.ui.pin_form.take().is_some_and(|f| f.downloads);
             self.ui.unlocked_sources.insert(source.clone());
-            self.ui.pin_form = None;
             self.sync_locks();
-            self.open_source(source, Screen::Sources);
+            if downloads {
+                self.open_downloads_of(source);
+            } else {
+                self.open_source(source);
+            }
         } else if let Some(f) = self.ui.pin_form.as_mut() {
             f.pin.clear();
             f.wrong = true;

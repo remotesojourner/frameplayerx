@@ -50,17 +50,30 @@ pub fn browser(ctx: &egui::Context, v: &mut View) {
                 super::crash::prompt(ui, v);
                 return;
             }
+            if v.state.whats_new.is_some() {
+                super::whats_new::page(ui, v);
+                return;
+            }
+            if v.state.diagnostics.is_some() {
+                super::diagnostics::page(ui, v);
+                return;
+            }
             if v.state.picking.is_some() {
                 super::playlists::picker(ui, v);
                 return;
             }
-            if let Some(id) = v.state.details {
+            if let Some(id) = v.state.details_here() {
                 details(ui, v, id);
                 return;
             }
             match v.state.screen {
                 Screen::Home => home(ui, v),
-                Screen::History => history(ui, v),
+                Screen::History if v.settings.watch_history => history(ui, v),
+                // Gone with the watch history it showed.
+                Screen::History => {
+                    v.state.screen = Screen::Home;
+                    home(ui, v);
+                }
                 Screen::Playlists => super::playlists::page(ui, v),
                 Screen::Sources => super::sources::sources(ui, v),
                 Screen::Settings => super::settings::settings(ui, v),
@@ -205,13 +218,16 @@ fn nav(ui: &mut egui::Ui, v: &mut View) {
         ui.add_space(4.0);
         wordmark(ui, 22.0);
         ui.add_space(28.0);
-        let tabs = [
+        let mut tabs = vec![
             (Screen::Home, icons::HOUSE, tr!("nav-home")),
             (Screen::History, icons::CLOCK, tr!("nav-history")),
             (Screen::Playlists, icons::PLAYLIST, tr!("nav-playlists")),
             (Screen::Sources, icons::HARD_DRIVES, tr!("nav-sources")),
             (Screen::Settings, icons::GEAR_SIX, tr!("nav-settings")),
         ];
+        if !v.settings.watch_history {
+            tabs.retain(|&(s, ..)| s != Screen::History);
+        }
         // At a large interface size the labels would run into the buttons
         // on the right: the tabs then show their icons alone.
         let labels: f32 = tabs
@@ -225,31 +241,17 @@ fn nav(ui: &mut egui::Ui, v: &mut View) {
                     + 64.0
             })
             .sum();
-        let right = if v.playback.is_some() { 326.0 } else { 176.0 };
+        let clock = ui.painter().layout_no_wrap(
+            crate::clock::time_at(crate::clock::unix_now()),
+            theme::font(Weight::SemiBold, 16.0),
+            theme::TEXT_2,
+        );
+        let right = if v.playback.is_some() { 326.0 } else { 176.0 } + clock.size().x + 8.0;
         let labelled = ui.available_width() >= labels + right;
         for (s, icon, label) in tabs {
-            let selected =
-                v.state.screen == s && v.state.details.is_none() && v.state.picking.is_none();
+            let selected = v.state.screen == s && v.state.picking.is_none();
             if widgets::nav_tab(ui, icon, label, selected, labelled).clicked() {
-                v.state.screen = s;
-                v.state.details = None;
-                v.state.picking = None;
-                match s {
-                    Screen::Home => v.state.home = None,
-                    // The tab is the list of playlists, whatever was open.
-                    Screen::Playlists => {
-                        v.state.playlist = None;
-                        v.state.renaming = false;
-                        v.state.playlists = None;
-                    }
-                    // The tab is the list of sources, whatever was open.
-                    Screen::Sources => {
-                        v.state.source = None;
-                        v.state.source_form = None;
-                        v.state.pin_form = None;
-                    }
-                    _ => {}
-                }
+                v.state.press_tab(s);
             }
         }
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -284,6 +286,7 @@ fn nav(ui: &mut egui::Ui, v: &mut View) {
             {
                 v.actions.push(Action::ToggleHandsFree);
             }
+            ui.label(clock);
             if let Some(s) = &v.state.worker_status {
                 ui.label(
                     RichText::new(s)
@@ -344,7 +347,7 @@ pub(crate) fn request(r: &MediaRecord) -> OpenRequest {
     }
 }
 
-fn open_record(r: &MediaRecord) -> Action {
+pub(crate) fn open_record(r: &MediaRecord) -> Action {
     Action::Open(request(r))
 }
 
@@ -411,7 +414,7 @@ fn record_grid(ui: &mut egui::Ui, v: &mut View, records: &[MediaRecord]) {
             v.actions.push(open_record(&records[i]));
         }
         if c.more {
-            v.state.details = Some(records[i].id);
+            v.state.open_details(records[i].id);
         }
     });
 }
@@ -424,7 +427,7 @@ fn record_row(ui: &mut egui::Ui, v: &mut View, title: &str, records: &[MediaReco
             v.actions.push(open_record(&records[i]));
         }
         if c.more {
-            v.state.details = Some(records[i].id);
+            v.state.open_details(records[i].id);
         }
     });
 }
@@ -478,17 +481,18 @@ fn hero(ui: &mut egui::Ui, v: &mut View, rows: &HomeRows) {
             )
             .clicked()
             {
-                v.state.details = Some(r.id);
+                v.state.open_details(r.id);
             }
         });
     });
     if resp.clicked() {
-        v.state.details = Some(r.id);
+        v.state.open_details(r.id);
     }
     ui.add_space(26.0);
 }
 
 fn home(ui: &mut egui::Ui, v: &mut View) {
+    let history = v.settings.watch_history;
     if v.state.home.is_none() {
         let lib = &v.services.library;
         let favorites = lib
@@ -507,9 +511,15 @@ fn home(ui: &mut egui::Ui, v: &mut View) {
                 ..Default::default()
             })
             .unwrap_or_default()
-            .pop();
+            .pop()
+            .filter(|_| history);
+        let continue_watching = if history {
+            lib.continue_watching(20).unwrap_or_default()
+        } else {
+            Vec::new()
+        };
         v.state.home = Some(HomeRows {
-            continue_watching: lib.continue_watching(20).unwrap_or_default(),
+            continue_watching,
             last_watched,
             favorites,
         });
@@ -517,12 +527,13 @@ fn home(ui: &mut egui::Ui, v: &mut View) {
     let Some(rows) = v.state.home.take() else {
         return;
     };
-    page::scroll(ui, |ui| {
+    page::scroll(ui, "home", |ui| {
         ui.add_space(14.0);
         let nothing = rows.continue_watching.is_empty()
             && rows.last_watched.is_none()
             && rows.favorites.is_empty();
-        if nothing {
+        // With no history kept, "nothing watched yet" would never change.
+        if nothing && history {
             page::empty_state(
                 ui,
                 icons::PLAY_CIRCLE,
@@ -536,7 +547,9 @@ fn home(ui: &mut egui::Ui, v: &mut View) {
         }
         record_row(ui, v, tr!("jf-continue"), &rows.continue_watching);
         record_row(ui, v, tr!("filter-favorites"), &rows.favorites);
-        super::sources::source_row(ui, v, Screen::Home);
+        // Without a history the page is the sources': a grid rather than a
+        // row to scroll through sideways.
+        super::sources::source_row(ui, v, !history);
     });
     v.state.home = Some(rows);
 }
@@ -581,11 +594,13 @@ fn filters(ui: &mut egui::Ui, g: &mut LibraryGrid) -> bool {
     changed
 }
 
-/// A searchable, filterable, sortable grid of library videos, paged.
-/// `empty` draws what an empty grid says when nothing filters it.
+/// A searchable, filterable, sortable grid of library videos, paged, at
+/// `place` (see [`page::scroll`]). `empty` draws what an empty grid says
+/// when nothing filters it.
 pub fn grid_page(
     ui: &mut egui::Ui,
     v: &mut View,
+    place: impl std::hash::Hash,
     g: &mut LibraryGrid,
     sorts: &[(Sort, &str)],
     empty: impl FnOnce(&mut egui::Ui, &mut View),
@@ -628,7 +643,7 @@ pub fn grid_page(
         || g.stereo_only
         || g.format_filter != FormatFilter::All;
     let mut more = false;
-    page::scroll_from(ui, changed, |ui| {
+    page::scroll_from(ui, place, changed, |ui| {
         ui.add_space(4.0);
         if results.is_empty() {
             if filtered {
@@ -693,6 +708,7 @@ fn history(ui: &mut egui::Ui, v: &mut View) {
     grid_page(
         ui,
         v,
+        "history",
         &mut g,
         &[
             (Sort::LastPlayed, tr!("sort-recently-watched")),
@@ -734,6 +750,7 @@ fn details(ui: &mut egui::Ui, v: &mut View, id: fp_library::MediaId) {
         return;
     };
     egui::ScrollArea::vertical()
+        .id_salt(("details", id))
         .auto_shrink(false)
         .show_list(ui, |ui| {
             ui.add_space(12.0);
@@ -789,10 +806,16 @@ fn details(ui: &mut egui::Ui, v: &mut View, id: fp_library::MediaId) {
             });
             let src = (!r.source_id.is_empty()).then_some(r.source_id.as_str());
             let can_delete = super::can_delete_entry(v, src, &r.location);
-            if r.last_played.is_some() || can_delete {
+            {
                 ui.add_space(12.0);
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 12.0;
+                    let parts = super::downloads::Parts {
+                        state: v.state,
+                        services: v.services,
+                        actions: v.actions,
+                    };
+                    super::downloads::button(ui, parts, &request(&r), &r.title);
                     if r.last_played.is_some()
                         && widgets::button(
                             ui,

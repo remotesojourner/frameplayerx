@@ -34,7 +34,7 @@ pub fn page(ui: &mut egui::Ui, v: &mut View) {
         );
         return;
     }
-    if let Some(id) = cards(ui, v, &lists) {
+    if let Some(id) = cards(ui, v, "playlists", &lists) {
         v.state.playlist = Some(id);
         v.state.renaming = false;
     }
@@ -48,10 +48,10 @@ fn playlists(v: &mut View) -> Vec<Playlist> {
         .clone()
 }
 
-/// A grid of playlists; the one clicked.
-fn cards(ui: &mut egui::Ui, v: &mut View, lists: &[Playlist]) -> Option<PlaylistId> {
+/// A grid of playlists at `place`; the one clicked.
+fn cards(ui: &mut egui::Ui, v: &mut View, place: &str, lists: &[Playlist]) -> Option<PlaylistId> {
     let mut picked = None;
-    page::scroll(ui, |ui| {
+    page::scroll(ui, place, |ui| {
         page::grid(ui, lists.len(), page::LANDSCAPE.x, |ui, i| {
             let p = &lists[i];
             let thumb = p.first.as_ref().and_then(MediaRecord::picture);
@@ -231,7 +231,7 @@ fn playlist(ui: &mut egui::Ui, v: &mut View, id: PlaylistId) {
         return;
     }
     let n = entries.len();
-    page::scroll(ui, |ui| {
+    page::scroll(ui, ("playlist", id), |ui| {
         ui.add_space(4.0);
         for (i, e) in entries.iter().enumerate() {
             let thumb = e.record.picture();
@@ -269,22 +269,37 @@ fn playlist(ui: &mut egui::Ui, v: &mut View, id: PlaylistId) {
     });
 }
 
-/// Adding videos to a playlist: a new one, or one of yours. A single video
-/// also gets Play, Play next and Add to queue, and from a folder row's ⋯,
-/// which opens this, Delete file.
+/// A folder row's ⋯: the video, what can be done with it, and the
+/// playlists to add it to. Otherwise adding videos to a playlist: a new one,
+/// or one of yours, a single video with Play, Play next and Add to queue too.
 pub fn picker(ui: &mut egui::Ui, v: &mut View) {
     let Some(picking) = v.state.picking.take() else {
         return;
     };
-    let subtitle = match picking.reqs.len() {
-        1 => widgets::display_title(&picking.title),
-        n => format!("{}: {}", picking.title, tr!("count-videos", count = n)),
+    let one_video = picking.from_row && picking.reqs.len() == 1;
+    let back = if one_video {
+        let name = &picking.title;
+        let stem = match name.rsplit_once('.') {
+            Some((stem, _)) if fp_core::source::is_video_name(name) => stem,
+            _ => name,
+        };
+        let source = picking.reqs[0]
+            .source_id
+            .as_deref()
+            .and_then(|id| v.services.opener.source(id))
+            .map(|s| s.name().to_string());
+        page::header(ui, &widgets::display_title(stem), source.as_deref(), |_| {})
+    } else {
+        let subtitle = match picking.reqs.len() {
+            1 => widgets::display_title(&picking.title),
+            n => format!("{}: {}", picking.title, tr!("count-videos", count = n)),
+        };
+        page::header(ui, tr!("playlists-picker-title"), Some(&subtitle), |_| {})
     };
-    let back = page::header(ui, tr!("playlists-picker-title"), Some(&subtitle), |_| {});
     if back {
         return;
     }
-    let (with_delete, title) = (picking.with_delete, picking.title.clone());
+    let (from_row, title) = (picking.from_row, picking.title.clone());
     v.state.picking = Some(picking);
     let reqs = v
         .state
@@ -327,7 +342,16 @@ pub fn picker(ui: &mut egui::Ui, v: &mut View) {
                 });
                 v.state.picking = None;
             }
-            if with_delete
+            // A folder row's video: its file can be downloaded, or deleted.
+            if from_row {
+                let parts = super::downloads::Parts {
+                    state: v.state,
+                    services: v.services,
+                    actions: v.actions,
+                };
+                super::downloads::button(ui, parts, req, &title);
+            }
+            if from_row
                 && super::can_delete_entry(v, req.source_id.as_deref(), &req.location)
                 && super::delete_button(ui, v.state, &req.location)
             {
@@ -341,13 +365,17 @@ pub fn picker(ui: &mut egui::Ui, v: &mut View) {
         });
         ui.add_space(18.0);
     }
+    if one_video {
+        widgets::section_label(ui, tr!("playlists-picker-title"));
+        ui.add_space(6.0);
+    }
     new_playlist(ui, v, &reqs);
     ui.add_space(14.0);
     let lists = playlists(v);
     if !lists.is_empty() {
         widgets::section_label(ui, tr!("playlists-or-add-to"));
         ui.add_space(6.0);
-        if let Some(id) = cards(ui, v, &lists) {
+        if let Some(id) = cards(ui, v, "playlist-picker", &lists) {
             v.actions.push(Action::AddToPlaylist {
                 playlist: Some(id),
                 name: String::new(),

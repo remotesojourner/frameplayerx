@@ -59,15 +59,28 @@ impl App {
         }
         let mut ready = false;
         let mut tile = None;
-        if let Some(playback) = self.playback.as_mut()
-            && let Some(preview) = playback.trickplay.as_mut()
-        {
-            ready = preview.update(
-                hover.as_ref().map(|hover| hover.time),
-                playback.player.duration(),
-            );
-            if ready {
-                tile = preview.take_tile();
+        if let Some(playback) = self.playback.as_mut() {
+            // Without the server's previews, the file's own keyframes; a
+            // transcode can't be read for them.
+            if hover.is_some() && playback.trickplay.is_none() && playback.transcoding.is_none() {
+                playback.trickplay = Some(crate::trickplay::Preview::live(
+                    self.services.opener.clone(),
+                    playback.request.source_id.clone(),
+                    playback.request.location.clone(),
+                ));
+            }
+            if let Some(preview) = playback.trickplay.as_mut() {
+                let crop =
+                    crate::prober::crop(fp_library::ThumbnailCrop::for_format(&playback.format));
+                ready = preview.update(
+                    hover.as_ref().map(|hover| hover.time),
+                    playback.player.duration(),
+                    crop,
+                    !playback.streams || stream_ahead(&playback.player.stats()),
+                );
+                if ready {
+                    tile = preview.take_tile();
+                }
             }
         }
         if self.playback.is_none() {
@@ -178,4 +191,11 @@ fn picture(ctx: &egui::Context, texture: &egui::TextureHandle, label: &str) {
             );
             painter.galley(pos + padding, label, theme::TEXT);
         });
+}
+
+/// The stream is well ahead of the picture, so a live preview's reads
+/// can't hold it up.
+fn stream_ahead(stats: &fp_media::Stats) -> bool {
+    let (ahead, aim) = stats.read_ahead;
+    stats.read_enough || stats.read_to_end || ahead >= aim * 0.75
 }

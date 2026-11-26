@@ -69,6 +69,19 @@ pub(super) enum Job {
         target: ui::DeleteTarget,
         result: Result<(), String>,
     },
+    /// Whether a video may be downloaded, as its server answered; `None`
+    /// when it couldn't be asked.
+    DownloadCheck {
+        source_id: String,
+        location: String,
+        allowed: Option<bool>,
+    },
+    /// A download noted, for the downloads to take in turn, or why not.
+    DownloadAdded {
+        location: String,
+        title: String,
+        result: Result<(), String>,
+    },
     Toast(String),
     /// Nothing to show (a server took a change).
     Done,
@@ -97,6 +110,9 @@ pub(super) enum Job {
     /// The last run crashed: the report the user may send.
     CrashReport(Box<crate::crash::Report>),
     CrashSent(Result<(), String>),
+    DiagnosticsGathered(Box<crate::crash::Diagnostics>),
+    /// Sent, with the number the relay gave it.
+    DiagnosticsSent(Result<Option<u64>, String>),
     /// Steam was asked to open a web page.
     WebPageOpened(Result<(), String>),
     SubtitleSearch(Box<subtitle_search::Job>),
@@ -174,7 +190,7 @@ impl App {
         self.ui.scans.remove(source);
         if self.source_config(source).is_none() {
             // Removed while it was scanned.
-            let _ = self.services.library.forget_unwatched(source);
+            let _ = self.services.library.forget_source(source);
             return;
         }
         let name = self.source_name(source);
@@ -261,6 +277,36 @@ impl App {
             .map(ui::crash::CrashPrompt::new);
     }
 
+    /// On start: what's new since the version run before, if this one is
+    /// newer. `returning` is false on the first start, which has nothing
+    /// to compare with. Nothing to show records this version at once.
+    pub(crate) fn offer_whats_new(&mut self, returning: bool) {
+        let Ok(current) = fp_updater::Version::parse(env!("CARGO_PKG_VERSION")) else {
+            return;
+        };
+        let seen = self.settings.seen_version.as_deref();
+        let seen = seen.and_then(|s| fp_updater::Version::parse(s).ok());
+        if seen
+            .as_ref()
+            .is_some_and(|s| current.cmp_precedence(s).is_le())
+        {
+            return;
+        }
+        self.ui.whats_new = returning
+            .then(|| crate::whats_new::since(seen.as_ref(), &current))
+            .flatten();
+        if self.ui.whats_new.is_none() {
+            self.settings.seen_version = Some(current.to_string());
+        }
+    }
+
+    /// What's New was read: the next start compares with this version.
+    pub(super) fn close_whats_new(&mut self) {
+        if let Some(w) = self.ui.whats_new.take() {
+            self.settings.seen_version = Some(w.to);
+        }
+    }
+
     /// Opens `address` in Steam's browser, which shows over the app: the
     /// headset has no other browser to hand it to.
     pub(super) fn open_web_page(&mut self, address: &str) {
@@ -291,25 +337,7 @@ impl App {
         c.error = None;
         let body = c.report.body();
         self.jobs.spawn("crash-send", move || {
-            let http = fp_sources::http::HttpClient::new(Default::default(), None);
-            let r = http
-                .request(
-                    "POST",
-                    url,
-                    &[("Content-Type", "application/json")],
-                    Some(&body),
-                    4096,
-                )
-                .map_err(|e| ui::errors::source(&e))
-                .and_then(|reply| match reply.status {
-                    200..=299 => Ok(()),
-                    status => Err(tr!(
-                        "error-http-status",
-                        status = status.to_string(),
-                        url = url
-                    )),
-                });
-            Job::CrashSent(r)
+            Job::CrashSent(diagnostics::post_report(url, &body).map(|_| ()))
         });
     }
 
@@ -330,6 +358,9 @@ impl App {
                     Some(Box::new(u)),
                 ),
                 Ok(None) => Job::UpdateChecked(seq, UpdateStatus::UpToDate, None),
+                Err(fp_updater::Error::RateLimited { until }) => {
+                    Job::UpdateChecked(seq, UpdateStatus::Failed(rate_limited(until)), None)
+                }
                 Err(e) => Job::UpdateChecked(seq, UpdateStatus::Failed(e.to_string()), None),
             }
         });
@@ -385,6 +416,7 @@ impl App {
             self.on_job(job);
         }
         self.poll_worker();
+        self.poll_downloads();
     }
 
     fn on_job(&mut self, job: Job) {
@@ -473,13 +505,30 @@ impl App {
                 allowed,
             } => {
                 let check = match allowed {
-                    Some(allowed) => ui::DeleteCheck::Answered(allowed),
-                    None => ui::DeleteCheck::Failed(Instant::now()),
+                    Some(allowed) => ui::ServerCheck::Answered(allowed),
+                    None => ui::ServerCheck::Failed(Instant::now()),
                 };
                 self.ui.delete_checks.insert((source_id, location), check);
                 self.panels[MAIN].request_repaint();
             }
             Job::Deleted { target, result } => self.on_deleted(target, result),
+            Job::DownloadCheck {
+                source_id,
+                location,
+                allowed,
+            } => {
+                let check = match allowed {
+                    Some(allowed) => ui::ServerCheck::Answered(allowed),
+                    None => ui::ServerCheck::Failed(Instant::now()),
+                };
+                self.ui.download_checks.insert((source_id, location), check);
+                self.panels[MAIN].request_repaint();
+            }
+            Job::DownloadAdded {
+                location,
+                title,
+                result,
+            } => self.download_added(location, title, result),
             Job::Toast(t) => self.ui.toast(t),
             Job::Done | Job::WebPageOpened(Ok(())) => {}
             Job::SubtitleSearch(job) => self.subtitle_search_finished(*job),
@@ -556,6 +605,8 @@ impl App {
                     c.error = Some(e);
                 }
             }
+            Job::DiagnosticsGathered(d) => self.diagnostics_gathered(*d),
+            Job::DiagnosticsSent(r) => self.diagnostics_sent(r),
             Job::WebPageOpened(Err(e)) => {
                 log::warn!("opening a web page: {e}");
                 self.ui.toast(tr!("error-open-page", error = e));
@@ -657,11 +708,18 @@ impl App {
                 if let Some(url) = &rec.thumbnail_url {
                     self.thumbs.forget(url);
                 }
-                if self.ui.details == Some(rec.id) {
+                if self.ui.details.is_some_and(|(_, id)| id == rec.id) {
                     self.ui.details = None;
                 }
                 if self.ui.format_drawer == Some(rec.id) {
                     self.ui.format_drawer = None;
+                }
+                // Its download goes with it, found before its row is gone.
+                if let Some(folder) = self.services.downloads.release(rec.id) {
+                    self.jobs.spawn("download-delete", move || {
+                        crate::downloads::delete_folders(&[folder]);
+                        Job::Done
+                    });
                 }
                 if let Err(e) = self.services.library.remove_media(rec.id) {
                     log::warn!("removing deleted media {} from library: {e}", rec.location);
@@ -710,6 +768,8 @@ impl App {
                         });
                     }
                 }
+                // Its rows are read again with the downloads' generation.
+                SourcePage::Downloads(_) => {}
             }
         }
         // A feed opens from its saved listing, so a video deleted elsewhere
@@ -1118,4 +1178,33 @@ fn remove_from_browse(b: &mut Browse, keys: &[String], thumbs: &mut ui::thumbs::
             true
         }
     });
+}
+
+/// Why an update check couldn't be made: GitHub turned away this network,
+/// until the local time it said.
+fn rate_limited(until: Option<u64>) -> String {
+    let time = until
+        .and_then(|t| i64::try_from(t).ok())
+        .filter(|&t| t > crate::clock::unix_now())
+        .map(crate::clock::time_at)
+        .filter(|time| !time.is_empty());
+    match time {
+        Some(time) => tr!("settings-update-rate-limited", time = time),
+        None => tr!("settings-update-rate-limited-later").to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_rate_limit_says_when_it_ends_by_the_headsets_clock() {
+        let soon = crate::clock::unix_now() + 600;
+        let text = rate_limited(Some(soon as u64));
+        assert!(text.contains(&crate::clock::time_at(soon)), "{text}");
+        let later = tr!("settings-update-rate-limited-later");
+        assert_eq!(rate_limited(None), later);
+        assert_eq!(rate_limited(Some(1)), later, "already over");
+    }
 }

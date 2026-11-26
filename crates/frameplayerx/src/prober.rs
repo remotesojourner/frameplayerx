@@ -82,7 +82,8 @@ pub(crate) fn background() {
     }
 }
 
-fn crop(crop: ThumbnailCrop) -> Crop {
+/// The part of a frame a thumbnail of a video in `crop`'s format shows.
+pub(crate) fn crop(crop: ThumbnailCrop) -> Crop {
     match crop {
         ThumbnailCrop::LeftEye => Crop::LeftHalf,
         ThumbnailCrop::LeftEyeStretched => Crop::LeftHalfStretched,

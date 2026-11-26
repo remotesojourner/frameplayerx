@@ -260,7 +260,14 @@ pub(crate) fn control_bar(
                 &v.settings.subtitle_language,
             );
             ui.add_space(6.0);
-            let hover = seek_row(ui, pb, v.state, v.actions, picture_shown);
+            let hover = seek_row(
+                ui,
+                pb,
+                v.state,
+                v.actions,
+                &mut v.settings.remaining_time,
+                picture_shown,
+            );
             ui.add_space(8.0);
 
             // Controls: three groups on one row, transport always centred.
@@ -434,16 +441,19 @@ fn warning_pill(ui: &mut egui::Ui, label: &str, color: Color32) -> egui::Respons
     resp
 }
 
-/// Times either side of the seek bar.
+/// Times either side of the seek bar: the position, and the video's length
+/// or with `remaining` how much is left, which pressing swaps.
 fn seek_row(
     ui: &mut egui::Ui,
     pb: &mut crate::playback::Playback,
     state: &mut super::UiState,
     actions: &mut Vec<Action>,
+    remaining: &mut bool,
     picture_shown: bool,
 ) -> Option<SeekHover> {
     let duration = pb.player.duration();
     let position = state.scrub.unwrap_or_else(|| pb.player.position());
+    let font = theme::font(Weight::Medium, 16.0);
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 14.0;
         let time = |ui: &mut egui::Ui, t: f64, align: Align| {
@@ -453,20 +463,126 @@ fn seek_row(
                 |ui| {
                     ui.label(
                         RichText::new(fmt_time(t))
-                            .font(theme::font(Weight::Medium, 16.0))
+                            .font(font.clone())
                             .color(theme::TEXT_2),
                     )
                 },
             );
         };
         time(ui, position, Align::Min);
-        let w = ui.available_width() - 68.0 - 14.0;
+        if !(duration.is_finite() && duration > 0.0) {
+            let w = ui.available_width() - 68.0 - 14.0;
+            let hover = seek_bar(ui, w, state, pb, actions, picture_shown);
+            time(ui, duration, Align::Max);
+            return hover;
+        }
+        let length = fmt_time(duration);
+        let left = format!("\u{2212}{}", fmt_time(duration - position));
+        // As wide as the time left at its widest, so neither counting down
+        // nor swapping moves the seek bar.
+        let pill = (widest_time(ui, &left, &font) + 20.0).max(68.0);
+        let w = ui.available_width() - pill - 14.0;
         let hover = seek_bar(ui, w, state, pb, actions, picture_shown);
-        time(ui, duration, Align::Max);
+        let (text, tip) = if *remaining {
+            (left, tr!("player-duration-tip", time = length))
+        } else {
+            let left = fmt_time(duration - position);
+            (length, tr!("player-remaining-tip", time = left))
+        };
+        if time_pill(ui, &text, &font, pill).tip(&tip).clicked() {
+            *remaining = !*remaining;
+        }
         hover
     })
     .inner
 }
+
+/// How wide `text` gets in `font` with any digits in place of its own.
+fn widest_time(ui: &egui::Ui, text: &str, font: &egui::FontId) -> f32 {
+    ui.fonts(|f| {
+        let digit = ('0'..='9')
+            .map(|c| f.glyph_width(font, c))
+            .fold(0.0, f32::max);
+        text.chars()
+            .map(|c| {
+                if c.is_ascii_digit() {
+                    digit
+                } else {
+                    f.glyph_width(font, c)
+                }
+            })
+            .sum()
+    })
+}
+
+/// A time on a pill `width` wide that lights when pointed at, like the
+/// title row's.
+fn time_pill(ui: &mut egui::Ui, text: &str, font: &egui::FontId, width: f32) -> egui::Response {
+    let g = ui
+        .painter()
+        .layout_no_wrap(text.to_string(), font.clone(), theme::TEXT_2);
+    let (rect, resp) = ui.allocate_exact_size(Vec2::new(width, g.size().y + 10.0), Sense::click());
+    let t = pill_face(ui, &resp, false);
+    let fg = theme::TEXT_2.lerp_to_gamma(theme::TEXT, t);
+    ui.painter().galley(rect.center() - g.size() / 2.0, g, fg);
+    resp
+}
+
+/// Seconds until the video playing ends at its `speed`; none when it
+/// doesn't end, looping or of no known length.
+fn seconds_to_end(duration: f64, position: f64, speed: f64, looping: bool) -> Option<f64> {
+    (!looping && duration.is_finite() && duration > 0.0)
+        .then(|| (duration - position).max(0.0) / speed.max(0.01))
+}
+
+/// The time of day, and while the video has an end, when it ends: a pill
+/// on its own panel above the control bar's left end.
+pub fn clock_panel(ctx: &egui::Context, v: &mut View) {
+    let Some(pb) = v.playback.as_deref() else {
+        return;
+    };
+    let now = crate::clock::unix_now();
+    let position = v.state.scrub.unwrap_or_else(|| pb.player.position());
+    let text = match seconds_to_end(
+        pb.player.duration(),
+        position,
+        pb.player.speed(),
+        v.settings.loop_video,
+    ) {
+        Some(left) => tr!(
+            "player-clock-end",
+            now = crate::clock::time_at(now),
+            end = crate::clock::time_at(now + left.round() as i64)
+        ),
+        None => crate::clock::time_at(now),
+    };
+    let painter = ctx.layer_painter(egui::LayerId::new(
+        egui::Order::Foreground,
+        egui::Id::new("clock"),
+    ));
+    let g = painter.layout_no_wrap(
+        format!("{}  {text}", icons::CLOCK),
+        theme::font(Weight::SemiBold, 16.0),
+        theme::TEXT_2,
+    );
+    let screen = ctx.screen_rect();
+    let size = Vec2::new(g.size().x + 32.0, CLOCK_HEIGHT);
+    let rect = egui::Rect::from_min_size(
+        egui::pos2(
+            screen.left() + widgets::SHADOW_ROOM.left as f32,
+            screen.bottom() - CLOCK_GAP - size.y,
+        ),
+        size,
+    );
+    widgets::slab(ctx, rect, size.y / 2.0);
+    painter.galley(rect.center() - g.size() / 2.0, g, theme::TEXT_2);
+}
+
+/// The clock's height in points.
+pub const CLOCK_HEIGHT: f32 = 38.0;
+/// Points between the clock and the control bar: its panel's bottom edge is
+/// the bar's top.
+pub const CLOCK_GAP: f32 = 8.0;
 
 /// Browse, Up next, Loop video, Autoplay, speed and sound.
 fn browse_and_sound(
@@ -2193,6 +2309,35 @@ fn glow_rows(
     });
 }
 
+/// How much of a cinema's light stays on while a video plays, and how long
+/// it takes to go down, for every video in one.
+pub(super) fn house_lights(ui: &mut egui::Ui, lights: &mut crate::settings::HouseLights) {
+    use crate::settings::{DEFAULT_HOUSE_LIGHTS_DIM_SECS, HOUSE_LIGHTS_DIM_SECS};
+    let mut percent = lights.playing * 100.0;
+    widgets::rows(ui, |r| {
+        if r.slider(
+            tr!("settings-lights-playing"),
+            Some(tr!("settings-lights-playing-desc")),
+            &mut percent,
+            0.0..=100.0,
+            100.0,
+            "%",
+            0,
+        ) {
+            lights.playing = percent / 100.0;
+        }
+        r.slider(
+            tr!("settings-dimming-time"),
+            Some(tr!("settings-dimming-time-desc")),
+            &mut lights.dim_secs,
+            HOUSE_LIGHTS_DIM_SECS,
+            DEFAULT_HOUSE_LIGHTS_DIM_SECS,
+            " s",
+            1,
+        );
+    });
+}
+
 /// Where a cinema seats you: its row and how much its screen curves, now
 /// and when reset.
 struct Seat {
@@ -2969,6 +3114,18 @@ fn stereo_pictures(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_end_time_follows_the_speed_and_not_a_looping_video() {
+        assert_eq!(seconds_to_end(6000.0, 1200.0, 1.0, false), Some(4800.0));
+        assert_eq!(seconds_to_end(6000.0, 1200.0, 1.5, false), Some(3200.0));
+        assert_eq!(seconds_to_end(6000.0, 1200.0, 2.0, false), Some(2400.0));
+        // Scrubbed past the end, or ended.
+        assert_eq!(seconds_to_end(6000.0, 6010.0, 1.0, false), Some(0.0));
+        assert_eq!(seconds_to_end(6000.0, 1200.0, 1.0, true), None);
+        assert_eq!(seconds_to_end(0.0, 0.0, 1.0, false), None);
+        assert_eq!(seconds_to_end(f64::NAN, 0.0, 1.0, false), None);
+    }
 
     #[test]
     fn the_seek_bar_holds_where_a_trembling_pointer_settled_and_follows_a_move() {

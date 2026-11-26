@@ -7,7 +7,7 @@
 use fp_core::source::Entry;
 use fp_sources::{Source, WatchEvent, WatchKind, WatchSession};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::time::{Duration, Instant};
 
@@ -21,6 +21,8 @@ struct Report {
     source: Arc<dyn Source>,
     session: Arc<WatchSession>,
     event: WatchEvent,
+    /// Set once the server takes one of the playback's reports.
+    heard: Arc<AtomicBool>,
 }
 
 /// Queues reports for the sending thread; cheap to clone.
@@ -74,17 +76,18 @@ fn deliver(rx: &Receiver<Report>, pending: &AtomicUsize) {
     for r in rx {
         // Behind a slow server, a newer report makes a position update moot.
         let stale = r.event.kind == WatchKind::Tick && pending.load(Ordering::Acquire) > 1;
-        if !stale && let Err(e) = r.source.report_watch(&r.session, r.event) {
-            if failing != r.session.id {
+        match (!stale).then(|| r.source.report_watch(&r.session, r.event)) {
+            Some(Ok(())) => r.heard.store(true, Ordering::Release),
+            Some(Err(e)) if failing != r.session.id => {
                 log::warn!(
                     "watch sync with {}: {:?} not taken: {e}",
                     r.source.name(),
                     r.event.kind
                 );
                 failing.clone_from(&r.session.id);
-            } else {
-                log::debug!("watch sync: {:?} not taken: {e}", r.event.kind);
             }
+            Some(Err(e)) => log::debug!("watch sync: {:?} not taken: {e}", r.event.kind),
+            None => {}
         }
         pending.fetch_sub(1, Ordering::AcqRel);
     }
@@ -98,6 +101,7 @@ pub struct Watch {
     /// Position, pause and speed seen last frame, and when.
     seen: (f64, bool, f64, Instant),
     last_report: Instant,
+    heard: Arc<AtomicBool>,
 }
 
 impl Watch {
@@ -133,6 +137,7 @@ impl Watch {
             session,
             seen: (position, false, 1.0, Instant::now()),
             last_report: Instant::now(),
+            heard: Arc::default(),
         };
         w.send(WatchKind::Start, position, false, 1.0);
         w
@@ -159,6 +164,11 @@ impl Watch {
         }
     }
 
+    /// Whether the server has taken a report of this playback.
+    pub fn heard(&self) -> bool {
+        self.heard.load(Ordering::Acquire)
+    }
+
     /// Tells the server the video closed at `position`.
     pub fn stop(mut self, position: f64) {
         let (_, paused, speed, _) = self.seen;
@@ -176,6 +186,7 @@ impl Watch {
                 paused,
                 speed,
             },
+            heard: self.heard.clone(),
         });
     }
 }

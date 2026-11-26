@@ -22,6 +22,13 @@ pub enum Error {
         url: String,
         status: u16,
     },
+    /// GitHub refused: this network has made too many requests to it.
+    #[error("GitHub is limiting requests from this network{}", wait_until(*until))]
+    RateLimited {
+        /// When it lets requests through again, in seconds since the Unix
+        /// epoch, if it said.
+        until: Option<u64>,
+    },
     /// A file system operation failed.
     #[error("{action} {path}: {source}")]
     Io {
@@ -111,6 +118,17 @@ pub enum Error {
 
 /// Result alias for this crate.
 pub type Result<T, E = Error> = std::result::Result<T, E>;
+
+/// How much longer a rate limit lasts, as [`Error::RateLimited`] says it.
+fn wait_until(until: Option<u64>) -> String {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    match until {
+        Some(t) if t > now => format!("; try again in {} min", (t - now).div_ceil(60)),
+        _ => "; try again later".to_string(),
+    }
+}
 
 impl Error {
     pub(crate) fn io(action: &'static str, path: impl Into<PathBuf>, source: io::Error) -> Self {

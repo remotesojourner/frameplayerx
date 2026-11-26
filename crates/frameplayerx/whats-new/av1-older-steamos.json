@@ -1,0 +1,9 @@
+{
+  "kind": "fix",
+  "en": "On SteamOS 0.5.9 and earlier, AV1 videos now say that the headset has no hardware decoding for them, instead of suggesting that turning it on would help.",
+  "de": "Unter SteamOS 0.5.9 und älter zeigen AV1-Videos jetzt an, dass das Headset sie nicht per Hardware dekodieren kann, statt nahezulegen, dass das Einschalten der Hardware-Videodekodierung helfen würde.",
+  "es": "En SteamOS 0.5.9 y anteriores, los vídeos AV1 ahora indican que el visor no tiene decodificación por hardware para ellos, en lugar de sugerir que activarla ayudaría.",
+  "fr": "Sous SteamOS 0.5.9 et versions antérieures, les vidéos AV1 indiquent désormais que le casque n’a pas de décodage matériel pour elles, au lieu de laisser croire que l’activer aiderait.",
+  "ja": "SteamOS 0.5.9 以前では、AV1 の映像にハードウェアデコードが使えないことが表示されるようになりました。オンにすれば改善するかのような表示はなくなりました。",
+  "zh-CN": "在 SteamOS 0.5.9 及更早版本上，AV1 视频现在会提示头显无法对其进行硬件解码，而不再暗示开启硬件解码会有帮助。"
+}

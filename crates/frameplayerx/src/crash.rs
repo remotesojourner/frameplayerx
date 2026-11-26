@@ -1,8 +1,10 @@
-//! Crash reports. When the last run crashed (its log has a panic or a fatal
-//! signal, see [`crate::logger`]), the next start asks whether to send a
-//! report. Nothing is sent unless the user chooses to, and then only
-//! [`Report::text`], which they can read first: the versions, and that
-//! run's log with the names of videos, paths and server addresses replaced.
+//! Crash reports and diagnostics. When the last run crashed (its log has a
+//! panic or a fatal signal, see [`crate::logger`]), the next start asks
+//! whether to send a report; Send diagnostics in Settings › About sends one
+//! about any problem the user describes. Nothing is sent unless the user
+//! chooses to, and then only [`Report::text`], which they can read first:
+//! the versions, and the logs with the names of videos, paths and server
+//! addresses replaced.
 
 use fp_sources::urlutil::last_segment;
 use std::collections::HashMap;
@@ -18,10 +20,30 @@ pub const REPORT_URL: Option<&str> =
 const LOG_HEAD: usize = 8 * 1024;
 const LOG_TAIL: usize = 40 * 1024;
 
-/// A crash report, ready to show and to send.
+/// Diagnostics share the room (the relay keeps 60000 characters) between
+/// this session's log, the end of the one before, where a hang the user
+/// quit is, and the settings.
+const DIAGNOSTICS_LOG_HEAD: usize = 6 * 1024;
+const DIAGNOSTICS_LOG_TAIL: usize = 30 * 1024;
+const PREVIOUS_LOG_TAIL: usize = 10 * 1024;
+const SETTINGS_MAX: usize = 8 * 1024;
+/// What the user may write about what went wrong.
+pub const WORDS_MAX: usize = 1500;
+
+/// What a report is about.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Kind {
+    Crash,
+    /// A problem the user describes.
+    Diagnostics,
+}
+
+/// A crash report or diagnostics, ready to show and to send.
 #[derive(Clone, Debug)]
 pub struct Report {
-    /// What happened: the panic or the signal.
+    pub kind: Kind,
+    /// What happened: the panic or the signal, or the start of what the
+    /// user wrote.
     pub summary: String,
     /// Everything that is sent, as the user reads it.
     pub text: String,
@@ -83,24 +105,115 @@ impl Report {
         let summary = what_happened(log)?;
         let mut scrub = Scrubber::new(private);
         let summary = scrub.text(&summary);
-        let log = scrub.text(&shorten(log));
+        let log = scrub.text(&shorten(log, LOG_HEAD, LOG_TAIL));
         let text = format!(
             "FramePlayerX {}\n{system}\n\nWhat happened: {summary}\n\nLog of that session:\n{log}",
             env!("CARGO_PKG_VERSION")
         );
-        Some(Report { summary, text })
+        Some(Report {
+            kind: Kind::Crash,
+            summary,
+            text,
+        })
     }
 
     /// What the relay is sent.
     pub fn body(&self) -> Vec<u8> {
         serde_json::json!({
             "app": "frameplayerx",
+            "kind": match self.kind {
+                Kind::Crash => "crash",
+                Kind::Diagnostics => "diagnostics",
+            },
             "version": env!("CARGO_PKG_VERSION"),
             "summary": self.summary,
             "text": self.text,
         })
         .to_string()
         .into_bytes()
+    }
+}
+
+/// What diagnostics hold besides the user's words, as the app tells it.
+#[derive(Clone, Debug, Default)]
+pub struct Facts {
+    /// [`system`].
+    pub system: String,
+    /// What Settings › About lists under This headset.
+    pub about: Vec<(String, String)>,
+    /// The kinds of the sources set up.
+    pub sources: Vec<String>,
+    /// What Stream info shows for the open video, if one is.
+    pub video: Option<String>,
+    /// The settings file, as JSON.
+    pub settings: String,
+    /// This session's log, and the one before.
+    pub log: String,
+    pub previous_log: String,
+}
+
+/// Diagnostics gathered, their names already hidden, waiting for what the
+/// user writes: [`Diagnostics::report`] hides the names in that the same
+/// way, a name the logs have getting the same placeholder.
+pub struct Diagnostics {
+    scrub: Scrubber,
+    /// Everything after what went wrong.
+    facts: String,
+}
+
+impl Diagnostics {
+    /// Hides every name in `facts`, which takes a moment with a big library.
+    pub fn gather(facts: &Facts, private: &Private) -> Diagnostics {
+        let mut text = format!("{}\n", facts.system);
+        for (k, v) in &facts.about {
+            text += &format!("{k}: {v}\n");
+        }
+        let sources = if facts.sources.is_empty() {
+            "none".to_string()
+        } else {
+            facts.sources.join(", ")
+        };
+        text += &format!("Sources: {sources}\n");
+        if let Some(video) = &facts.video {
+            text += &format!("\nThe open video:\n{video}\n");
+        }
+        text += &format!(
+            "\nSettings:\n{}\n",
+            shorten(&facts.settings, SETTINGS_MAX, 0)
+        );
+        if !facts.previous_log.is_empty() {
+            text += &format!(
+                "\nThe end of the session before:\n{}\n",
+                shorten(&facts.previous_log, 0, PREVIOUS_LOG_TAIL)
+            );
+        }
+        text += &format!(
+            "\nLog of this session:\n{}",
+            shorten(&facts.log, DIAGNOSTICS_LOG_HEAD, DIAGNOSTICS_LOG_TAIL)
+        );
+        let mut scrub = Scrubber::new(private);
+        let facts = scrub.text(&text);
+        Diagnostics { scrub, facts }
+    }
+
+    /// The report, with `words` on what went wrong.
+    pub fn report(&mut self, words: &str) -> Report {
+        let words = self.scrub.text(words.trim());
+        let first = words.lines().next().unwrap_or_default();
+        let summary = match first.char_indices().nth(80) {
+            Some((i, _)) => format!("{}…", &first[..i]),
+            None => first.to_string(),
+        };
+        let text = format!(
+            "FramePlayerX {}\n\nWhat went wrong: {words}\n\n{}",
+            env!("CARGO_PKG_VERSION"),
+            self.facts
+        );
+        Report {
+            kind: Kind::Diagnostics,
+            summary,
+            text,
+        }
     }
 }
 
@@ -170,17 +283,17 @@ fn what_happened(log: &str) -> Option<String> {
     Some(format!("signal {signal} ({name})"))
 }
 
-/// The log's start and end, at line breaks.
-fn shorten(log: &str) -> String {
-    if log.len() <= LOG_HEAD + LOG_TAIL {
+/// A log's first `head` and last `tail` bytes, at line breaks.
+fn shorten(log: &str, head: usize, tail: usize) -> String {
+    if log.len() <= head + tail {
         return log.to_string();
     }
-    let mut head = LOG_HEAD;
+    let mut head = head;
     while !log.is_char_boundary(head) {
         head -= 1;
     }
     let head = log[..head].rfind('\n').map_or(head, |i| i + 1);
-    let mut tail = log.len() - LOG_TAIL;
+    let mut tail = log.len() - tail;
     while !log.is_char_boundary(tail) {
         tail += 1;
     }
@@ -261,10 +374,10 @@ impl Scrubber {
             add(v, "video");
             let file = last_segment(v);
             add(&file, "video");
-            add(
-                file.rsplit_once('.').map_or(&file, |(stem, _)| stem),
-                "video",
-            );
+            let stem = file.rsplit_once('.').map_or(&*file, |(stem, _)| stem);
+            add(stem, "video");
+            // As the interface shows it, which is how people write it.
+            add(&crate::ui::widgets::display_title(stem), "video");
         }
         for s in &p.servers {
             add(s, "server");
@@ -429,7 +542,7 @@ mod tests {
     fn names_paths_and_addresses_are_replaced() {
         let log = format!("{LOG}          [FATAL] crashed with signal 11\n");
         let r = Report::from_log(&log, &private(), "System: test").unwrap();
-        for secret in [
+        for hidden in [
             "Garden",
             "Holiday",
             "alice",
@@ -438,7 +551,7 @@ mod tests {
             "192.168",
             "/home/deck",
         ] {
-            assert!(!r.text.contains(secret), "{secret} in\n{}", r.text);
+            assert!(!r.text.contains(hidden), "{hidden} is in the report");
         }
         // What tells a crash apart stays.
         for kept in [
@@ -469,7 +582,7 @@ mod tests {
     fn long_logs_keep_their_start_and_end() {
         let middle = "0.1 [INFO ] filler line\n".repeat(10_000);
         let log = format!("first line\n{middle}last line\n");
-        let short = shorten(&log);
+        let short = shorten(&log, LOG_HEAD, LOG_TAIL);
         assert!(short.len() < LOG_HEAD + LOG_TAIL + 10);
         assert!(short.starts_with("first line\n") && short.ends_with("last line\n"));
     }
@@ -481,5 +594,81 @@ mod tests {
         let body: serde_json::Value = serde_json::from_slice(&r.body()).unwrap();
         assert_eq!(body["text"], r.text.as_str());
         assert_eq!(body["summary"], "signal 6 (abort)");
+        assert_eq!(body["kind"], "crash");
+    }
+
+    fn facts(log: &str) -> Facts {
+        Facts {
+            system: "System: test".into(),
+            about: vec![("GPU".into(), "Turnip".into())],
+            sources: vec!["mediabrowser".into(), "smb".into()],
+            video: Some("Stream: hevc 7680×3840".into()),
+            settings: r#"{"hardware_decoding":true}"#.into(),
+            log: log.into(),
+            previous_log: "0.1 [INFO ] the run before\n".into(),
+        }
+    }
+
+    #[test]
+    fn diagnostics_hide_names_in_what_the_user_wrote_as_in_the_log() {
+        let mut d = Diagnostics::gather(&facts(LOG), &private());
+        let r = d.report("  Holiday Trip stutters on http://jf.lan:8096\nafter a minute ");
+        assert_eq!(r.kind, Kind::Diagnostics);
+        assert!(
+            r.summary.starts_with("<video ") && r.summary.contains(" stutters on <"),
+            "{}",
+            r.summary
+        );
+        assert!(
+            !r.summary.contains("after a minute"),
+            "only the first line: {}",
+            r.summary
+        );
+        for hidden in ["Holiday", "Garden", "jf.lan", "alice", "/home/deck"] {
+            assert!(!r.text.contains(hidden), "{hidden} is in the report");
+        }
+        // The log names the same video with the same placeholder.
+        let video = r.summary.split(' ').next().unwrap().to_string()
+            + " "
+            + r.summary.split(' ').nth(1).unwrap();
+        assert!(
+            r.text.contains(&format!("for {video}")),
+            "{video}\n{}",
+            r.text
+        );
+        for kept in [
+            "GPU: Turnip",
+            "Sources: mediabrowser, smb",
+            "Stream: hevc 7680×3840",
+            "hardware_decoding",
+            "the run before",
+            "decoding with vp9",
+        ] {
+            assert!(r.text.contains(kept), "{kept} missing from\n{}", r.text);
+        }
+        let body: serde_json::Value = serde_json::from_slice(&r.body()).unwrap();
+        assert_eq!(body["kind"], "diagnostics");
+    }
+
+    #[test]
+    fn a_video_written_as_the_interface_shows_it_is_hidden() {
+        let p = Private {
+            videos: vec!["/home/deck/Videos/Sunset Beach_180_LR.mp4".into()],
+            ..Private::default()
+        };
+        let mut d = Diagnostics::gather(&facts(""), &p);
+        let r = d.report("Sunset Beach stutters");
+        assert!(!r.text.contains("Sunset"), "{}", r.text);
+    }
+
+    #[test]
+    fn diagnostics_fit_what_the_relay_keeps() {
+        let line = "0.1 [INFO ] filler line\n";
+        let mut f = facts(&line.repeat(20_000));
+        f.previous_log = line.repeat(20_000);
+        f.settings = "x".repeat(50_000);
+        let mut d = Diagnostics::gather(&f, &private());
+        let words = "w".repeat(WORDS_MAX);
+        assert!(d.report(&words).text.chars().count() < 60_000);
     }
 }

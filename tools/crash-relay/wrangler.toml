@@ -8,13 +8,16 @@ routes = [{ pattern = "frameplayerx.org.uk", custom_domain = true }]
 
 [assets]
 directory = "../../dist/website"
-run_worker_first = ["/report"]
-# Unknown addresses get site/404.html; /report still reaches the Worker.
+run_worker_first = ["/report", "/updates/*"]
+# Unknown addresses get site/404.html; /report and /updates/ still reach
+# the Worker.
 not_found_handling = "404-page"
 
 [vars]
 # The private repository the reports become issues in.
 REPO = "remotesojourner/frameplayerx-crashes"
+# The repository whose releases update checks read.
+RELEASES_REPO = "remotesojourner/frameplayerx"
 
 # At most 5 reports a minute from one address.
 [[ratelimits]]

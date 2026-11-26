@@ -368,7 +368,7 @@ fn finite(value: f64, what: &str) -> Result<f64> {
     }
 }
 
-fn affected(n: usize, id: MediaId) -> Result<()> {
+pub(crate) fn affected(n: usize, id: MediaId) -> Result<()> {
     if n == 0 {
         Err(Error::MediaNotFound(id))
     } else {
@@ -776,6 +776,12 @@ impl Library {
         Library::open(path)
     }
 
+    /// Whether an earlier run left a library in `dir`, of this schema or
+    /// one before it.
+    pub fn exists_in(dir: &Path) -> bool {
+        db_path_in(dir).exists() || older_db_paths(dir).iter().any(|p| p.exists())
+    }
+
     /// A private in-memory database, for tests and previews.
     pub fn open_in_memory() -> Result<Library> {
         Library::init(Connection::open_in_memory()?)
@@ -981,7 +987,7 @@ impl Library {
     }
 
     /// Deletes a row and everything attached to it (tags, markers, history,
-    /// playlist entries, downloaded subtitles). Only for explicit user requests: scans never
+    /// playlist entries, downloaded subtitles, its download). Only for explicit user requests: scans never
     /// delete, they mark rows missing.
     pub fn remove_media(&self, id: MediaId) -> Result<()> {
         self.in_tx(|c| {
@@ -1276,6 +1282,21 @@ impl Library {
         })
     }
 
+    /// Whether the watch history holds anything [`Library::clear_history`]
+    /// would delete, locked sources' videos included.
+    pub fn has_history(&self) -> Result<bool> {
+        self.with(|c| {
+            let any = c.query_row(
+                "SELECT EXISTS (SELECT 1 FROM history)
+                     OR EXISTS (SELECT 1 FROM media WHERE last_played IS NOT NULL
+                                OR resume_position > 0 OR play_count > 0)",
+                [],
+                |r| r.get(0),
+            )?;
+            Ok(any)
+        })
+    }
+
     /// Deletes the whole watch history: every session, and every video's
     /// last playback, resume position and play count. Ratings, favourites,
     /// tags, bookmarks and adjustments are kept.
@@ -1292,8 +1313,8 @@ impl Library {
 
     /// Deletes the videos of `source_id` that were never played and carry
     /// nothing the user set (favourite, rating, tags, format, adjustments,
-    /// keyframes, bookmarks, playlists, downloaded subtitles), for a source being removed.
-    /// Returns how many were deleted.
+    /// keyframes, bookmarks, playlists, downloaded subtitles, a download), for a library
+    /// whose folder moved. Returns how many were deleted.
     pub fn forget_unwatched(&self, source_id: &str) -> Result<usize> {
         self.in_tx(|c| {
             let n = c.execute(
@@ -1308,9 +1329,22 @@ impl Library {
                        AND NOT EXISTS (SELECT 1 FROM playlist_items p WHERE p.media_id = m.id)
                        AND NOT EXISTS (SELECT 1 FROM history h WHERE h.media_id = m.id)
                        AND NOT EXISTS (SELECT 1 FROM user_subtitles s WHERE s.media_id = m.id)
+                       AND NOT EXISTS (SELECT 1 FROM downloads d WHERE d.media_id = m.id)
                        AND m.source_id = ?1)",
                 [source_id],
             )?;
+            prune_tags(c)?;
+            Ok(n)
+        })
+    }
+
+    /// Deletes every video of `source_id`, watched or not, and everything
+    /// attached to it (history, resume points, marks, playlist entries,
+    /// downloaded subtitles, downloads), for a source being removed. Returns how many
+    /// were deleted.
+    pub fn forget_source(&self, source_id: &str) -> Result<usize> {
+        self.in_tx(|c| {
+            let n = c.execute("DELETE FROM media WHERE source_id = ?1", [source_id])?;
             prune_tags(c)?;
             Ok(n)
         })
@@ -1635,6 +1669,17 @@ mod tests {
             .unwrap();
         drop(lib);
         assert_eq!(rating(&Library::open_in(dir.path()).unwrap()), 2);
+    }
+
+    #[test]
+    fn a_library_from_an_earlier_run_is_found_whatever_its_schema() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(!Library::exists_in(dir.path()));
+        std::fs::write(dir.path().join("library-4.sqlite3"), b"").unwrap();
+        assert!(Library::exists_in(dir.path()));
+        let dir = tempfile::tempdir().unwrap();
+        drop(Library::open_in(dir.path()).unwrap());
+        assert!(Library::exists_in(dir.path()));
     }
 
     #[test]
@@ -2113,7 +2158,15 @@ mod tests {
         assert!(h.iter().all(|e| e.completed));
         assert!(lib.update_playback(SessionId(999), 1.0, false).is_err());
         lib.set_favorite(a, true).unwrap();
+        // A locked source's videos count, though no read shows them.
+        lib.set_hidden(Hidden {
+            sources: vec![lib.get(a).unwrap().unwrap().source_id],
+        });
+        assert!(lib.history(10).unwrap().is_empty());
+        assert!(lib.has_history().unwrap());
         lib.clear_history().unwrap();
+        assert!(!lib.has_history().unwrap());
+        lib.set_hidden(Hidden::default());
         assert!(lib.history(10).unwrap().is_empty());
         let r = lib.get(a).unwrap().unwrap();
         assert_eq!((r.last_played, r.play_count, r.favorite), (None, 0, true));
@@ -2172,6 +2225,40 @@ mod tests {
         assert_eq!(lib.detach_source("nas").unwrap(), 4);
         assert_eq!(lib.get(watched).unwrap().unwrap().source_id, "");
         assert_eq!(lib.get(other).unwrap().unwrap().source_id, "feed");
+    }
+
+    #[test]
+    fn forgetting_every_video_of_a_source() {
+        let lib = lib();
+        let up = |loc: &str, src: &str| lib.upsert(&MediaUpsert::new(loc, src)).unwrap().id;
+        let plain = up("smb://nas/v/plain.mp4", "nas");
+        let watched = up("smb://nas/v/watched.mp4", "nas");
+        let fav = up("smb://nas/v/fav.mp4", "nas");
+        let marked = up("smb://nas/v/marked.mp4", "nas");
+        let other = up("http://feed/3", "feed");
+        lib.start_playback(watched).unwrap();
+        lib.start_playback(other).unwrap();
+        lib.set_favorite(fav, true).unwrap();
+        lib.set_tags(fav, &["nas only"]).unwrap();
+        lib.add_marker(marked, 3.0, "mine").unwrap();
+        let list = lib.create_playlist("Mixed").unwrap();
+        lib.add_to_playlist(list, &[watched, other, marked])
+            .unwrap();
+
+        assert_eq!(lib.forget_source("nas").unwrap(), 4);
+        for id in [plain, watched, fav, marked] {
+            assert!(lib.get(id).unwrap().is_none(), "{id} was kept");
+        }
+        assert!(lib.history(10).unwrap().iter().all(|h| h.media_id == other));
+        let left: Vec<_> = lib
+            .playlist_items(list)
+            .unwrap()
+            .iter()
+            .map(|e| e.record.id)
+            .collect();
+        assert_eq!(left, vec![other]);
+        assert!(lib.all_tags().unwrap().iter().all(|t| t.name != "nas only"));
+        assert!(lib.get(other).unwrap().is_some());
     }
 
     #[test]

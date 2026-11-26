@@ -935,6 +935,26 @@ impl Source for DlnaSource {
         Ok(Arc::new(self.client.open(&self.resource_url(location)?)?))
     }
 
+    fn download_allowed(&self, _location: &str) -> Option<bool> {
+        Some(true)
+    }
+
+    /// The item's file, named after its title with the file type its
+    /// address ends in.
+    fn open_download(&self, video: &Entry) -> Result<crate::OriginalFile> {
+        let url = self.resource_url(&video.location)?;
+        let reader = self.client.open_bulk(&url)?;
+        let mut name = video.name.clone();
+        let served = last_segment(&url);
+        if !is_video_name(&name)
+            && is_video_name(&served)
+            && let Some((_, ext)) = served.rsplit_once('.')
+        {
+            name = format!("{name}.{ext}");
+        }
+        Ok(crate::OriginalFile { reader, name })
+    }
+
     fn picture_request(&self, location: &str) -> Option<(HttpClient, String)> {
         Some((self.client.clone(), self.resource_url(location).ok()?))
     }

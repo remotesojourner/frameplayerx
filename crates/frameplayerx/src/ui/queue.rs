@@ -52,7 +52,7 @@ pub fn buttons(ui: &mut egui::Ui, v: &mut View, req: &OpenRequest) {
         v.state.picking = Some(Picking {
             reqs: vec![req.clone()],
             title: req.shown_title(),
-            with_delete: false,
+            from_row: false,
         });
     }
 }
@@ -153,7 +153,7 @@ pub fn page(ui: &mut egui::Ui, v: &mut View) {
             v.state.picking = Some(Picking {
                 reqs: q.items.clone(),
                 title: tr!("player-up-next").into(),
-                with_delete: false,
+                from_row: false,
             });
         }
     });
@@ -167,7 +167,7 @@ pub fn page(ui: &mut egui::Ui, v: &mut View) {
     let Some((_, rows)) = v.state.up_next.take() else {
         return;
     };
-    page::scroll(ui, |ui| {
+    page::scroll(ui, "up-next", |ui| {
         ui.add_space(4.0);
         for (i, r) in rows.iter().enumerate() {
             let facts = if i == q.pos && v.playback.is_some() {

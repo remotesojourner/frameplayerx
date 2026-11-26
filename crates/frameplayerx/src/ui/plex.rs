@@ -251,7 +251,7 @@ pub fn form(
         }
         r.switch(
             tr!("source-parallel-downloads"),
-            Some(tr!("source-parallel-downloads-desc")),
+            Some(tr!("source-parallel-downloads-play-desc")),
             &mut f.parallel_downloads,
         );
         r.content(|ui| {

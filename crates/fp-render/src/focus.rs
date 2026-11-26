@@ -1814,7 +1814,7 @@ mod tests {
             ),
             ..Default::default()
         };
-        let p = crate::params::build(&video, None, [glam::Mat4::IDENTITY; 2]);
+        let p = crate::params::build(&video, None, [glam::Mat4::IDENTITY; 2], [0.0; 2]);
         let down = Quat::from_rotation_x(-30f32.to_radians());
         let [along, tilt] = aim_angles(&p, down * right_of_ahead(35.0)).unwrap();
         assert!((along - 35f32.to_radians()).abs() < 1e-4, "{along}");
@@ -2178,7 +2178,7 @@ mod tests {
             ),
             ..Default::default()
         };
-        let p = crate::params::build(&video, None, [glam::Mat4::IDENTITY; 2]);
+        let p = crate::params::build(&video, None, [glam::Mat4::IDENTITY; 2], [0.0; 2]);
         let half = 0.5 * LENS_SPACING;
         // The eyes of a head turned `by`, the lens spacing apart.
         let eyes = |by: Quat| [by * Vec3::NEG_X * half, by * Vec3::X * half];

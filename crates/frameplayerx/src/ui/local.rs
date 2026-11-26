@@ -16,20 +16,29 @@ pub struct LocalView {
     pub folder: Option<Browse>,
 }
 
-/// The headset's folders; true when Back was clicked.
-pub fn page(ui: &mut egui::Ui, v: &mut View, l: &mut LocalView) -> bool {
-    let title = super::sources::local_name();
+/// The name of the headset's folder or drive `source`.
+pub fn root_name(source: &str) -> String {
+    crate::services::builtin_sources()
+        .into_iter()
+        .find(|c| c.id() == source)
+        .map(|c| c.name().to_string())
+        .unwrap_or_default()
+}
+
+/// The headset's folders under the way to them, `trail`; what was pressed
+/// on the header.
+pub fn page(
+    ui: &mut egui::Ui,
+    v: &mut View,
+    trail: &[String],
+    l: &mut LocalView,
+) -> Option<page::Go> {
     if let Some(b) = l.folder.as_mut() {
-        let root = crate::services::builtin_sources()
-            .into_iter()
-            .find(|c| c.id() == b.source)
-            .map(|c| c.name().to_string())
-            .unwrap_or_default();
-        return super::folders::page(ui, v, title, &root, None, b);
+        return super::folders::page(ui, v, trail, b);
     }
-    let back = page::header(ui, title, Some(tr!("sources-local-desc")), |_| {});
+    let go = page::trail_header(ui, trail, Some(tr!("sources-local-desc")), |_| {});
     roots(ui, v, l);
-    back
+    go
 }
 
 /// A library: its videos, or its folders.
@@ -51,17 +60,18 @@ impl LibraryView {
     }
 }
 
-/// Library `source`'s page; true when Back was clicked.
+/// Library `source`'s page under the way to it, `trail`; what was pressed
+/// on the header.
 pub fn library_page(
     ui: &mut egui::Ui,
     v: &mut View,
     source: &str,
-    name: &str,
+    trail: &[String],
     l: &mut LibraryView,
-) -> bool {
+) -> Option<page::Go> {
     let Some(fp_sources::SourceConfig::Library(cfg)) = v.services.source_config(source).cloned()
     else {
-        return true;
+        return Some(page::Go::To(0));
     };
     let present = crate::libraries::present(&cfg);
     let card = cfg
@@ -73,15 +83,14 @@ pub fn library_page(
     if l.folders
         && let Some(b) = l.folder.as_mut()
     {
-        let root = crate::libraries::display_location(&cfg.root());
-        return super::folders::page(ui, v, name, &root, None, b);
+        return super::folders::page(ui, v, trail, b);
     }
     let subtitle = match &scanning {
         Some(s) => s.clone(),
         None if !present => tr!("local-not-inserted", card = card.as_str()),
         None => crate::libraries::display_location(&cfg.root()),
     };
-    let back = page::header(ui, name, Some(&subtitle), |ui| {
+    let back = page::trail_header(ui, trail, Some(&subtitle), |ui| {
         if widgets::button_sized(
             ui,
             Some(icons::ARROWS_CLOCKWISE),
@@ -131,6 +140,7 @@ pub fn library_page(
     super::library::grid_page(
         ui,
         v,
+        ("library", source),
         &mut l.grid,
         &[
             (Sort::Added, tr!("sort-newest")),
@@ -171,6 +181,7 @@ fn roots(ui: &mut egui::Ui, v: &mut View, l: &mut LocalView) {
     };
     let builtin = crate::services::builtin_sources();
     egui::ScrollArea::vertical()
+        .id_salt("on-this-device")
         .auto_shrink(false)
         .show_list(ui, |ui| {
             widgets::card(ui, |ui| {

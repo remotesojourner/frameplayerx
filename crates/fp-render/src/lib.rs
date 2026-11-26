@@ -19,6 +19,7 @@ pub mod backdrop;
 pub mod capture;
 mod cinema;
 mod cinema_mesh;
+mod crop;
 mod focus;
 mod foveation;
 mod glow;

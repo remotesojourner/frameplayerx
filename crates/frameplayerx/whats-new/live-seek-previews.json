@@ -1,0 +1,9 @@
+{
+  "kind": "feat",
+  "en": "Pointing along the seek bar now shows a picture of that moment for videos on the headset, a card or a network share too, not only for media servers that make preview pictures.",
+  "de": "Wenn Sie auf die Zeitleiste zeigen, sehen Sie jetzt auch bei Videos auf dem Headset, einer Karte oder einer Netzwerkfreigabe ein Bild dieser Stelle, nicht nur bei Medienservern, die Vorschaubilder erstellen.",
+  "es": "Al apuntar a la barra de tiempo ahora ves una imagen de ese momento también en los vídeos del visor, de una tarjeta o de una carpeta compartida en red, no solo en los servidores multimedia que crean imágenes de vista previa.",
+  "fr": "Pointer le long de la barre de lecture montre désormais une image de ce moment aussi pour les vidéos du casque, d’une carte ou d’un partage réseau, pas seulement pour les serveurs multimédias qui créent des aperçus.",
+  "ja": "シークバーを指すと、メディアサーバーが作成したプレビュー画像だけでなく、ヘッドセット、カード、ネットワーク共有にある映像でも、その場面の画像が表示されるようになりました。",
+  "zh-CN": "指向进度条时，现在头显、存储卡或网络共享中的视频也会显示该时刻的画面，而不仅限于会生成预览图的媒体服务器。"
+}

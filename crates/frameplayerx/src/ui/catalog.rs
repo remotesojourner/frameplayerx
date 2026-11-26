@@ -726,27 +726,27 @@ enum Go {
     Search(String),
 }
 
-/// A server's page; true when Back was clicked.
+/// A server's page under the way to it, `trail`; what was pressed on the
+/// header.
 pub fn page(
     ui: &mut egui::Ui,
     v: &mut View,
     source: &str,
-    name: &str,
+    trail: &[String],
     j: &mut CatalogView,
-) -> bool {
+) -> Option<page::Go> {
     let caps = v
         .services
         .opener
         .source(source)
         .and_then(|src| src.as_catalog().map(Catalog::capabilities))
         .unwrap_or_default();
-    let subtitle = trail(&j.pages);
     let Some(p) = j.pages.last_mut() else {
-        return true;
+        return Some(page::Go::Back);
     };
     let mut refresh = false;
     let mut play_all: Option<Go> = None;
-    let back = page::header(ui, name, Some(&subtitle), |ui| {
+    let back = page::trail_header(ui, trail, None, |ui| {
         refresh = widgets::icon_button(ui, icons::ARROWS_CLOCKWISE, 44.0, false)
             .tip(tr!("feed-refresh"))
             .clicked();
@@ -789,7 +789,7 @@ pub fn page(
         return back;
     }
     let Some(p) = j.pages.last_mut() else {
-        return true;
+        return Some(page::Go::Back);
     };
     page::status(ui, p.loading && !has_content(&p.body), p.error.as_deref());
     let loading = p.loading;
@@ -798,7 +798,7 @@ pub fn page(
         _ => false,
     };
     let mut go: Option<Go> = None;
-    page::scroll_from(ui, top, |ui| {
+    page::scroll_from(ui, ("catalog", p.seq), top, |ui| {
         go = match &mut p.body {
             Body::Home {
                 home,
@@ -840,7 +840,7 @@ pub fn page(
                 next_up.as_deref(),
                 caps,
             ),
-            Body::Item { item } => details(ui, v, item, caps),
+            Body::Item { item } => details(ui, v, source, item, caps),
         };
     });
     if let Some(go) = go {
@@ -893,7 +893,7 @@ fn follow(v: &mut View, source: &str, j: &mut CatalogView, go: Go) {
             v.state.picking = Some(super::Picking {
                 reqs: vec![request(source, &item, false)],
                 title: item.name.clone(),
-                with_delete: false,
+                from_row: false,
             });
         }
         Go::Delete(item) => v.actions.push(Action::DeleteFile(super::DeleteTarget {
@@ -1009,24 +1009,15 @@ fn page_for(item: CatalogItem) -> (Load, Body) {
     }
 }
 
-/// Where the page shown is on the server, as the header's second line: the
-/// pages opened to reach it ("Movies › Blade Runner", the last three), or
-/// what the server is on its front page.
-fn trail(pages: &[Page]) -> String {
-    let parts: Vec<String> = pages
-        .iter()
-        .filter_map(|p| match &p.body {
-            Body::Home { .. } => None,
-            Body::Search { asked, .. } => Some(tr!("jf-trail-search", text = asked.as_str())),
-            Body::Grid(g) => Some(g.title.clone()),
-            Body::Series { series, .. } => Some(series.name.clone()),
-            Body::Item { item } => Some(item.name.clone()),
-        })
-        .collect();
-    if parts.is_empty() {
-        return String::new();
+/// A page's place on the header's trail: what it shows ("Blade Runner").
+pub fn page_name(p: &Page) -> String {
+    match &p.body {
+        Body::Home { .. } => String::new(),
+        Body::Search { asked, .. } => tr!("jf-trail-search", text = asked.as_str()),
+        Body::Grid(g) => g.title.clone(),
+        Body::Series { series, .. } => series.name.clone(),
+        Body::Item { item } => item.name.clone(),
     }
-    parts[parts.len().saturating_sub(3)..].join(&format!("  {}  ", icons::CARET_RIGHT))
 }
 
 /// The page shows something already (a reload keeps it on screen).
@@ -1807,6 +1798,7 @@ fn episode_row(ui: &mut egui::Ui, v: &mut View, e: &CatalogItem) -> (bool, bool)
 fn details(
     ui: &mut egui::Ui,
     v: &mut View,
+    source: &str,
     item: &mut CatalogItem,
     caps: CatalogCapabilities,
 ) -> Option<Go> {
@@ -1877,6 +1869,12 @@ fn details(
                 if button(ui, icons::PLAYLIST, tr!("jf-add-to-playlist")) {
                     go = Some(Go::AddToPlaylist(item.clone()));
                 }
+                let parts = super::downloads::Parts {
+                    state: v.state,
+                    services: v.services,
+                    actions: v.actions,
+                };
+                super::downloads::button(ui, parts, &request(source, item, false), &item.name);
                 if item.can_delete && super::delete_button(ui, v.state, &item.location) {
                     go = Some(Go::Delete(item.clone()));
                 }
@@ -2091,9 +2089,8 @@ mod tests {
         j.loaded(1, Err("offline".into()));
         assert_eq!(j.pages[0].error.as_deref(), Some("offline"));
 
-        // The header says where the page is.
-        assert!(trail(&j.pages[..1]).is_empty());
-        assert_eq!(trail(&j.pages), "Movies");
+        // The header's trail names the page.
+        assert_eq!(page_name(&j.pages[1]), "Movies");
 
         // A reload covers everything shown.
         let (seq, load) = j.reload().unwrap();
@@ -2400,7 +2397,7 @@ mod tests {
         };
         assert_eq!(asked, "aliens");
         assert_eq!(results.len(), 2);
-        assert_eq!(trail(&j.pages), "Search \"aliens\"");
+        assert_eq!(page_name(&j.pages[1]), "Search \"aliens\"");
 
         // Marks show in the results; a reload searches again.
         j.mark("s1", Mark::Favorite, true);

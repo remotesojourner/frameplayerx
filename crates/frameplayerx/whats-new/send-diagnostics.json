@@ -1,0 +1,9 @@
+{
+  "kind": "feat",
+  "en": "To report a problem, use Send diagnostics in Settings › About: it tells the developers what went wrong along with what the headset was doing, and gives you a reference to quote in your report.",
+  "de": "Um ein Problem zu melden, verwenden Sie Diagnose senden unter Einstellungen › Info: Sie teilt den Entwicklern mit, was schiefging und was das Headset gerade tat, und gibt Ihnen eine Referenz für Ihre Meldung.",
+  "es": "Para informar de un problema, usa Enviar diagnóstico en Ajustes › Acerca de: cuenta a los desarrolladores qué falló y qué estaba haciendo el visor, y te da una referencia para indicarla en tu informe.",
+  "fr": "Pour signaler un problème, utilisez Envoyer un diagnostic dans Paramètres › À propos : il indique aux développeurs ce qui s’est mal passé et ce que faisait le casque, et vous donne une référence à indiquer dans votre signalement.",
+  "ja": "問題を報告するには、「設定」›「情報」の「診断情報を送信」を使ってください。何が起きたかとヘッドセットの状態が開発者に伝わり、報告に記入する参照番号が表示されます。",
+  "zh-CN": "要报告问题，请使用“设置” › “关于”中的“发送诊断信息”：它会把出了什么问题以及头显当时在做什么告诉开发者，并给你一个可在报告中填写的参考编号。"
+}

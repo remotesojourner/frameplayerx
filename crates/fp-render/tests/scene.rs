@@ -601,24 +601,38 @@ fn cinema_lights_and_stereo_video_render_behind_panel_quads() {
     // check with the rate attachment enabled as well as without it.
     for foveation in [Foveation::Off, Foveation::High] {
         r.set_foveation(foveation);
-        let room = |lights| CinemaParams {
+        let room = |lights, lights_down| CinemaParams {
             room: cinema,
             pose,
             lights,
+            lights_down,
             curvature: 0.0,
         };
-        p.cinema = Some(room(0.0));
+        p.cinema = Some(room(0.0, 1.0));
         let dim = render(&mut r, &mut e, Some(&sbs), &p, &[panel]);
-        p.cinema = Some(room(1.0));
+        p.cinema = Some(room(1.0, 1.0));
         let bright = render(&mut r, &mut e, Some(&sbs), &p, &[panel]);
+        // None of the dimmed light left on: only the screen shows.
+        p.cinema = Some(room(0.0, 0.0));
+        let dark = render(&mut r, &mut e, Some(&sbs), &p, &[panel]);
+        // Fully lit, how much is left on doesn't matter.
+        p.cinema = Some(room(1.0, 0.0));
+        let lit = render(&mut r, &mut e, Some(&sbs), &p, &[panel]);
         for (eye, (dim, bright)) in dim.iter().zip(&bright).enumerate() {
             assert!(
                 ceiling_light(bright) > ceiling_light(dim) + 2000,
                 "the room brightens in eye {eye} ({foveation:?})"
             );
+            assert!(
+                ceiling_light(&dark[eye]) == 0 && ceiling_light(dim) > 0,
+                "the room goes dark in eye {eye}: {} {}",
+                ceiling_light(&dark[eye]),
+                ceiling_light(dim)
+            );
+            assert_eq!(ceiling_light(&lit[eye]), ceiling_light(bright), "eye {eye}");
             let video = if eye == 0 { is_red } else { is_blue };
             assert!(
-                video(centre(dim)) && video(centre(bright)),
+                video(centre(dim)) && video(centre(bright)) && video(centre(&dark[eye])),
                 "the room leaves the correct eye's video visible: {:?} {:?}",
                 centre(dim),
                 centre(bright)

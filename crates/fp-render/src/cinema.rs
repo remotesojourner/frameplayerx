@@ -37,7 +37,8 @@ struct PushConstants {
     /// its radius, centred on the seats' side of the screen's centre.
     curvature: f32,
     screen_x: f32,
-    _pad: f32,
+    /// [`CinemaParams::lights_down`].
+    lights_down: f32,
     /// The screen's centre (height and depth) and size, for the glow
     /// round it while the lights are down.
     screen: [f32; 4],
@@ -371,7 +372,7 @@ impl Cinema {
             lights: cinema.lights.clamp(0.0, 1.0),
             curvature: cinema.curvature.max(0.0),
             screen_x: centre.x,
-            _pad: 0.0,
+            lights_down: cinema.lights_down.clamp(0.0, 1.0),
             screen: [centre.y, centre.z, size.x, size.y],
         };
         let d = &gpu.device;

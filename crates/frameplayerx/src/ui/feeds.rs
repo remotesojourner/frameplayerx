@@ -297,6 +297,29 @@ pub struct Details {
 }
 
 impl FeedView {
+    /// The scene whose page is open, with what its details added.
+    fn open_scene(&self) -> Option<FeedScene> {
+        let d = self.details.as_ref()?;
+        let mut scene = self
+            .scenes
+            .get(&d.url)
+            .cloned()
+            .unwrap_or_else(|| FeedScene {
+                url: d.url.clone(),
+                ..FeedScene::default()
+            });
+        if let Some(info) = &d.info {
+            scene.apply(info);
+        }
+        Some(scene)
+    }
+
+    /// The open scene's title, as its page's header shows it.
+    pub fn details_title(&self) -> Option<String> {
+        self.open_scene()
+            .map(|scene| widgets::display_title(&scene.title))
+    }
+
     pub fn new(kind: SourceKind) -> FeedView {
         FeedView {
             kind,
@@ -682,15 +705,23 @@ fn card_facts(s: &FeedScene) -> String {
 }
 
 /// A feed's scenes or a scene's page; true when Back was clicked.
-pub fn page(ui: &mut egui::Ui, v: &mut View, source: &str, name: &str, f: &mut FeedView) -> bool {
+/// A feed's scenes, or the one open, under the way to them, `trail`; what
+/// was pressed on the header.
+pub fn page(
+    ui: &mut egui::Ui,
+    v: &mut View,
+    source: &str,
+    trail: &[String],
+    f: &mut FeedView,
+) -> Option<page::Go> {
     if f.details.is_some() {
-        return details(ui, v, source, name, f);
+        return details(ui, v, source, trail, f);
     }
     let haptics = v.settings.haptics_enabled;
     if !haptics {
         f.scripted_only = false;
     }
-    let back = header(ui, v.actions, source, name, f);
+    let back = header(ui, v.actions, source, trail, f);
     let mut changed = filters(ui, f, haptics);
     let count = tr!("count-scenes", count = f.visible().len());
     ui.add_space(6.0);
@@ -731,7 +762,7 @@ pub fn page(ui: &mut egui::Ui, v: &mut View, source: &str, name: &str, f: &mut F
     let total = shown.len();
     let list: Vec<FeedScene> = shown.into_iter().take(f.shown).cloned().collect();
     let top = std::mem::take(&mut f.to_top) || changed;
-    let picked = scene_grid(ui, v.thumbs, f, &list, total, haptics, top);
+    let picked = scene_grid(ui, v, source, f, &list, total, top);
     if f.filters_open {
         let facets = f.facets();
         let mut open = true;
@@ -882,15 +913,14 @@ fn direction_tips(sort: FeedSort) -> [&'static str; 2] {
     }
 }
 
-/// The page's title, how many scenes, and Refresh; true when Back was
-/// clicked.
+/// The way here, how many scenes, and Refresh; what was pressed.
 fn header(
     ui: &mut egui::Ui,
     actions: &mut Vec<Action>,
     source: &str,
-    name: &str,
+    trail: &[String],
     f: &mut FeedView,
-) -> bool {
+) -> Option<page::Go> {
     let mut subtitle = format!(
         "{} · {}",
         super::sources::kind_label(f.kind),
@@ -901,7 +931,7 @@ fn header(
     if !f.order.is_empty() && (f.loading || f.scanning) {
         subtitle.push_str(&format!(" · {}", tr!("feed-updating")));
     }
-    page::header(ui, name, Some(&subtitle), |ui| {
+    page::trail_header(ui, trail, Some(&subtitle), |ui| {
         if widgets::icon_button(ui, icons::ARROWS_CLOCKWISE, 44.0, false)
             .tip(tr!("feed-refresh"))
             .clicked()
@@ -1029,15 +1059,16 @@ struct Picked {
 
 fn scene_grid(
     ui: &mut egui::Ui,
-    thumbs: &mut super::thumbs::Thumbs,
+    v: &mut View,
+    source: &str,
     f: &FeedView,
     list: &[FeedScene],
     total: usize,
-    haptics: bool,
     top: bool,
 ) -> Picked {
+    let haptics = v.settings.haptics_enabled;
     let mut picked = Picked::default();
-    page::scroll_from(ui, top, |ui| {
+    page::scroll_from(ui, ("feed", source), top, |ui| {
         if list.is_empty() && !f.loading && f.error.is_none() {
             let (title, body) = if f.order.is_empty() {
                 (tr!("feed-no-scenes"), tr!("feed-no-scenes-desc"))
@@ -1056,7 +1087,7 @@ fn scene_grid(
             let badge = s.format.map(|f| widgets::format_short(&f));
             let c = page::card(
                 ui,
-                thumbs,
+                v.thumbs,
                 &Card {
                     thumb: s.thumbnail_url.as_deref(),
                     placeholder: icons::VIRTUAL_REALITY,
@@ -1115,20 +1146,19 @@ fn fill_details(
     }
 }
 
-/// A scene's page; true when Back was clicked.
-fn details(ui: &mut egui::Ui, v: &mut View, source: &str, name: &str, f: &mut FeedView) -> bool {
-    let Some(d) = f.details.as_ref() else {
-        return false;
-    };
-    let mut scene = f.scenes.get(&d.url).cloned().unwrap_or_else(|| FeedScene {
-        url: d.url.clone(),
-        ..FeedScene::default()
-    });
-    if let Some(info) = &d.info {
-        scene.apply(info);
-    }
+/// A scene's page, its title last on `trail`; what was pressed on the
+/// header.
+fn details(
+    ui: &mut egui::Ui,
+    v: &mut View,
+    source: &str,
+    trail: &[String],
+    f: &mut FeedView,
+) -> Option<page::Go> {
+    let scene = f.open_scene()?;
+    let d = f.details.as_ref()?;
     let title = widgets::display_title(&scene.title);
-    let back = page::header(ui, name, Some(&title), |_| {});
+    let back = page::trail_header(ui, trail, None, |_| {});
     page::status(ui, d.loading, d.error.as_deref());
     let info = d.info.clone();
     // The server says whether it takes favourites from players.
@@ -1142,6 +1172,7 @@ fn details(ui: &mut egui::Ui, v: &mut View, source: &str, name: &str, f: &mut Fe
         == Some(true);
     let queued = scene_request(source, &scene, info.as_deref(), None);
     egui::ScrollArea::vertical()
+        .id_salt(("scene", source, &scene.url))
         .auto_shrink(false)
         .show_list(ui, |ui| {
             ui.add_space(8.0);
@@ -1206,10 +1237,19 @@ fn details(ui: &mut egui::Ui, v: &mut View, source: &str, name: &str, f: &mut Fe
                             favorite = Some(!scene.favorite);
                         }
                     }
-                    if can_delete {
-                        ui.add_space(4.0);
-                        delete = super::delete_button(ui, v.state, &scene.url);
-                    }
+                    ui.add_space(4.0);
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 12.0;
+                        let parts = super::downloads::Parts {
+                            state: v.state,
+                            services: v.services,
+                            actions: v.actions,
+                        };
+                        super::downloads::button(ui, parts, &queued, &scene.title);
+                        if can_delete {
+                            delete = super::delete_button(ui, v.state, &scene.url);
+                        }
+                    });
                     if let Some(info) = &info
                         && !info.sources.is_empty()
                     {

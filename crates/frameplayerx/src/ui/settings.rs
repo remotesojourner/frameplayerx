@@ -87,34 +87,37 @@ pub fn settings(ui: &mut egui::Ui, v: &mut View) {
                 });
         });
         ui.vertical(|ui| {
-            egui::ScrollArea::vertical().show_list(ui, |ui| {
-                ui.set_width(ui.available_width() - 8.0);
-                ui.spacing_mut().item_spacing.y = 10.0;
-                let title = tabs()
-                    .iter()
-                    .find(|t| t.0 == v.state.settings_tab)
-                    .map(|t| t.2)
-                    .unwrap_or("");
-                ui.label(
-                    RichText::new(title)
-                        .font(theme::font(Weight::Bold, 30.0))
-                        .color(theme::TEXT),
-                );
-                match v.state.settings_tab {
-                    SettingsTab::General => general(ui, v),
-                    SettingsTab::Playback => playback(ui, v),
-                    SettingsTab::VideoPosition => video_position(ui, v),
-                    SettingsTab::Picture => picture(ui, v),
-                    SettingsTab::Sound => sound(ui, v),
-                    SettingsTab::Passthrough => passthrough(ui, v),
-                    SettingsTab::Controller => controller(ui, v),
-                    SettingsTab::Haptics => haptics(ui, v),
-                    SettingsTab::Remote => remote(ui, v),
-                    SettingsTab::Updates => updates(ui, v),
-                    SettingsTab::About => about(ui, v),
-                }
-                ui.add_space(24.0);
-            });
+            let tab = v.state.settings_tab;
+            egui::ScrollArea::vertical()
+                .id_salt(("settings", tab))
+                .show_list(ui, |ui| {
+                    ui.set_width(ui.available_width() - 8.0);
+                    ui.spacing_mut().item_spacing.y = 10.0;
+                    let title = tabs()
+                        .iter()
+                        .find(|t| t.0 == v.state.settings_tab)
+                        .map(|t| t.2)
+                        .unwrap_or("");
+                    ui.label(
+                        RichText::new(title)
+                            .font(theme::font(Weight::Bold, 30.0))
+                            .color(theme::TEXT),
+                    );
+                    match v.state.settings_tab {
+                        SettingsTab::General => general(ui, v),
+                        SettingsTab::Playback => playback(ui, v),
+                        SettingsTab::VideoPosition => video_position(ui, v),
+                        SettingsTab::Picture => picture(ui, v),
+                        SettingsTab::Sound => sound(ui, v),
+                        SettingsTab::Passthrough => passthrough(ui, v),
+                        SettingsTab::Controller => controller(ui, v),
+                        SettingsTab::Haptics => haptics(ui, v),
+                        SettingsTab::Remote => remote(ui, v),
+                        SettingsTab::Updates => updates(ui, v),
+                        SettingsTab::About => about(ui, v),
+                    }
+                    ui.add_space(24.0);
+                });
         });
     });
 }
@@ -310,6 +313,11 @@ fn general(ui: &mut egui::Ui, v: &mut View) {
             "×",
             2,
         );
+        r.switch(
+            tr!("settings-clock-24-hour"),
+            Some(tr!("settings-clock-24-hour-desc")),
+            &mut s.clock_24_hour,
+        );
         // Panels that trail the head can't be pointed at with it.
         let hands_free = s.hands_free;
         r.row(
@@ -325,6 +333,7 @@ fn general(ui: &mut egui::Ui, v: &mut View) {
             &mut s.haptics_enabled,
         );
     });
+    watch_history(ui, s, v.state, &v.services.library, v.actions);
     display(ui, &mut s.display);
     heading(ui, tr!("settings-thumbnails"));
     widgets::rows(ui, |r| {
@@ -369,6 +378,7 @@ fn general(ui: &mut egui::Ui, v: &mut View) {
             },
         );
     });
+    download_to(ui, s);
     heading(ui, tr!("settings-diagnostics"));
     widgets::rows(ui, |r| {
         r.switch(
@@ -381,6 +391,118 @@ fn general(ui: &mut egui::Ui, v: &mut View) {
             Some(tr!("settings-perf-panel-desc")),
             &mut s.perf_overlay,
         );
+    });
+}
+
+/// Where new downloads go: the headset or a card inserted, each with the
+/// room it has; a card chosen that is out stays offered until another is.
+fn download_to(ui: &mut egui::Ui, s: &mut crate::settings::Settings) {
+    let room = |card: Option<&fp_sources::CardRef>| {
+        crate::downloads::room_at(&crate::downloads::root_location(card)).map(super::fmt_size)
+    };
+    let cards: Vec<fp_sources::CardRef> = fp_core::volume::mounted()
+        .into_iter()
+        .filter_map(|v| {
+            Some(fp_sources::CardRef {
+                label: v.name(),
+                id: v.id?,
+            })
+        })
+        .collect();
+    heading(ui, tr!("downloads"));
+    widgets::rows(ui, |r| {
+        r.row_with(
+            tr!("settings-download-to"),
+            Some(tr!("settings-download-to-desc")),
+            |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    ui.spacing_mut().item_spacing = Vec2::new(8.0, 8.0);
+                    let headset = match room(None) {
+                        Some(size) => tr!("settings-download-headset", size = size),
+                        None => tr!("downloads-on-headset").to_string(),
+                    };
+                    if widgets::chip(ui, &headset, s.download_to.is_none()).clicked() {
+                        s.download_to = None;
+                    }
+                    for card in &cards {
+                        let label = match room(Some(card)) {
+                            Some(size) => tr!(
+                                "settings-download-card",
+                                card = card.label.as_str(),
+                                size = size
+                            ),
+                            None => card.label.clone(),
+                        };
+                        let on = s.download_to.as_ref().is_some_and(|c| c.id == card.id);
+                        if widgets::chip(ui, &label, on).clicked() {
+                            s.download_to = Some(card.clone());
+                        }
+                    }
+                    if let Some(chosen) = &s.download_to
+                        && !cards.iter().any(|c| c.id == chosen.id)
+                    {
+                        let label = tr!("settings-download-card-out", card = chosen.label.as_str());
+                        widgets::chip(ui, &label, true);
+                    }
+                });
+            },
+            |_| {},
+        );
+    });
+}
+
+/// The switch that keeps a watch history. Turned off while the history holds
+/// something, locked sources' included, it first warns that all of it will
+/// be deleted, with a button to go ahead and one to keep it.
+fn watch_history(
+    ui: &mut egui::Ui,
+    s: &mut crate::settings::Settings,
+    state: &mut super::UiState,
+    library: &fp_library::Library,
+    actions: &mut Vec<Action>,
+) {
+    heading(ui, tr!("nav-history"));
+    let mut on = s.watch_history && !state.history_off_asked;
+    widgets::rows(ui, |r| {
+        if r.switch(tr!("history-keep"), Some(tr!("history-keep-desc")), &mut on) {
+            if on {
+                s.watch_history = true;
+                state.history_off_asked = false;
+            } else if library.has_history().unwrap_or(true) {
+                state.history_off_asked = true;
+            } else {
+                actions.push(Action::TurnOffHistory);
+            }
+        }
+        if !state.history_off_asked {
+            return;
+        }
+        r.content(|ui| {
+            ui.label(
+                RichText::new(tr!("history-off-warning"))
+                    .font(theme::font(Weight::Regular, 16.0))
+                    .color(theme::TEXT),
+            );
+            ui.add_space(10.0);
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 12.0;
+                if widgets::button(
+                    ui,
+                    Some(icons::TRASH),
+                    tr!("history-off-confirm"),
+                    Kind::Danger,
+                )
+                .clicked()
+                {
+                    actions.push(Action::TurnOffHistory);
+                    state.history_off_asked = false;
+                }
+                if widgets::button(ui, None, tr!("common-cancel"), Kind::Secondary).clicked() {
+                    state.history_off_asked = false;
+                }
+            });
+            ui.add_space(4.0);
+        });
     });
 }
 
@@ -463,7 +585,7 @@ fn playback(ui: &mut egui::Ui, v: &mut View) {
         );
         r.switch(
             tr!("settings-seek-previews"),
-            Some(tr!("settings-seek-previews-desc")),
+            Some(tr!("settings-seek-previews-live-desc")),
             &mut s.seek_previews,
         );
     });
@@ -540,6 +662,11 @@ fn video_position(ui: &mut egui::Ui, v: &mut View) {
             "",
             2,
         );
+        r.switch(
+            tr!("settings-crop-bars"),
+            Some(tr!("settings-crop-bars-desc")),
+            &mut v.settings.crop_bars,
+        );
     });
     heading(ui, tr!("settings-vr-videos"));
     widgets::rows(ui, |r| {
@@ -573,6 +700,13 @@ fn video_position(ui: &mut egui::Ui, v: &mut View) {
     });
     heading(ui, tr!("settings-background"));
     super::player::global_background(ui, v.settings);
+    // Whatever the background here: a video can pick a cinema of its own.
+    if fp_render::CinemaRoom::any_available() {
+        heading(ui, tr!("settings-cinema"));
+        note(ui, tr!("settings-cinema-desc"));
+        ui.add_space(6.0);
+        super::player::house_lights(ui, &mut v.settings.house_lights);
+    }
 }
 
 /// How videos look until they are adjusted: the picture, and a 3D video's
@@ -1152,7 +1286,19 @@ fn about(ui: &mut egui::Ui, v: &mut View) {
         v.actions.push(Action::OpenWebPage(tiles[i].2.into()));
     }
     ui.add_space(6.0);
-    note(ui, tr!("settings-about-issue-note"));
+    if crate::crash::REPORT_URL.is_some()
+        && widgets::button(
+            ui,
+            Some(icons::BUG),
+            tr!("settings-about-diagnostics"),
+            Kind::Secondary,
+        )
+        .clicked()
+    {
+        v.actions.push(Action::OpenDiagnostics);
+    }
+    ui.add_space(6.0);
+    note(ui, tr!("settings-about-report-note"));
     heading(ui, tr!("settings-about-headset"));
     widgets::rows_compact(ui, |r| {
         for (k, val) in &v.state.about {

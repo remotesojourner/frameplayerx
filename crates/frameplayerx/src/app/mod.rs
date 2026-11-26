@@ -2,6 +2,8 @@
 //! turns controller input into UI events and playback commands each frame.
 
 mod actions;
+mod diagnostics;
+mod downloads;
 mod frame;
 mod input;
 mod plex;
@@ -110,6 +112,11 @@ const WAKE_REVEAL_DEG: f32 = 12.0;
 /// A toast over the video, above where the control bar sits. Nothing to point
 /// at, so the rays pass through it and don't show for it.
 const TOAST: usize = 6;
+/// The time of day and when the video ends, above the control bar's left end
+/// and shown with it. Nothing to point at, like the toast.
+const CLOCK: usize = 7;
+/// The clock pill's widest, in points.
+const CLOCK_PTS: f32 = 440.0;
 /// How long a toast stays over the video.
 const VIDEO_TOAST_SECS: f32 = 3.0;
 /// The control bar's body in pixels.
@@ -194,7 +201,7 @@ pub struct App {
     services: Services,
     pub ui: UiState,
     thumbs: ui::thumbs::Thumbs,
-    panels: [Panel; 7],
+    panels: [Panel; 8],
     seek_preview: Option<seek_preview::SeekPreview>,
     subs: Panel,
     /// Beside each of [`SCROLLED`], in that order.
@@ -267,6 +274,8 @@ pub struct App {
     /// are being fetched.
     feed_queue: std::collections::VecDeque<(String, String)>,
     feed_busy: usize,
+    /// The downloads' generation last shown.
+    downloads_seen: u64,
     quit: bool,
     restart: bool,
 }
@@ -296,6 +305,19 @@ fn growing_panel(px: [u32; 2], width_m: f32, ppp: f32) -> Panel {
     let s = *UI_SCALES.end();
     let px = px.map(|n| (n as f32 * s).round() as u32);
     floating_panel(px, width_m, ppp * s).growing()
+}
+
+/// The clock's panel, growing with the control bar at its scale: room round
+/// the pill for its shadow, but below, where the bar is.
+fn clock_panel() -> Panel {
+    let room = ui::widgets::SHADOW_ROOM;
+    let pts = [
+        CLOCK_PTS + (room.left + room.right) as f32,
+        room.top as f32 + ui::player::CLOCK_HEIGHT + ui::player::CLOCK_GAP,
+    ];
+    let ppp = 1.25 * *UI_SCALES.end();
+    let px = pts.map(|n| (n * ppp).round() as u32);
+    panel(px, pts[0] * 1.25 * BAR_M_PER_PX, ppp).growing()
 }
 
 /// Fine enough for the largest interface size, like the control bar.
@@ -339,6 +361,7 @@ fn floating_panel(px: [u32; 2], width_m: f32, ppp: f32) -> Panel {
 impl App {
     pub fn new(settings: Settings, library: Library) -> App {
         crate::i18n::set_language(&settings.interface_language());
+        crate::clock::set_24_hour(settings.clock_24_hour);
         let services = Services::new(&settings, library);
         let thumbs = ui::thumbs::Thumbs::new(services.opener.clone(), services.images.clone());
         let mut panels = [
@@ -351,11 +374,13 @@ impl App {
             // As fine as the bar it stands in for.
             growing_panel([400, 100], 400.0 * BAR_M_PER_PX, 1.25),
             growing_panel([1100, 90], 1100.0 * BAR_M_PER_PX, 1.25),
+            clock_panel(),
         ];
         panels[BAR].refresh = Some(Duration::from_millis(250));
         panels[ADJUST].refresh = Some(Duration::from_millis(1000));
         panels[TRACKS].refresh = Some(Duration::from_millis(1000));
         panels[TOAST].refresh = Some(Duration::from_millis(100));
+        panels[CLOCK].refresh = Some(Duration::from_millis(1000));
         panels[MAIN].refresh = Some(Duration::from_millis(1000));
         let subs = panel([1600, 320], 1.6, 1.0);
         let perf = perf_panel();
@@ -423,6 +448,7 @@ impl App {
                 .unwrap_or_else(Instant::now),
             mount_tried: Vec::new(),
             feed_queue: Default::default(),
+            downloads_seen: 0,
             feed_busy: 0,
             quit: false,
             restart: false,
@@ -502,6 +528,7 @@ impl App {
             "tracks" => TRACKS,
             "wake" => WAKE,
             "toast" => TOAST,
+            "clock" => CLOCK,
             _ => return None,
         })
     }
@@ -562,6 +589,9 @@ impl App {
         }
         if self.settings.ui_scale != self.saved.ui_scale {
             self.apply_ui_scale();
+        }
+        if self.settings.clock_24_hour != self.saved.clock_24_hour {
+            crate::clock::set_24_hour(self.settings.clock_24_hour);
         }
         if self.settings.language != self.saved.language {
             crate::i18n::set_language(&self.settings.interface_language());
@@ -675,11 +705,11 @@ impl App {
                         .find(|p| p.visible && p.wants_keyboard())
                     {
                         p.push(egui::Event::Text(t));
-                    } else {
+                    } else if self.settings.watch_history {
                         // A search of what was watched.
                         self.ui.history.search = t;
                         self.ui.screen = Screen::History;
-                        self.ui.details = None;
+                        self.ui.close_details_on(Screen::History);
                         self.ui.invalidate();
                         self.show_browser = true;
                         self.ui_visible = true;

@@ -135,6 +135,13 @@ pub struct Playback {
     skipping_since: Option<Instant>,
     /// Tells the server the video came from how watching it goes.
     watch: Option<Watch>,
+    /// A download's: the session its server is being asked for.
+    pending_watch: Option<PendingWatch>,
+    reports: Reports,
+    /// It plays from its download.
+    pub downloaded: bool,
+    /// Read over a network, as a transcode always is.
+    pub streams: bool,
     /// What the server can transcode the video to, tallest first.
     pub targets: Vec<TranscodeTarget>,
     /// What the server is transcoding it to; `None` for the file as it is.
@@ -327,8 +334,23 @@ pub fn open(
         .filter(|record| req.source_id.as_deref() == Some(record.source_id.as_str()));
     let name = last_segment(&req.location);
     let source = req.source_id.as_deref().and_then(|id| opener.source(id));
+    // A video downloaded plays from its file at once: its server, which may
+    // be out of reach, is asked nothing first.
+    let download = downloaded(library, source.as_deref(), &req.location);
+    if let Some((location, _)) = &download {
+        log::info!("{location}: playing its download");
+    }
     // Feeds may need a details call to get the stream URL and metadata.
     let entry = match (&req.entry, &source) {
+        _ if download.is_some() => download.as_ref().map(|(location, _)| {
+            let title = req.title.clone().unwrap_or_else(|| name.clone());
+            let mut e = req
+                .entry
+                .clone()
+                .unwrap_or_else(|| Entry::new(title, location.clone(), EntryKind::Video));
+            e.location = location.clone();
+            e
+        }),
         (Some(e), Some(src)) if fp_sources::is_source_location(&e.location) => {
             Some(src.details(e).map_err(|e| crate::ui::errors::source(&e))?)
         }
@@ -387,8 +409,9 @@ pub fn open(
                 }
             }
             // What its own source says now, as titles are kept current; a
-            // video another source has (a library's) is left to it.
-            Some(r) if &r.source_id == sid => {
+            // video another source has (a library's) is left to it. A
+            // download's server wasn't asked.
+            Some(r) if &r.source_id == sid && download.is_none() => {
                 if let Ok(u) = fp_library::MediaUpsert::from_entry(sid, e)
                     && let Err(err) = library.update_details(
                         r.id,
@@ -416,16 +439,19 @@ pub fn open(
         e
     };
 
-    // A server that keeps resume points knows where the video was left on
-    // any device; the library only where it was left here.
+    // Watched offline last time, the headset's resume point is the newer.
+    let played_offline = download.as_ref().is_some_and(|(_, d)| d.played_offline);
     let start_at = req
         .start_at
         .or_else(|| {
-            entry
-                .as_ref()
-                .and_then(|e| e.resume)
-                .or_else(|| record.as_ref().map(|r| r.resume_position))
-                .filter(|p| settings.resume && *p > 1.0)
+            resume_point(
+                entry
+                    .as_ref()
+                    .and_then(|e| e.resume)
+                    .filter(|_| !played_offline),
+                record.as_ref().map(|r| r.resume_position),
+                settings,
+            )
         })
         .unwrap_or(0.0);
     // The previous video's decoder must be released first (see
@@ -433,14 +459,23 @@ pub fn open(
     if !wait_closed(CLOSE_WAIT) {
         log::warn!("previous video still closing; opening anyway");
     }
-    let (script_locs, mut subs) = sidecars(
-        &location,
-        &name,
-        entry.as_ref(),
-        record.as_ref(),
-        source.clone(),
-        settings.haptics_enabled,
-    );
+    let (script_locs, mut subs) = match &download {
+        Some((_, d)) => (
+            d.script_locations()
+                .into_iter()
+                .filter(|_| settings.haptics_enabled)
+                .collect(),
+            d.subtitle_files(),
+        ),
+        None => sidecars(
+            &location,
+            &name,
+            entry.as_ref(),
+            record.as_ref(),
+            source.clone(),
+            settings.haptics_enabled,
+        ),
+    };
     let picked = record
         .as_ref()
         .map(|r| r.tracks.clone())
@@ -491,7 +526,7 @@ pub fn open(
     let starting_files: Vec<_> = eligible.iter().map(|&i| subs[i].clone()).collect();
     let source_tracks = source
         .as_ref()
-        .filter(|s| s.kind() == fp_sources::SourceKind::Plex)
+        .filter(|s| s.kind() == fp_sources::SourceKind::Plex && download.is_none())
         .map(|src| {
             let video = entry
                 .clone()
@@ -564,12 +599,15 @@ pub fn open(
         })
         .map(|p| (p, pick))
     };
-    let mut source_session = source.as_ref().and_then(|src| {
-        let video = entry
-            .clone()
-            .unwrap_or_else(|| Entry::new(name.clone(), location.clone(), EntryKind::Video));
-        src.watch_session(&video)
-    });
+    let mut source_session = source
+        .as_ref()
+        .filter(|_| download.is_none())
+        .and_then(|src| {
+            let video = entry
+                .clone()
+                .unwrap_or_else(|| Entry::new(name.clone(), location.clone(), EntryKind::Video));
+            src.watch_session(&video)
+        });
     if source
         .as_ref()
         .is_some_and(|s| s.kind() == fp_sources::SourceKind::Plex)
@@ -582,6 +620,7 @@ pub fn open(
     }
     let targets = source
         .as_ref()
+        .filter(|_| download.is_none())
         .map(|src| {
             let video = entry
                 .clone()
@@ -619,6 +658,8 @@ pub fn open(
         .and_then(|id| targets.iter().find(|t| &t.id == id))
         .cloned();
     let mut notice = None;
+    // Read over a network: downloads wait while it plays.
+    let mut streams = true;
     let (player, pick, transcoding) = match asked {
         Some(t) => {
             let (p, pick) = transcoded(&t).map_err(failed)?;
@@ -639,11 +680,14 @@ pub fn open(
                     }
                     Err(e) => Err(crate::ui::errors::source(&e)),
                 },
-                _ => opener
-                    .open_in(req.source_id.as_deref(), &location)
-                    .map(Some),
+                _ => match &download {
+                    Some((_, d)) => opener.open_in(None, &d.video_location()),
+                    None => opener.open_in(req.source_id.as_deref(), &location),
+                }
+                .map(Some),
             }
             .map_err(failed)?;
+            streams = src.as_ref().is_none_or(|s| s.remote());
             match src.map(|src| open_player(src, player_config(settings, start_at, user_format))) {
                 Some(Ok((p, pick))) => (p, pick, None),
                 Some(Err(e))
@@ -740,20 +784,30 @@ pub fn open(
         .unwrap_or_else(|| title_from_name(&name));
     let markers = markers(&info, entry.as_ref(), record.as_ref(), library);
     let record_id = record.as_ref().map(|r| r.id);
-    let session = record_id.and_then(|id| library.start_playback(id).ok());
+    // Without a session nothing of this play is kept: no history, no
+    // resume point.
+    let session = record_id
+        .filter(|_| settings.watch_history)
+        .and_then(|id| library.start_playback(id).ok());
     let trickplay = source
         .as_ref()
         .zip(entry.as_ref())
         .and_then(|(source, video)| crate::trickplay::Preview::new(source.clone(), video));
-    let watch = source.and_then(|src| {
-        let video = entry
-            .clone()
-            .unwrap_or_else(|| Entry::new(title.clone(), location.clone(), EntryKind::Video));
-        match source_session {
-            Some(session) => Some(Watch::start_session(reports, src, session, start_at)),
-            None => Watch::start(reports, src, &video, start_at),
-        }
-    });
+    let video = entry
+        .clone()
+        .unwrap_or_else(|| Entry::new(title.clone(), location.clone(), EntryKind::Video));
+    // A download's server hears once it answers, if it does.
+    let (watch, pending_watch) = match (source, &download) {
+        (Some(src), Some(_)) => (None, Some(PendingWatch::ask(src, video))),
+        (Some(src), None) => (
+            match source_session {
+                Some(session) => Some(Watch::start_session(reports, src, session, start_at)),
+                None => Watch::start(reports, src, &video, start_at),
+            },
+            None,
+        ),
+        (None, _) => (None, None),
+    };
     let backdrop = BackdropSearch::new(req.source_id.clone(), location.clone());
     Ok(Opened {
         playback: Playback {
@@ -797,6 +851,10 @@ pub fn open(
             damaged_skipped: 0.0,
             skipping_since: None,
             watch,
+            pending_watch,
+            reports: reports.clone(),
+            downloaded: download.is_some(),
+            streams,
             targets,
             transcoding,
             source_tracks,
@@ -805,7 +863,60 @@ pub fn open(
     })
 }
 
+/// The finished download of the video at `location`, under the location
+/// its library row has, while its file is there to read.
+fn downloaded(
+    library: &Library,
+    source: Option<&dyn Source>,
+    location: &str,
+) -> Option<(String, fp_library::Download)> {
+    let canonical = source.and_then(|s| s.canonical_location(location));
+    [Some(location.to_string()), canonical]
+        .into_iter()
+        .flatten()
+        .find_map(|l| {
+            let d = library.finished_download(&l).ok().flatten()?;
+            let path = crate::downloads::path_of(&d.video_location())?;
+            path.is_file().then_some((l, d))
+        })
+}
+
+/// Asks a download's server, off the frame loop, for the watch session it
+/// keeps for the video; it may never answer.
+pub(crate) struct PendingWatch {
+    source: Arc<dyn Source>,
+    answer: mpsc::Receiver<fp_sources::WatchSession>,
+}
+
+impl PendingWatch {
+    fn ask(source: Arc<dyn Source>, video: Entry) -> PendingWatch {
+        let (tx, rx) = mpsc::channel();
+        let asked = source.clone();
+        let spawned = std::thread::Builder::new()
+            .name("fp-watch-ask".into())
+            .spawn(move || {
+                if let Some(session) = asked.watch_session(&video) {
+                    let _ = tx.send(session);
+                }
+            });
+        if let Err(e) = spawned {
+            log::warn!("no watch sync for the download: {e}");
+        }
+        PendingWatch { source, answer: rx }
+    }
+}
+
 /// Asks `source` to transcode `location` to `t` from a time (seconds).
+/// Where a video starts when its request doesn't say: its server's resume
+/// point, which knows where it was left on any device, else the library's
+/// (`local`), which knows only this headset and is kept only with the watch
+/// history on. Neither with resuming off, or within a second of the start.
+fn resume_point(server: Option<f64>, local: Option<f64>, settings: &Settings) -> Option<f64> {
+    server
+        .or(local.filter(|_| settings.watch_history))
+        .filter(|p| settings.resume && *p > 1.0)
+}
+
 fn restart_at(
     source: Arc<dyn Source>,
     location: &str,
@@ -1379,6 +1490,22 @@ impl Playback {
 
     /// Every frame: tells the video's server how watching goes.
     pub fn sync_watch(&mut self) {
+        if let Some(pending) = &self.pending_watch {
+            match pending.answer.try_recv() {
+                Ok(session) => {
+                    let source = pending.source.clone();
+                    self.pending_watch = None;
+                    self.watch = Some(Watch::start_session(
+                        &self.reports,
+                        source,
+                        session,
+                        self.player.position(),
+                    ));
+                }
+                Err(mpsc::TryRecvError::Empty) => {}
+                Err(mpsc::TryRecvError::Disconnected) => self.pending_watch = None,
+            }
+        }
         if let Some(w) = &mut self.watch {
             let p = &self.player;
             let state = p.state();
@@ -1607,9 +1734,18 @@ impl Playback {
         self.trickplay = None;
         self.save_progress(library, true);
         self.save_key(library, true);
+        let heard = self.watch.as_ref().is_some_and(Watch::heard);
         if let Some(w) = self.watch.take() {
             // Near the end, the server counts it as watched.
             w.stop(self.player.position());
+        }
+        // A download watched while its server heard nothing: its resume
+        // point is the headset's next time.
+        if self.downloaded
+            && let Some(id) = self.record_id
+            && let Err(e) = library.set_played_offline(id, !heard)
+        {
+            log::warn!("noting where the download was watched: {e}");
         }
         let player = self.player;
         let closing = std::thread::Builder::new()
@@ -1679,17 +1815,25 @@ fn falling_behind(stalls: u64, dropped: u64, shown: u64) -> bool {
 
 /// Whether the Frame's hardware decoder takes this stream.
 fn has_hardware_decoder(v: &StreamInfo) -> bool {
-    hardware_decodes(v, fp_media::hevc_10bit_hardware())
+    // Only an AV1 video asks the device.
+    let av1 = v.codec == "av1" && fp_media::av1_hardware();
+    hardware_decodes(v, fp_media::hevc_10bit_hardware(), av1)
 }
 
-/// 8-bit 4:2:0 HEVC, H.264 and AV1, and 10-bit 4:2:0 HEVC and AV1 when
+/// 8-bit 4:2:0 HEVC and H.264, and AV1 where the device takes it (`av1`,
+/// [`fp_media::av1_hardware`]), and 10-bit 4:2:0 HEVC and AV1 when
 /// `ten_bit_q10c` (the renderer shows Q10C, see
 /// [`fp_media::set_hevc_10bit_hardware`]). Not interlaced H.264, nor video
 /// being deinterlaced, which takes pictures in memory.
-fn hardware_decodes(v: &StreamInfo, ten_bit_q10c: bool) -> bool {
+fn hardware_decodes(v: &StreamInfo, ten_bit_q10c: bool, av1: bool) -> bool {
+    let codec = match v.codec.as_str() {
+        "hevc" | "h264" => true,
+        "av1" => av1,
+        _ => false,
+    };
     let depth = v.bit_depth <= 8
         || (ten_bit_q10c && matches!(v.codec.as_str(), "hevc" | "av1") && v.bit_depth == 10);
-    matches!(v.codec.as_str(), "hevc" | "h264" | "av1")
+    codec
         && depth
         && v.chroma() == "4:2:0"
         && !v.deinterlaced
@@ -2027,6 +2171,61 @@ mod tests {
     }
 
     #[test]
+    fn videos_resume_from_their_server_else_the_headset_with_history_kept() {
+        let on = Settings::default();
+        let off = Settings {
+            watch_history: false,
+            ..Default::default()
+        };
+        let no_resume = Settings {
+            resume: false,
+            ..Default::default()
+        };
+        assert_eq!(resume_point(Some(30.0), Some(60.0), &on), Some(30.0));
+        assert_eq!(resume_point(None, Some(60.0), &on), Some(60.0));
+        assert_eq!(resume_point(Some(30.0), Some(60.0), &off), Some(30.0));
+        assert_eq!(resume_point(None, Some(60.0), &off), None);
+        assert_eq!(resume_point(Some(30.0), Some(60.0), &no_resume), None);
+        assert_eq!(resume_point(Some(0.5), None, &on), None);
+    }
+
+    #[test]
+    fn with_the_watch_history_off_a_play_keeps_nothing() {
+        let library = Library::open_in_memory().unwrap();
+        let stable = fp_sources::location::encode("rooted", "http", "clip.mp4");
+        let id = library
+            .upsert(&fp_library::MediaUpsert::new(&stable, "rooted"))
+            .unwrap()
+            .id;
+        let opener = Opener::new();
+        opener.insert_source(Arc::new(RootedClip {
+            root: "http://old.example/videos/",
+            opened: Default::default(),
+        }));
+        let settings = Settings {
+            hardware_decoding: false,
+            haptics_enabled: false,
+            watch_history: false,
+            ..Default::default()
+        };
+        let request = OpenRequest {
+            location: stable.clone(),
+            source_id: Some("rooted".into()),
+            entry: Some(Entry::new("Clip", &stable, EntryKind::Video)),
+            paused: true,
+            ..Default::default()
+        };
+        let reports = Reports::start();
+        let playback = open(request, &opener, &library, &settings, &reports)
+            .unwrap()
+            .playback;
+        assert_eq!(playback.record_id, Some(id));
+        playback.close(&library);
+        assert!(library.history(10).unwrap().is_empty());
+        assert!(!library.has_history().unwrap());
+    }
+
+    #[test]
     fn titles_from_names() {
         assert_eq!(title_from_name("My.Video_2024.mkv"), "My Video 2024");
     }
@@ -2299,6 +2498,166 @@ mod tests {
             lock(&self.transcode_subtitles).push(session.subtitle_stream.clone());
             self.open_transcode(location, id, start)
         }
+    }
+
+    /// A Jellyfin-like server out of reach: everything but a watch session
+    /// fails, and that answers only when `answers`.
+    #[derive(Default)]
+    struct OutOfReach {
+        asked: Mutex<Vec<&'static str>>,
+        answers: bool,
+        reports_taken: bool,
+    }
+
+    impl Source for OutOfReach {
+        fn id(&self) -> &str {
+            "far"
+        }
+        fn name(&self) -> &str {
+            "Far"
+        }
+        fn kind(&self) -> fp_sources::SourceKind {
+            fp_sources::SourceKind::MediaBrowser
+        }
+        fn describe(&self) -> String {
+            String::new()
+        }
+        fn list(&self, _: Option<&str>) -> fp_sources::Result<Vec<Entry>> {
+            Err(fp_sources::Error::Io(std::io::Error::other("unreachable")))
+        }
+        fn open(&self, _: &str) -> fp_sources::Result<Arc<dyn fp_core::ByteSource>> {
+            lock(&self.asked).push("open");
+            Err(fp_sources::Error::Io(std::io::Error::other("unreachable")))
+        }
+        fn details(&self, _: &Entry) -> fp_sources::Result<Entry> {
+            lock(&self.asked).push("details");
+            Err(fp_sources::Error::Io(std::io::Error::other("unreachable")))
+        }
+        fn sidecars(&self, _: &Entry) -> fp_sources::Result<fp_sources::Sidecars> {
+            lock(&self.asked).push("sidecars");
+            Err(fp_sources::Error::Io(std::io::Error::other("unreachable")))
+        }
+        fn transcode_targets(&self, _: &Entry) -> Vec<TranscodeTarget> {
+            lock(&self.asked).push("targets");
+            Vec::new()
+        }
+        fn watch_session(&self, _: &Entry) -> Option<fp_sources::WatchSession> {
+            self.answers.then(|| fp_sources::WatchSession {
+                item: "1".into(),
+                title: "Film".into(),
+                endpoint: None,
+                id: "far-session".into(),
+                duration_ms: None,
+                media_id: None,
+                audio_stream: None,
+                subtitle_stream: None,
+            })
+        }
+        fn report_watch(
+            &self,
+            _: &fp_sources::WatchSession,
+            _: fp_sources::WatchEvent,
+        ) -> fp_sources::Result<()> {
+            if self.reports_taken {
+                Ok(())
+            } else {
+                Err(fp_sources::Error::Io(std::io::Error::other("unreachable")))
+            }
+        }
+    }
+
+    /// Plays the downloaded film of `server` from the library, then
+    /// closes it; whether its download is noted as watched offline.
+    fn play_download(server: Arc<OutOfReach>) -> bool {
+        let dir = std::env::temp_dir().join(format!(
+            "fp-playback-download-{}-{}",
+            std::process::id(),
+            server.answers as u8 + 2 * server.reports_taken as u8
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let clip = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../fp-media/tests/data/h264_aac_180_LR.mp4");
+        std::fs::copy(&clip, dir.join("Film.mp4")).unwrap();
+        std::fs::write(
+            dir.join("Film.en.srt"),
+            "1\n00:00:00,000 --> 00:00:01,000\nHi\n",
+        )
+        .unwrap();
+        let library = Library::open_in_memory().unwrap();
+        let location = "mb:http://far#item=1";
+        let id = library
+            .upsert(&fp_library::MediaUpsert::new(location, "far"))
+            .unwrap()
+            .id;
+        let folder = dir.to_string_lossy().into_owned();
+        library.add_download(id, &folder, "Film.mp4", None).unwrap();
+        let subtitle = SubtitleFile {
+            name: "Film.en.srt".into(),
+            location: "Film.en.srt".into(),
+            language: Some("en".into()),
+            language_name: None,
+            flags: Default::default(),
+        };
+        library
+            .set_download_side_files(id, &[subtitle], &[])
+            .unwrap();
+        library.finish_download(id, 1).unwrap();
+        let opener = Opener::new();
+        opener.insert_source(server.clone());
+        let settings = Settings {
+            hardware_decoding: false,
+            haptics_enabled: false,
+            ..Settings::default()
+        };
+        let reports = Reports::start();
+        let req = OpenRequest {
+            location: location.into(),
+            source_id: Some("far".into()),
+            title: Some("Film".into()),
+            paused: true,
+            ..Default::default()
+        };
+        let began = Instant::now();
+        let mut pb = open(req, &opener, &library, &settings, &reports)
+            .unwrap()
+            .playback;
+        assert!(began.elapsed() < Duration::from_secs(10));
+        assert!(pb.downloaded && !pb.streams);
+        assert_eq!(pb.record_id, Some(id));
+        assert_eq!(pb.subtitle_files.len(), 1, "its subtitles came with it");
+        assert!(pb.subtitle_files[0].location.ends_with("/Film.en.srt"));
+        assert!(
+            lock(&server.asked).is_empty(),
+            "its server was asked {:?}",
+            lock(&server.asked)
+        );
+        // Its server hears of it once it answers.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while server.answers && pb.watch.is_none() && Instant::now() < deadline {
+            pb.sync_watch();
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(pb.watch.is_some(), server.answers);
+        reports.flush(Duration::from_secs(5));
+        pb.close(&library);
+        assert!(wait_closed(Duration::from_secs(5)));
+        let offline = library.download(id).unwrap().unwrap().played_offline;
+        let _ = std::fs::remove_dir_all(&dir);
+        offline
+    }
+
+    #[test]
+    fn a_download_plays_without_asking_its_server_and_notes_when_it_heard_nothing() {
+        assert!(play_download(Arc::new(OutOfReach::default())));
+        assert!(play_download(Arc::new(OutOfReach {
+            answers: true,
+            ..Default::default()
+        })));
+        assert!(!play_download(Arc::new(OutOfReach {
+            answers: true,
+            reports_taken: true,
+            ..Default::default()
+        })));
     }
 
     fn open_from(
@@ -2626,15 +2985,18 @@ mod tests {
             n.contains("10-bit HEVC") && n.contains("8-bit 4:2:0 H.265"),
             "{n}"
         );
-        // AV1 on a driver without AV01 reports "no V4L2 decoder", shown as
-        // no hardware decoding (like VP9).
+        // AV1 where the device lists no AV01, as on SteamOS 0.5.9 and where
+        // tests run: no hardware decoding (like VP9), whether it was tried
+        // or hardware decoding is off.
         let no_av1 = "unsupported: no V4L2 decoder for Av1 with NV12 output";
-        let n = slow_decode_notice(&stream("av1", 8), true, Some(no_av1), &nobody).detail;
-        assert!(n.contains("for AV1,"), "{n}");
-        assert_eq!(
-            software_reason(&stream("av1", 8), true, Some(no_av1)),
-            "no hardware decoding for AV1"
-        );
+        for (on, error) in [(true, Some(no_av1)), (false, None)] {
+            let n = slow_decode_notice(&stream("av1", 8), on, error, &nobody).detail;
+            assert!(n.contains("for AV1,"), "{n}");
+            assert_eq!(
+                software_reason(&stream("av1", 8), on, error),
+                "no hardware decoding for AV1"
+            );
+        }
         let n = slow_decode_notice(&stream("vp9", 8), true, None, &nobody).detail;
         assert!(n.contains("for VP9,"), "{n}");
         let busy = "hardware decoder busy: other video sessions leave room for 8192x4064, \
@@ -2711,33 +3073,35 @@ mod tests {
         assert_eq!(r, "V4L2: stream size unknown");
 
         // 10-bit HEVC and AV1 in hardware where the renderer shows Q10C;
-        // never other 10-bit codecs.
-        assert!(hardware_decodes(&stream("hevc", 10), true));
-        assert!(!hardware_decodes(&stream("hevc", 10), false));
-        assert!(hardware_decodes(&stream("av1", 10), true));
-        assert!(!hardware_decodes(&stream("av1", 10), false));
-        assert!(hardware_decodes(&stream("av1", 8), false));
-        assert!(!hardware_decodes(&stream("h264", 10), true));
-        assert!(!hardware_decodes(&stream("vp9", 8), true));
+        // never other 10-bit codecs. AV1 only where the device takes it.
+        assert!(hardware_decodes(&stream("hevc", 10), true, false));
+        assert!(!hardware_decodes(&stream("hevc", 10), false, false));
+        assert!(hardware_decodes(&stream("av1", 10), true, true));
+        assert!(!hardware_decodes(&stream("av1", 10), false, true));
+        assert!(hardware_decodes(&stream("av1", 8), false, true));
+        assert!(!hardware_decodes(&stream("av1", 8), false, false));
+        assert!(!hardware_decodes(&stream("av1", 10), true, false));
+        assert!(!hardware_decodes(&stream("h264", 10), true, false));
+        assert!(!hardware_decodes(&stream("vp9", 8), true, true));
         let mut s12 = stream("hevc", 12);
         s12.pixel_format = "yuv420p12le".into();
-        assert!(!hardware_decodes(&s12, true));
+        assert!(!hardware_decodes(&s12, true, false));
         let mut s422 = stream("hevc", 10);
         s422.pixel_format = "yuv422p10le".into();
-        assert!(!hardware_decodes(&s422, true));
-        assert!(hardware_decodes(&stream("h264", 8), false));
+        assert!(!hardware_decodes(&s422, true, false));
+        assert!(hardware_decodes(&stream("h264", 8), false, false));
 
         // Interlaced H.264, and video being deinterlaced, decode in software.
         let mut tv = stream("h264", 8);
         tv.interlaced = true;
-        assert!(!hardware_decodes(&tv, false));
+        assert!(!hardware_decodes(&tv, false, false));
         assert_eq!(
             software_reason(&tv, true, None),
             "no hardware decoding for interlaced H.264"
         );
         let mut forced = stream("hevc", 8);
         forced.deinterlaced = true;
-        assert!(!hardware_decodes(&forced, false));
+        assert!(!hardware_decodes(&forced, false, false));
     }
 
     #[test]

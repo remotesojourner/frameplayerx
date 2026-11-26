@@ -35,7 +35,7 @@ impl App {
             Action::QueueClear => self.queue.clear_rest(),
             Action::ShowUpNext => {
                 self.ui.screen = Screen::UpNext;
-                self.ui.details = None;
+                self.ui.close_details_on(Screen::UpNext);
                 self.ui.picking = None;
                 self.show_browser = true;
                 self.ui_visible = true;
@@ -199,6 +199,10 @@ impl App {
                 self.ui.toast(tr!("toast-retrying", count = n));
             }
             Action::ClearHistory => self.clear_history(),
+            Action::TurnOffHistory => {
+                self.settings.watch_history = false;
+                self.clear_history();
+            }
             Action::ClearImageCache => {
                 // Pictures on screen load again from their servers.
                 self.thumbs.forget_remote();
@@ -212,10 +216,17 @@ impl App {
             Action::AddSource(cfg, play_all_limit) => self.add_source(cfg, play_all_limit),
             Action::UpdateSource(cfg, play_all_limit) => self.update_source(cfg, play_all_limit),
             Action::RemoveSource(id) => self.remove_source(&id),
+            Action::CheckDownload {
+                source_id,
+                location,
+            } => self.check_download(source_id, location),
+            Action::Download { req, title } => self.start_download(req, title),
+            Action::RemoveDownload(id) => self.remove_download(id),
+            Action::RetryDownload(id) => self.retry_download(id),
             Action::UnlockSource { source, pin } => self.unlock_source(source, &pin),
             Action::LockSource(id) => self.lock_source(&id),
             Action::SetSourcePin { source, pin } => self.set_source_pin(&source, pin),
-            Action::OpenSource { source, back_to } => self.open_source(source, back_to),
+            Action::OpenSource(source) => self.open_source(source),
             Action::Browse { source, location } => self.browse(source, location),
             Action::Catalog { source, seq, load } => {
                 self.catalog_job(source, seq, load, Duration::ZERO);
@@ -300,6 +311,10 @@ impl App {
             Action::OpenWebPage(address) => self.open_web_page(address.as_str()),
             Action::SendCrashReport => self.send_crash_report(),
             Action::DismissCrashReport => self.ui.crash = None,
+            Action::CloseWhatsNew => self.close_whats_new(),
+            Action::OpenDiagnostics => self.open_diagnostics(),
+            Action::SendDiagnostics => self.send_diagnostics(),
+            Action::CloseDiagnostics => self.ui.diagnostics = None,
             Action::Recenter => self.recenter(),
             Action::TogglePassthrough => self.settings.passthrough = !self.settings.passthrough,
             Action::ToggleFollow => self.settings.follow = !self.settings.follow,

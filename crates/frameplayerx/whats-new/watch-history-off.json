@@ -1,0 +1,9 @@
+{
+  "kind": "feat",
+  "en": "You can turn off the watch history with Keep watch history in Settings › General. Continue watching goes with it, and videos then resume only where your media server remembers your place.",
+  "de": "Mit Verlauf führen unter Einstellungen › Allgemein können Sie den Verlauf ausschalten. Weiterschauen entfällt dann ebenfalls, und Videos setzen nur dort fort, wo sich Ihr Medienserver Ihre Stelle merkt.",
+  "es": "Puedes desactivar el historial con Guardar historial en Ajustes › General. Seguir viendo desaparece con él, y los vídeos solo se reanudan donde tu servidor multimedia recuerda por dónde ibas.",
+  "fr": "Vous pouvez désactiver l’historique avec Garder un historique dans Paramètres › Général. Reprendre disparaît avec lui, et les vidéos ne reprennent alors que là où votre serveur multimédia se souvient de votre position.",
+  "ja": "「設定」›「一般」の「視聴履歴を残す」で視聴履歴をオフにできます。「視聴を続ける」も一緒に消え、映像はメディアサーバーが位置を覚えている場合にのみ続きから再生されます。",
+  "zh-CN": "可在“设置” › “常规”中用“保留观看记录”关闭观看记录。“继续观看”也会随之消失，视频只会在媒体服务器记住你的位置时从中断处继续播放。"
+}

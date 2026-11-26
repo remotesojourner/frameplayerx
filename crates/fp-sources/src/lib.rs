@@ -24,6 +24,7 @@
 //! [`save_configs`] / [`load_configs`] persist them (credentials included)
 //! in a 0600 JSON file. Blocking I/O and plain threads only.
 
+mod bulk;
 pub mod cache;
 pub mod catalog;
 pub mod config;
@@ -308,6 +309,47 @@ pub trait Source: Send + Sync {
             self.name()
         )))
     }
+
+    /// Whether the video at `location` may be downloaded to the headset,
+    /// when that is known without asking the server; `None` when only
+    /// [`Source::ask_download_allowed`] can tell. Performs no I/O.
+    fn download_allowed(&self, _location: &str) -> Option<bool> {
+        Some(false)
+    }
+
+    /// Whether the video at `location` may be downloaded, asking the server
+    /// when [`Source::download_allowed`] can't tell.
+    fn ask_download_allowed(&self, location: &str) -> Result<bool> {
+        Ok(self.download_allowed(location).unwrap_or(false))
+    }
+
+    /// Opens `video`'s original file to download it: the file as the
+    /// server keeps it, never a transcode, which has no file. May ask the
+    /// server, so not on the frame loop.
+    fn open_download(&self, _video: &Entry) -> Result<OriginalFile> {
+        Err(Error::Unsupported(format!(
+            "{} has no files to download",
+            self.name()
+        )))
+    }
+}
+
+/// A video's original file, opened to download.
+pub struct OriginalFile {
+    pub reader: Arc<dyn ByteSource>,
+    /// The server's name for the file, or failing that the video's title.
+    pub name: String,
+}
+
+/// [`Source::open_download`] for a source whose locations are its files:
+/// the file at the video's location, read through `reader`, under its own
+/// name.
+pub(crate) fn file_download(video: &Entry, reader: Arc<dyn ByteSource>) -> OriginalFile {
+    let mut name = urlutil::last_segment(&video.location);
+    if name.is_empty() || fp_core::source::location_names_no_file(&video.location) {
+        name = video.name.clone();
+    }
+    OriginalFile { reader, name }
 }
 
 /// Whether a location binds its resource to one configured source.
